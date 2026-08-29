@@ -1,0 +1,817 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Saturday</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<div id="titlebar" class="titlebar">
+  <div class="titlebar-brand pywebview-drag-region">
+    <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><path d="M22.3 5.75 5.09 5.75 17.59 21.75 9.7 21.75 9.7 26.25 26.81 26.25 14.31 10.25 22.3 10.25Z" fill="currentColor"/></svg>
+    <span class="titlebar-name">saturday</span>
+    <span class="titlebar-ctx" id="tbCtx"></span>
+  </div>
+  <div class="titlebar-actions">
+    <button id="tbMin" class="tb-btn" title="Minimize" aria-label="Minimize"><svg viewBox="0 0 12 12"><path d="M2 6h8" fill="none" stroke="currentColor" stroke-width="1.2"/></svg></button>
+    <button id="tbMax" class="tb-btn" title="Maximize" aria-label="Maximize"><svg viewBox="0 0 12 12"><rect x="2" y="2" width="8" height="8" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/></svg></button>
+    <button id="tbClose" class="tb-btn tb-close" title="Close" aria-label="Close"><svg viewBox="0 0 12 12"><path d="M2.8 2.8l6.4 6.4M9.2 2.8L2.8 9.2" fill="none" stroke="currentColor" stroke-width="1.2"/></svg></button>
+  </div>
+</div>
+<div id="app">
+
+  <aside id="sidebar">
+    <div class="side-head">
+      <div class="brand">
+        <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><path d="M22.3 5.75 5.09 5.75 17.59 21.75 9.7 21.75 9.7 26.25 26.81 26.25 14.31 10.25 22.3 10.25Z" fill="currentColor"/></svg>
+        <span class="brand-name">saturday</span>
+      </div>
+      <button id="newChatBtn" class="new-chat" title="New session (Ctrl+N)">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z"/></svg>
+        New chat
+      </button>
+    </div>
+    <div class="proj-head">
+      <span class="proj-head-label">projects</span>
+      <button id="newProjBtn" class="icon-btn sm" title="New project" aria-label="New project">
+        <svg viewBox="0 0 24 24"><path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z"/></svg>
+      </button>
+    </div>
+    <nav id="sessionList" class="session-list" aria-label="Sessions and projects">
+      <input id="sessFilter" class="sess-filter" type="text" placeholder="Filter sessions&hellip;" spellcheck="false" autocomplete="off">
+    </nav>
+    <div class="side-foot">
+      <button id="archToggle" class="arch-toggle hidden"></button>
+      <button id="sideSettings" class="icon-btn sm" title="Settings" aria-label="Settings">
+        <svg viewBox="0 0 24 24"><path d="M19.4 13a7.6 7.6 0 0 0 .1-1 7.6 7.6 0 0 0-.1-1l2.1-1.6a.5.5 0 0 0 .1-.7l-2-3.4a.5.5 0 0 0-.6-.2l-2.5 1a7.7 7.7 0 0 0-1.7-1l-.4-2.6a.5.5 0 0 0-.5-.5h-4a.5.5 0 0 0-.5.4l-.4 2.7a7.7 7.7 0 0 0-1.7 1l-2.5-1a.5.5 0 0 0-.6.2l-2 3.4a.5.5 0 0 0 .1.7L4.5 11a7.6 7.6 0 0 0 0 2l-2.1 1.6a.5.5 0 0 0-.1.7l2 3.4c.1.2.4.3.6.2l2.5-1a7.7 7.7 0 0 0 1.7 1l.4 2.6c0 .3.2.5.5.5h4c.2 0 .4-.2.5-.4l.4-2.7a7.7 7.7 0 0 0 1.7-1l2.5 1c.2.1.5 0 .6-.2l2-3.4a.5.5 0 0 0-.1-.7L19.4 13zM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7z"/></svg>
+      </button>
+      <span id="verLabel">Saturday</span>
+      <span class="dot-sep">&middot;</span>
+      <span>local-first</span>
+    </div>
+  </aside>
+  <div id="sbScrim"></div>
+
+  <main id="main">
+    <header id="topbar">
+      <button id="sbToggle" class="icon-btn" title="Toggle sidebar (Ctrl+B)" aria-label="Toggle sidebar">
+        <svg viewBox="0 0 24 24"><path d="M4 6h16v2H4zm0 5h16v2H4zm0 5h16v2H4z"/></svg>
+      </button>
+      <div id="sessionTitle" class="session-title">New chat</div>
+      <div class="top-right">
+        <button id="projChip" class="pill proj-chip hidden" title="Project settings">
+          <svg viewBox="0 0 24 24"><path d="M3 6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+          <span id="projChipName"></span>
+        </button>
+        <span id="tokMeter" class="tok-meter hidden" title="tokens used this session">&#9906; 0</span>
+        <span id="connDot" class="conn-dot" title="connection"></span>
+        <button id="modeBadge" class="pill mode-badge hidden" title="Personal assistant mode is on (click for settings)">assistant</button>
+        <button id="planBadge" class="pill plan-badge hidden" title="Plan mode is on for this chat (click to toggle)">plan</button>
+        <button id="safetyBadge" class="pill safety-ask" title="Safety mode (click to cycle)">ask</button>
+        <button id="modelPill" class="pill model-pill" title="Switch model">
+          <span class="model-name" id="modelLabel">&hellip;</span>
+          <svg viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg>
+        </button>
+        <button id="themeBtn" class="icon-btn" title="Toggle theme">
+          <svg viewBox="0 0 24 24"><path d="M12 18a6 6 0 1 1 0-12c1 0 2 .25 2.85.7A7 7 0 1 0 12 18z"/></svg>
+        </button>
+        <button id="kebabBtn" class="icon-btn" title="Session menu">
+          <svg viewBox="0 0 24 24"><path d="M12 8a2 2 0 1 0 0-4 2 2 0 0 0 0 4zm0 6a2 2 0 1 0 0-4 2 2 0 0 0 0 4zm0 6a2 2 0 1 0 0-4 2 2 0 0 0 0 4z"/></svg>
+        </button>
+      </div>
+      <div id="modelMenu" class="dropdown hidden"></div>
+      <div id="themeMenu" class="dropdown hidden"></div>
+      <div id="safetyMenu" class="dropdown hidden"></div>
+      <div id="projPickMenu" class="dropdown hidden"></div>
+      <div id="kebabMenu" class="dropdown hidden">
+        <button data-act="rename">Rename session</button>
+        <button data-act="pin">Pin / unpin</button>
+        <button data-act="archive">Archive session</button>
+        <button data-act="branch">Branch conversation</button>
+        <button data-act="move">Move to project&hellip;</button>
+        <button data-act="export-md">Export as Markdown</button>
+        <button data-act="export-json">Export as JSON</button>
+        <button data-act="export-html">Export as HTML</button>
+        <button data-act="shortcuts">Keyboard shortcuts</button>
+        <button data-act="settings">Settings</button>
+        <button data-act="delete" class="danger">Delete session</button>
+      </div>
+    </header>
+
+    <div id="workarea">
+
+      <section id="rail">
+        <div id="findBar" class="find-bar hidden">
+          <input id="findInput" type="text" placeholder="Find in chat&hellip;" spellcheck="false" autocomplete="off">
+          <span id="findCount" class="find-count mono"></span>
+          <button id="findPrev" class="icon-btn sm" title="Previous match (Shift+Enter)">&uarr;</button>
+          <button id="findNext" class="icon-btn sm" title="Next match (Enter)">&darr;</button>
+          <button id="findClose" class="icon-btn sm" title="Close (Esc)">&times;</button>
+        </div>
+        <div id="transcript" tabindex="-1">
+          <div id="emptyState" class="empty-state">
+            <svg class="empty-mark" viewBox="0 0 32 32" aria-hidden="true"><path d="M22.3 5.75 5.09 5.75 17.59 21.75 9.7 21.75 9.7 26.25 26.81 26.25 14.31 10.25 22.3 10.25Z" fill="currentColor"/></svg>
+            <h1>saturday</h1>
+            <p class="tagline">the auditable minimal harness.</p>
+            <div class="suggests" id="suggests"></div>
+            <button id="keyHint" class="key-hint hidden"></button>
+          </div>
+          <div id="thread" class="thread"></div>
+        </div>
+        <button id="scrollBtn" class="scroll-btn hidden" title="Scroll to bottom">
+          <svg viewBox="0 0 24 24"><path d="M12 16.5 5 9.5l1.4-1.4L12 13.7l5.6-5.6L19 9.5z"/></svg>
+        </button>
+        <div id="queueRow" class="queue-row hidden"></div>
+
+        <div id="composerWrap">
+          <div id="followRow" class="follow-row hidden" aria-label="Suggested follow-ups"></div>
+          <div id="attachRow" class="attach-row hidden"></div>
+          <div id="slashPop" class="slash-pop hidden" role="listbox"></div>
+          <div id="atPop" class="slash-pop at-pop hidden" role="listbox"></div>
+          <div class="composer">
+            <div id="composerModes">
+              <button id="planChip" class="mode-chip" title="Plan mode — read-only planning, approve before it acts" aria-label="plan mode">plan</button>
+              <button id="safetyChip" class="mode-chip" title="Safety mode — click to pick explicitly" aria-label="safety mode">ask<svg viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg></button>
+            </div>
+            <textarea id="input" rows="1" placeholder="Message Saturday&hellip; ( / for commands )" spellcheck="false"></textarea>
+            <div class="composer-actions">
+              <div class="hint" id="composerHint">Enter to send &middot; Shift+Enter newline</div>
+              <button id="enhanceBtn" class="icon-btn hidden" title="Enhance prompt (Bolt parity — rewrites this message to be clearer; click again to undo)">
+                <svg viewBox="0 0 24 24"><path d="M12 2l1.8 5.6L19 9.4l-4.3 3.4 1.4 5.7L12 15.4l-4.1 3.1 1.4-5.7L5 9.4l5.2-1.8zM19 15l.9 2.6L22.5 18l-2.1 1.7.7 2.6-2.6-1.5-2.6 1.5.7-2.6L14.5 18l2.6-.4z"/></svg>
+              </button>
+              <button id="micBtn" class="icon-btn hidden" title="Voice input">
+                <svg viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11z"/></svg>
+              </button>
+              <button id="attachBtn" class="icon-btn" title="Attach image or text file">
+                <svg viewBox="0 0 24 24"><path d="M16.5 6v11.5a4 4 0 0 1-8 0V5a2.5 2.5 0 0 1 5 0v10.5a1 1 0 0 1-2 0V6H10v9.5a2.5 2.5 0 0 0 5 0V5a4 4 0 0 0-8 0v12.5a5.5 5.5 0 0 0 11 0V6z"/></svg>
+              </button>
+              <button id="sendBtn" class="send-btn" title="Send" disabled>
+                <svg viewBox="0 0 24 24" class="ic-send"><path d="M3 20.5v-17l18 8.5zM5 17.2L16.9 12 5 6.8z"/></svg>
+                <svg viewBox="0 0 24 24" class="ic-stop hidden"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg>
+              </button>
+            </div>
+          </div>
+          <input id="fileInput" type="file" accept="image/*,.txt,.md,.py,.js,.ts,.jsx,.tsx,.json,.yaml,.yml,.toml,.csv,.log,.html,.css,.sh,.bat,.ps1" multiple hidden>
+        </div>
+      </section>
+
+      <section id="stage">
+        <div id="stageTabs">
+          <button class="stage-tab on" data-tab="home">Workbench</button>
+          <button class="stage-tab" data-tab="activity">Activity <span class="tab-badge hidden" id="badgeActivity"></span></button>
+          <button class="stage-tab" data-tab="changes">Changes <span class="tab-badge hidden" id="badgeChanges"></span></button>
+          <button class="stage-tab" data-tab="preview">Preview <span class="tab-badge hidden" id="badgePreview"></span></button>
+          <button class="stage-tab" data-tab="plan">Plan <span class="tab-badge hidden" id="badgePlan"></span></button>
+          <button class="stage-tab" data-tab="files">Files</button>
+          <button class="stage-tab" data-tab="runs">Runs <span class="tab-badge hidden" id="badgeRuns"></span></button>
+          <div id="stageMeta"></div>
+        </div>
+        <div id="stageBody">
+          <div id="stageHome" class="stage-pane on">
+            <div class="stage-home-inner">
+              <svg class="stage-mark" viewBox="0 0 32 32" aria-hidden="true"><path d="M22.3 5.75 5.09 5.75 17.59 21.75 9.7 21.75 9.7 26.25 26.81 26.25 14.31 10.25 22.3 10.25Z" fill="currentColor"/></svg>
+              <h2>Workbench</h2>
+              <p class="stage-sub" id="homeStatus">Tool activity, file changes, screenshots and plans appear here while the agent works.</p>
+              <div class="home-run hidden" id="homeRun">
+                <div class="home-run-grid">
+                  <div class="home-cell"><div class="home-label">Step</div><div class="home-value mono" id="homeStep">&mdash;</div></div>
+                  <div class="home-cell"><div class="home-label">Tool calls</div><div class="home-value mono" id="homeTools">0</div></div>
+                  <div class="home-cell"><div class="home-label">Tokens</div><div class="home-value mono" id="homeTokens">0</div></div>
+                  <div class="home-cell"><div class="home-label">Files changed</div><div class="home-value mono" id="homeFiles">0</div></div>
+                  <div class="home-cell"><div class="home-label">Elapsed</div><div class="home-value mono" id="homeElapsed">&mdash;</div></div>
+                </div>
+                <div class="home-act-title">Latest activity</div>
+                <div class="home-activity" id="homeActivity"></div>
+              </div>
+              <div class="home-grid">
+                <div class="home-cell"><div class="home-label">Workspace</div><div class="home-value mono" id="homeWorkspace">&hellip;</div></div>
+                <div class="home-cell"><div class="home-label">Model</div><div class="home-value mono" id="homeModel">&hellip;</div></div>
+                <div class="home-cell"><div class="home-label">Safety</div><div class="home-value" id="homeSafety">&hellip;</div></div>
+                <div class="home-cell"><div class="home-label">Project</div><div class="home-value" id="homeProject">&mdash;</div></div>
+                <div class="home-cell"><div class="home-label">Session</div><div class="home-value mono" id="homeSession">&mdash;</div></div>
+              </div>
+              <div class="home-keys">
+                <span><kbd>Ctrl</kbd> <kbd>N</kbd> new chat</span>
+                <span><kbd>Ctrl</kbd> <kbd>B</kbd> sidebar</span>
+                <span><kbd>Ctrl</kbd> <kbd>K</kbd> palette</span>
+                <span><kbd>/</kbd> commands</span>
+                <span><kbd>Y</kbd>/<kbd>A</kbd>/<kbd>N</kbd> approvals</span>
+              </div>
+            </div>
+          </div>
+          <div id="stageActivity" class="stage-pane"></div>
+          <div id="stageChanges" class="stage-pane"></div>
+          <div id="stagePreview" class="stage-pane"></div>
+          <div id="stagePlan" class="stage-pane"></div>
+          <div id="stageFiles" class="stage-pane"></div>
+          <div id="stageRuns" class="stage-pane"></div>
+        </div>
+      </section>
+
+    </div>
+  </main>
+</div>
+
+<div id="settingsModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+  <div class="modal-card settings-card">
+    <div class="modal-head">
+      <h2 id="settingsTitle">Settings</h2>
+      <button id="settingsClose" class="icon-btn" aria-label="Close">
+        <svg viewBox="0 0 24 24"><path d="M6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12 19 6.4 17.6 5 12 10.6z"/></svg>
+      </button>
+    </div>
+    <div class="settings-body">
+      <input id="cfgSearch" type="search" class="cfg-search" placeholder="Search settings&hellip;" aria-label="Search settings">
+      <nav class="set-nav" id="setNav" aria-label="Settings sections">
+        <button class="on" data-sec="general">General</button>
+        <button data-sec="model">Model</button>
+        <button data-sec="safety">Safety &amp; approvals</button>
+        <button data-sec="voice">Voice &amp; alerts</button>
+        <button data-sec="schedules">Schedules</button>
+        <button data-sec="commands">Commands</button>
+        <button data-sec="data">Data &amp; storage</button>
+        <button data-sec="hooks">Hooks</button>
+        <button data-sec="mcp">MCP servers</button>
+        <button data-sec="about">About</button>
+      </nav>
+      <div class="set-panes">
+
+        <div class="set-pane on" data-sec="general">
+          <div class="field">
+            <span class="field-label">Theme</span>
+            <select id="cfgThemeSel"></select>
+            <span class="field-hint">Includes the themes shipped by Omarchy Linux; "system" follows your OS preference</span>
+          </div>
+          <div class="field">
+            <span class="field-label">Workspace</span>
+            <span class="field-static" id="cfgWorkspace"></span>
+            <span class="field-hint">Default sandbox for chats; projects can override it</span>
+          </div>
+          <label class="toggle">
+            <input id="cfgAssistant" type="checkbox">
+            <span>Personal assistant mode</span>
+          </label>
+          <label class="toggle">
+            <input id="cfgAutoTitle" type="checkbox">
+            <span>Auto-name new sessions (AI-generated title)</span>
+          </label>
+          <span class="field-hint pad-hint">After the first reply, one tiny background model call renames the chat; disable to keep the first message as the title</span>
+          <label class="toggle">
+            <input id="cfgFollowups" type="checkbox">
+            <span>Suggest follow-ups after each reply (AI-generated chips)</span>
+          </label>
+          <span class="field-hint pad-hint">After each completed turn, one tiny model call proposes 3 next-step prompts shown above the composer; click one to send it (Devin/Cursor parity)</span>
+          <span class="field-hint pad-hint">Full toolkit with a plain-language surface: it acts on your PC (background-first computer use is enabled by default), hides commands and step counters, and reports outcomes. Uncheck "Background-only computer use" below if you want it to take over the foreground.</span>
+          <div class="field-row">
+            <label class="field">
+              <span class="field-label">It goes by</span>
+              <input id="cfgAssistantName" type="text" spellcheck="false" autocomplete="off" placeholder="(assistant)">
+              <span class="field-hint">e.g. Jarvis &mdash; what you call it</span>
+            </label>
+            <label class="field">
+              <span class="field-label">Calls you</span>
+              <input id="cfgAssistantTitle" type="text" spellcheck="false" autocomplete="off" placeholder="(nothing set)">
+              <span class="field-hint">e.g. sir, boss, your name</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="set-pane" data-sec="model">
+          <label class="field">
+            <span class="field-label">Provider</span>
+            <select id="cfgProvider"></select>
+            <span class="field-hint" id="cfgKeyHint"></span>
+          </label>
+          <label class="field">
+            <span class="field-label">Model</span>
+            <input id="cfgModel" type="text" spellcheck="false" autocomplete="off" list="cfgModels">
+            <datalist id="cfgModels"></datalist>
+            <span class="field-hint" id="cfgBaseUrl"></span>
+          </label>
+          <div class="field-row">
+            <button id="cfgTest" class="mini-btn">Test connection</button>
+            <span class="field-hint" id="cfgTestStatus"></span>
+          </div>
+          <div class="field-row">
+            <label class="field">
+              <span class="field-label">Max steps</span>
+              <input id="cfgSteps" type="number" min="1" max="200">
+            </label>
+            <label class="field">
+              <span class="field-label">Temperature <b id="cfgTempVal"></b></span>
+              <input id="cfgTemp" type="range" min="0" max="1.5" step="0.05">
+            </label>
+          </div>
+          <label class="field">
+            <span class="field-label">Max tokens per reply</span>
+            <input id="cfgMaxTokens" type="number" min="256" max="65536" step="256">
+          </label>
+          <label class="field">
+            <span class="field-label">Fallback models</span>
+            <input id="cfgFallback" type="text" class="mono" spellcheck="false" autocomplete="off" placeholder="comma,separated,model-ids">
+            <span class="field-hint">Tried in order when the primary model errors or rate-limits</span>
+          </label>
+          <details class="adv">
+            <summary>Advanced</summary>
+            <label class="field">
+              <span class="field-label">Top-p <b id="cfgTopPVal"></b></span>
+              <input id="cfgTopP" type="range" min="0" max="1" step="0.05">
+              <span class="field-hint">Nucleus sampling; lower = more focused, higher = more varied</span>
+            </label>
+            <div class="field-row">
+              <label class="field">
+                <span class="field-label">Context window (max tokens)</span>
+                <input id="cfgMaxCtx" type="number" min="0" max="10000000" step="1000" placeholder="auto">
+                <span class="field-hint">Leave empty to derive from the provider</span>
+              </label>
+              <label class="field">
+                <span class="field-label">Compact above (tokens)</span>
+                <input id="cfgCompactAbove" type="number" min="0" max="10000000" step="1000" placeholder="auto">
+                <span class="field-hint">Oldest tool results get digested near this threshold; empty = ~70% of the window</span>
+              </label>
+            </div>
+            <div class="field-row">
+              <label class="field">
+                <span class="field-label">Request timeout (seconds)</span>
+                <input id="cfgReqTimeout" type="number" min="1" max="600" step="5">
+              </label>
+              <label class="field">
+                <span class="field-label">Tool timeout (seconds)</span>
+                <input id="cfgToolTimeout" type="number" min="1" max="600" step="5">
+                <span class="field-hint">Kills hung tools, not slow-but-working ones (default 120s)</span>
+              </label>
+              <label class="field">
+                <span class="field-label">Retries</span>
+                <input id="cfgRetries" type="number" min="0" max="8">
+              </label>
+            </div>
+            <label class="field">
+              <span class="field-label">Memory budget (characters)</span>
+              <input id="cfgMemChars" type="number" min="1000" max="50000" step="500">
+              <span class="field-hint">Cap for the rolling MEMORY.md summary injected into sessions</span>
+            </label>
+            <label class="toggle">
+              <input id="cfgStream" type="checkbox">
+              <span>Stream responses as they arrive</span>
+            </label>
+            <label class="toggle">
+              <input id="cfgShNet" type="checkbox">
+              <span>Allow shell network access</span>
+            </label>
+            <span class="field-hint pad-hint">Off = the agent is told shell runs have no network (enforced in sandboxed mode)</span>
+          </details>
+          <div class="field">
+            <span class="field-label">Custom instructions</span>
+            <textarea id="cfgPersona" class="persona" rows="4" placeholder="Standing instructions for every session&hellip; (tone, conventions, constraints)"></textarea>
+            <span class="field-hint">Injected into the agent's persona on every run</span>
+          </div>
+        </div>
+
+        <div class="set-pane" data-sec="safety">
+          <div class="field">
+            <span class="field-label">Safety mode</span>
+            <div class="seg" id="cfgSafety">
+              <button data-v="off">off</button>
+              <button data-v="ask">ask</button>
+              <button data-v="deny">deny</button>
+              <button data-v="autonomous" title="fully autonomous: no approval prompts (hardline + deny rules still block)">yolo</button>
+            </div>
+            <span class="field-hint">ask prompts you in-chat before risky actions; deny blocks them; off disables gating; yolo runs fully autonomous with zero prompts</span>
+          </div>
+          <label class="toggle">
+            <input id="cfgBgOnly" type="checkbox">
+            <span>Background-only computer use</span>
+          </label>
+          <span class="field-hint pad-hint">Launches and operates apps without stealing focus; pointer, keyboard and window-focus are blocked even if safety is off</span>
+          <label class="toggle">
+            <input id="cfgGuardrails" type="checkbox">
+            <span>Destructive-action guardrails</span>
+          </label>
+          <span class="field-hint pad-hint">DROP DATABASE/TABLE, rm&nbsp;-rf, git reset --hard, DELETE/UPDATE without WHERE and friends ask for confirmation even when safety is off; database files referenced by destructive commands are auto-backed-up to .saturday/backup first</span>
+          <label class="toggle">
+            <input id="cfgKeepReasoning" type="checkbox">
+            <span>Keep &lt;think&gt; reasoning in chat history</span>
+          </label>
+          <span class="field-hint pad-hint">Off by default (matches provider context limits); on = the model's reasoning traces are replayed back to it on resume</span>
+          <label class="toggle" style="margin-top:10px">
+            <input id="cfgSandboxed" type="checkbox">
+            <span>Sandboxed execution environment</span>
+          </label>
+          <span class="field-hint pad-hint">Set this when Saturday runs inside a container/VM: pattern-based approval friction is replaced by real isolation (hardline blocks, deny rules and reserved scopes still apply)</span>
+          <div class="field" style="margin-top:12px">
+            <span class="field-label">Max tokens per run (spend cap)</span>
+            <input id="cfgMaxRunTokens" type="number" min="0" max="10000000" step="1000" placeholder="0 = unlimited">
+            <span class="field-hint">The run stops with a budget notice once cumulative tokens reach this. 0 disables the cap.</span>
+          </div>
+          <div class="field" style="margin-top:12px">
+            <span class="field-label">Saved command rules ("always allow")</span>
+            <div id="approvalRules"></div>
+            <span class="field-hint">Persisted across sessions in approvals.json; compound commands never match a rule, and hardline/guardrail protections outrank them</span>
+          </div>
+          <div class="field" style="margin-top:14px">
+            <span class="field-label">Tool toggles</span>
+            <div class="tool-toggles">
+              <label class="toggle"><input id="cfgToolWebSearch" type="checkbox"><span>web_search</span></label>
+              <label class="toggle"><input id="cfgToolWebFetch" type="checkbox"><span>web_fetch</span></label>
+              <label class="toggle"><input id="cfgToolBrowser" type="checkbox"><span>browser</span></label>
+              <label class="toggle"><input id="cfgToolShell" type="checkbox"><span>shell</span></label>
+              <label class="toggle"><input id="cfgToolPython" type="checkbox"><span>python</span></label>
+              <label class="toggle"><input id="cfgToolFileWrites" type="checkbox"><span>write/edit files</span></label>
+              <label class="toggle"><input id="cfgToolComputerUse" type="checkbox"><span>computer use</span></label>
+              <label class="toggle"><input id="cfgToolSubagents" type="checkbox"><span>subagents</span></label>
+              <label class="toggle"><input id="cfgToolMemory" type="checkbox"><span>memory</span></label>
+              <label class="toggle"><input id="cfgToolSkills" type="checkbox"><span>skills</span></label>
+              <label class="toggle"><input id="cfgToolRepoSearch" type="checkbox"><span>repo search</span></label>
+            </div>
+            <div class="field">
+              <span class="field-label">Other tools <span class="field-hint">(incl. MCP) &mdash; unchecked = hidden from the agent</span></span>
+              <div id="cfgToolOther" class="toggle-grid"></div>
+            </div>
+            <span class="field-hint">Unchecked tools are hidden from the agent everywhere (all sessions); per-session overrides via /toggle</span>
+          </div>
+          <div class="field">
+            <span class="field-label">Language servers (LSP) &mdash; JSON</span>
+            <textarea id="cfgLspServers" class="mono-area" rows="3" spellcheck="false" placeholder='{"python": ["pylsp"]}'></textarea>
+            <span class="field-hint">Enables lsp_diagnostics / lsp_definition tools; e.g. {"python": ["pylsp"], "typescript": ["typescript-language-server", "--stdio"]}</span>
+          </div>
+        </div>
+
+        <div class="set-pane" data-sec="voice">
+          <label class="toggle">
+            <input id="cfgSound" type="checkbox">
+            <span>Completion sound</span>
+          </label>
+          <label class="toggle">
+            <input id="cfgNotify" type="checkbox">
+            <span>Desktop notification when done</span>
+          </label>
+          <label class="toggle">
+            <input id="cfgTts" type="checkbox">
+            <span>Speak replies</span>
+          </label>
+          <label class="toggle">
+            <input id="cfgVoiceAutosend" type="checkbox">
+            <span>Auto-send when I stop talking</span>
+          </label>
+          <span class="field-hint pad-hint">Hands-free loop: speak &rarr; it sends itself &rarr; it speaks the reply</span>
+          <label class="field">
+            <span class="field-label">Speech rate <b id="cfgTtsRateVal"></b></span>
+            <input id="cfgTtsRate" type="range" min="0.6" max="2" step="0.05">
+          </label>
+          <label class="field">
+            <span class="field-label">Voice input language</span>
+            <select id="cfgMicLang">
+              <option value="en-US">English (US)</option>
+              <option value="en-GB">English (UK)</option>
+              <option value="hi-IN">Hindi</option>
+              <option value="de-DE">German</option>
+              <option value="fr-FR">French</option>
+              <option value="es-ES">Spanish</option>
+              <option value="pt-BR">Portuguese (BR)</option>
+              <option value="ja-JP">Japanese</option>
+              <option value="zh-CN">Chinese (Simplified)</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="set-pane" data-sec="schedules">
+          <div class="field">
+            <span class="field-label">Scheduled automations</span>
+            <div id="schedList" class="sched-list"></div>
+            <div class="sched-add">
+              <input id="schedExpr" type="text" class="mono" spellcheck="false" autocomplete="off" placeholder="cron: 0 9 * * 1-5">
+              <input id="schedTask" type="text" spellcheck="false" autocomplete="off" placeholder="what to run&hellip;">
+              <button id="schedAdd" class="mini-btn">add</button>
+            </div>
+            <span class="field-hint" id="schedHint">Five-field cron (min hour day month weekday). Due schedules fire as one-shot agent runs while the app is open; disable the in-app watcher with SATURDAY_SCHEDULE_WATCHER=0. The CLI's `saturday schedule watch` covers always-on use.</span>
+          </div>
+        </div>
+
+        <div class="set-pane" data-sec="commands">
+          <div class="field">
+            <span class="field-label">Custom slash commands (prompt library)</span>
+            <div id="cmdList" class="cmd-list"></div>
+            <button id="cmdAdd" class="mini-btn">+ add command</button>
+            <span class="field-hint">Type /name in chat to expand the saved prompt. $ARGS inside a template inserts whatever you typed after the command. Stored locally in commands.json and merged into / autocomplete.</span>
+          </div>
+        </div>
+
+        <div class="set-pane" data-sec="data">
+          <div class="field">
+            <span class="field-label">Config &amp; data folder</span>
+            <div class="path-row"><span class="field-static" id="dataPathConfig"></span><button id="btnRevealConfig" class="mini-btn">open</button></div>
+          </div>
+          <div class="field">
+            <span class="field-label">Sessions folder</span>
+            <div class="path-row"><span class="field-static" id="dataPathSessions"></span><button id="btnRevealSessions" class="mini-btn">open</button></div>
+          </div>
+          <div class="field">
+            <span class="field-label">Workspace folder</span>
+            <div class="path-row"><span class="field-static" id="dataPathWorkspace"></span><button id="btnRevealWorkspace" class="mini-btn">open</button></div>
+          </div>
+          <div class="field">
+            <span class="field-label">Provenance marking</span>
+            <select id="cfgProvenance">
+              <option value="metadata">metadata - stamp exports &amp; audit bundles</option>
+              <option value="visible">visible - also add a disclosure footer to replies</option>
+              <option value="off">off</option>
+            </select>
+            <span class="field-hint">Machine-readable AI-generated labels on exported trajectories and audit bundles (GB 45438-2025 / EU AI Act Art. 50)</span>
+          </div>
+          <div class="field">
+            <span class="field-label">Post-edit verify command</span>
+            <input id="cfgVerifyCmd" type="text" placeholder="e.g. python -m pytest -q  ({path} substitutes the file)">
+            <span class="field-hint">Runs after every successful file write/edit; output is shown to the agent so it self-corrects. Empty = off.</span>
+          </div>
+          <div class="field">
+            <span class="field-label">Backup</span>
+            <div class="path-row"><span class="field-hint">Download every session as one JSON file</span><button id="btnExportAll" class="mini-btn">export all</button></div>
+          </div>
+          <div class="danger-zone">
+            <div class="danger-title">Danger zone</div>
+            <div class="path-row">
+              <span class="field-hint">Permanently delete all sessions, checkpoints and projects</span>
+              <button id="btnClearSessions" class="danger-btn">Clear all data</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="set-pane" data-sec="hooks">
+          <div class="field">
+            <span class="field-label">Lifecycle hooks (global hooks.json)</span>
+            <span class="field-hint">Commands run on agent events with the payload as JSON on stdin. <b>pre_tool_call</b> exit code 2 blocks the tool call (stderr is the reason); other exits never block. Project-level .saturday/hooks.json merges on top after the project trust gate and is edited by hand.</span>
+            <textarea id="cfgHooks" class="mono-area" rows="10" spellcheck="false"></textarea>
+            <span class="field-hint">Shape: {"pre_tool_call": ["..."], "post_tool_call": ["..."]}</span>
+          </div>
+        </div>
+
+        <div class="set-pane" data-sec="mcp">
+          <div class="field">
+            <span class="field-label">MCP servers</span>
+            <div id="cfgMcp" class="mcp-list"></div>
+            <span class="field-hint">Configured in .saturday/mcp.json</span>
+          </div>
+        </div>
+
+        <div class="set-pane" data-sec="about">
+          <div class="field">
+            <span class="field-label">Version</span>
+            <span class="field-static" id="aboutVersion"></span>
+          </div>
+          <div class="field">
+            <span class="field-label">Active provider</span>
+            <span class="field-static mono" id="aboutProvider"></span>
+          </div>
+          <div class="field">
+            <span class="field-label">Diagnostics</span>
+            <div class="path-row">
+              <span class="field-hint">Version, provider, safety mode and platform for bug reports</span>
+              <button id="btnDiag" class="mini-btn">copy</button>
+            </div>
+          </div>
+          <div class="field">
+            <span class="field-label">Usage (last 14 days, local only)</span>
+            <div id="usageDays" class="usage-days"></div>
+            <span class="field-hint" id="usageTotals"></span>
+            <span class="field-hint" id="usageMetrics"></span>
+          </div>
+          <p class="about-blurb">saturday — the auditable minimal harness. Local-first: sessions, projects and config never leave this machine; only model calls go to your chosen provider.</p>
+        </div>
+
+      </div>
+    </div>
+    <div class="modal-foot">
+      <span class="modal-warn hidden" id="settingsWarn"></span>
+      <button id="settingsSave" class="primary-btn">Save</button>
+    </div>
+  </div>
+</div>
+
+<div id="paletteOverlay" class="modal hidden">
+  <div class="palette">
+    <input id="paletteInput" type="text" placeholder="Search sessions, chat content, run a command&hellip;" spellcheck="false" autocomplete="off">
+    <div id="paletteList" class="palette-list" role="listbox"></div>
+    <div id="palSearch" class="palette-search hidden"></div>
+    <div class="palette-foot"><kbd>&uarr;</kbd><kbd>&darr;</kbd> navigate &middot; <kbd>Enter</kbd> run &middot; <kbd>Esc</kbd> close</div>
+  </div>
+</div>
+
+<div id="onboardModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="obTitle">
+  <div class="modal-card onboard-card">
+    <div class="modal-head">
+      <h2 id="obTitle">Welcome to Saturday</h2>
+    </div>
+    <div class="modal-body">
+      <p class="about-blurb">One setup step: pick a provider and paste its API key. The key is stored in your Saturday folder and never leaves this machine except to call the provider you chose.</p>
+      <label class="field">
+        <span class="field-label">Provider</span>
+        <select id="obProvider"></select>
+        <span class="field-hint" id="obHint"></span>
+      </label>
+      <label class="field">
+        <span class="field-label" id="obKeyLabel">API key</span>
+        <input id="obKey" type="password" spellcheck="false" autocomplete="off" placeholder="sk-...">
+      </label>
+      <label class="field">
+        <span class="field-label">Model (optional)</span>
+        <input id="obModel" type="text" class="mono" spellcheck="false" autocomplete="off" placeholder="provider default" list="obModels">
+        <datalist id="obModels"></datalist>
+        <span class="field-hint" id="obModelHint"></span>
+      </label>
+      <div id="obStatus" class="ob-status hidden"></div>
+    </div>
+    <div class="modal-foot">
+      <button id="obSkip" class="mini-btn">Later</button>
+      <span class="modal-warn hidden" id="obWarn"></span>
+      <button id="obSave" class="primary-btn">Test connection &amp; save</button>
+    </div>
+  </div>
+</div>
+
+<div id="shortcutsModal" class="modal hidden">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h2>Keyboard shortcuts</h2>
+      <button id="shortcutsClose" class="icon-btn" aria-label="Close">
+        <svg viewBox="0 0 24 24"><path d="M6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12 19 6.4 17.6 5 12 10.6z"/></svg>
+      </button>
+    </div>
+    <div class="modal-body shortcuts-grid">
+      <span><kbd>Ctrl</kbd> <kbd>N</kbd></span><span>New chat</span>
+      <span><kbd>Ctrl</kbd> <kbd>B</kbd></span><span>Toggle sidebar</span>
+      <span><kbd>Ctrl</kbd> <kbd>K</kbd></span><span>Command palette</span>
+      <span><kbd>Ctrl</kbd> <kbd>F</kbd></span><span>Find in chat</span>
+      <span><kbd>Ctrl</kbd> <kbd>M</kbd></span><span>Model menu</span>
+      <span><kbd>Alt</kbd> <kbd>M</kbd></span><span>Cycle favorite models</span>
+      <span><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>C</kbd></span><span>Context panel</span>
+      <span><kbd>Ctrl</kbd> <kbd>/</kbd></span><span>This overlay</span>
+      <span><kbd>Enter</kbd></span><span>Send message</span>
+      <span><kbd>Shift</kbd> <kbd>Enter</kbd></span><span>Newline in composer</span>
+      <span><kbd>/</kbd></span><span>Slash commands</span>
+      <span><kbd>Y</kbd> / <kbd>A</kbd> / <kbd>N</kbd></span><span>Answer pending approval</span>
+      <span><kbd>Esc</kbd></span><span>Close overlays</span>
+    </div>
+  </div>
+</div>
+
+<div id="projModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="projTitleH">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h2 id="projTitleH">Project</h2>
+      <button id="projClose" class="icon-btn" aria-label="Close">
+        <svg viewBox="0 0 24 24"><path d="M6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12 19 6.4 17.6 5 12 10.6z"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <label class="field">
+        <span class="field-label">Name</span>
+        <input id="projName" type="text" spellcheck="false" autocomplete="off" placeholder="acme-frontend">
+      </label>
+      <div class="field">
+        <span class="field-label">Color</span>
+        <div id="projColors" class="swatches">
+          <button data-c="" class="swatch none" title="default"></button>
+          <button data-c="red" class="swatch red" title="red"></button>
+          <button data-c="orange" class="swatch orange" title="orange"></button>
+          <button data-c="green" class="swatch green" title="green"></button>
+          <button data-c="cyan" class="swatch cyan" title="cyan"></button>
+          <button data-c="blue" class="swatch blue" title="blue"></button>
+          <button data-c="purple" class="swatch purple" title="purple"></button>
+          <button data-c="pink" class="swatch pink" title="pink"></button>
+        </div>
+      </div>
+      <label class="field">
+        <span class="field-label">Workspace folder</span>
+        <input id="projWs" type="text" class="mono" spellcheck="false" autocomplete="off" placeholder="(inherit global workspace)">
+        <span class="field-hint">Existing folder; this project's chats sandbox the agent here</span>
+      </label>
+      <div class="field">
+        <span class="field-label">Knowledge files</span>
+        <div id="projFiles" class="kfiles"></div>
+        <div class="kfile-add">
+          <input id="projFileInput" type="text" class="mono" spellcheck="false" autocomplete="off" placeholder="path to a text file on disk&hellip;">
+          <button id="projFileAdd" class="mini-btn">add</button>
+        </div>
+        <span class="field-hint">Injected into every chat in this project (max 12, 20 KB each)</span>
+      </div>
+      <div class="field">
+        <span class="field-label">Authorization scopes</span>
+        <label class="field scope-field">
+          <span class="scope-tier reserved">reserved &mdash; always ask, even with safety off</span>
+          <input id="projScopesReserved" type="text" class="mono" spellcheck="false" autocomplete="off" placeholder="e.g. shell, python">
+        </label>
+        <label class="field scope-field">
+          <span class="scope-tier approval">approval &mdash; ask on every use (in ask mode)</span>
+          <input id="projScopesApproval" type="text" class="mono" spellcheck="false" autocomplete="off" placeholder="e.g. pointer, keyboard">
+        </label>
+        <label class="field scope-field">
+          <span class="scope-tier autonomous">autonomous &mdash; never ask (deny mode + hardline still apply)</span>
+          <input id="projScopesAutonomous" type="text" class="mono" spellcheck="false" autocomplete="off" placeholder="e.g. read_file, ui_tree, screen, web_fetch">
+        </label>
+        <span class="field-hint">Comma-separated tool names; unlisted tools keep global behavior</span>
+      </div>
+      <div class="field">
+        <span class="field-label">Project instructions</span>
+        <textarea id="projInstr" class="persona" rows="5" placeholder="Scope, conventions, build/test commands&hellip;"></textarea>
+        <span class="field-hint">Merged into the persona for every chat in this project</span>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button id="projDelete" class="danger-btn hidden">Delete project</button>
+      <button id="projDup" class="mini-btn hidden">Duplicate</button>
+      <span class="modal-warn hidden" id="projWarn"></span>
+      <button id="projSave" class="primary-btn">Save</button>
+    </div>
+  </div>
+</div>
+
+<div id="ctxModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="ctxTitleH">
+  <div class="modal-card ctx-card">
+    <div class="modal-head">
+      <h2 id="ctxTitleH">Context</h2>
+      <button id="ctxClose" class="icon-btn" aria-label="Close">
+        <svg viewBox="0 0 24 24"><path d="M6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12 19 6.4 17.6 5 12 10.6z"/></svg>
+      </button>
+    </div>
+    <div class="modal-body ctx-body">
+      <div class="ctx-headline mono">
+        <span id="ctxTotal">&mdash;</span>
+        <span id="ctxBudget" class="dim"></span>
+      </div>
+      <div id="ctxBar" class="ctx-bar"></div>
+      <div class="ctx-scale mono"><span>0</span><span id="ctxCompactMark"></span><span id="ctxBudgetMark"></span></div>
+      <div id="ctxLegend" class="ctx-legend"></div>
+      <div class="ctx-actions">
+        <button id="ctxCompact" class="mini-btn">Compact now</button>
+        <span class="field-hint">digests older tool results and turns to shrink the context (same as /compact)</span>
+      </div>
+      <p class="field-hint">Estimated with a chars/4 heuristic; tool schemas count only in native function-calling mode. Compaction trims older turns automatically past the threshold.</p>
+    </div>
+  </div>
+</div>
+
+<div id="cmpModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="cmpTitleH">
+  <div class="modal-card ctx-card cmp-card">
+    <div class="modal-head">
+      <h2 id="cmpTitleH">Compare</h2>
+      <button id="cmpClose" class="icon-btn" aria-label="Close">
+        <svg viewBox="0 0 24 24"><path d="M6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12 19 6.4 17.6 5 12 10.6z"/></svg>
+      </button>
+    </div>
+    <div class="modal-body cmp-body">
+      <div id="cmpPath" class="cmp-path mono"></div>
+      <div id="cmpDiff" class="cmp-diff"></div>
+      <div class="ctx-actions">
+        <button id="cmpRestore" class="primary-btn">Restore this version</button>
+        <span class="field-hint">restores the journaled (pre-edit) content, journaling the current state first so this is repeatable</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="askModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="askTitle">
+  <div class="modal-card modal-card-sm">
+    <div class="modal-head">
+      <h2 id="askTitle">Confirm</h2>
+    </div>
+    <div class="modal-body">
+      <p id="askMsg" class="ask-msg hidden"></p>
+      <input id="askInput" class="hidden" type="text" spellcheck="false" autocomplete="off">
+    </div>
+    <div class="modal-foot">
+      <button id="askCancel" class="secondary-btn">Cancel</button>
+      <button id="askOk" class="primary-btn">OK</button>
+    </div>
+  </div>
+</div>
+
+<div id="lightbox" class="hidden" role="dialog" aria-label="Expanded image"><img alt="expanded view"></div>
+
+<div id="toasts" class="toasts" aria-live="polite"></div>
+
+<div id="trustModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="trustTitle">
+  <div class="modal-card trust-card">
+    <div class="modal-head trust-head">
+      <svg class="trust-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-1 14l-3-3 1.41-1.41L11 12.17l4.59-4.58L17 9l-6 6z"/>
+      </svg>
+      <h2 id="trustTitle">Do you trust the authors of this folder?</h2>
+    </div>
+    <div class="modal-body trust-body" id="trustBody">
+      <!-- populated by showTrustModal() -->
+    </div>
+    <div class="modal-foot trust-foot">
+      <div class="trust-foot-hint">You can change this decision at any time by running <code>saturday chat</code> in a terminal.</div>
+      <div class="trust-foot-actions">
+        <button id="trustDenyBtn" class="secondary-btn">Don't Trust</button>
+        <button id="trustApproveBtn" class="primary-btn">Trust Folder</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>

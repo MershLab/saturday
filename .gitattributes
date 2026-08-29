@@ -1,0 +1,14 @@
+# Normalize line endings: LF in the repo, native on checkout. Keeps Windows
+# checkouts clean and diffs stable across contributor platforms.
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.png binary
+*.ico binary
+*.icns binary
+*.zst binary
+*.exe binary
+*.dmg binary
+*.deb binary
+*.rpm binary
+*.whl binary
