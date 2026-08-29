@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.10", "3.12", "3.14"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install
+        run: pip install -e .[dev]
+      - name: Lint (target-version py310 catches syntax regressions)
+        run: python -m ruff check .
+      - name: Offline demo
+        run: python examples/offline_demo.py
+      - name: Doctor (offline harness check; a running provider is not required)
+        run: python -m saturday doctor --provider ollama --offline
+      - name: Tests
+        run: python -m pytest -q

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Saturday
+GenericName=Agentic AI Harness
+Comment=The auditable minimal AI agent — local-first, background computer use
+Exec=/usr/bin/saturday
+Icon=saturday
+Terminal=false
+Categories=Development;Utility;Office;
+Keywords=agent;ai;automation;assistant;
+StartupWMClass=Saturday

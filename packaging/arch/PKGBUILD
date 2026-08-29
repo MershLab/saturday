@@ -1,0 +1,22 @@
+# Maintainer: Saturday Labs
+#
+# Build: place saturday-<ver>-py3-none-any.whl next to this file (or let
+# makepkg pull the GitHub release artifact) and run `makepkg` on Arch Linux:
+#   pacman -S --needed base-devel python python-installer
+#   makepkg -s            (or: makepkg -fsi to install right away)
+pkgname=saturday
+pkgver=0.8.0
+pkgrel=1
+pkgdesc="Auditable zero-dependency agentic harness: run/chat/eval CLI + local web UI"
+arch=('any')
+url="https://github.com/saturdaylabs/saturday"
+license=('MIT')
+depends=('python')
+makedepends=('python' 'python-build' 'python-installer')
+source=("saturday-${pkgver}-py3-none-any.whl::https://github.com/saturdaylabs/saturday/releases/download/v${pkgver}/saturday-${pkgver}-py3-none-any.whl")
+# SKIP until the first GitHub release, then pin the real checksum.
+sha256sums=('SKIP')
+
+package() {
+  python -m installer --destdir="$pkgdir" "$srcdir/saturday-${pkgver}-py3-none-any.whl"
+}
