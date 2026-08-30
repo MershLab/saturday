@@ -52,7 +52,11 @@ fi
 if [ "$TARGET" = rpm ] || [ "$TARGET" = all ]; then
   if command -v rpmbuild >/dev/null 2>&1; then
     build_tree
-    RPMTOP="$STAGE/rpmbuild"
+    # rpm's own %files-checking resolves a relative _topdir inconsistently
+    # with the literal paths our shell commands use (it drops the repo-root
+    # prefix, so the buildroot it checks against isn't the one %install
+    # actually populated) — _topdir has to be absolute.
+    RPMTOP="$(pwd)/$STAGE/rpmbuild"
     rm -rf "$RPMTOP"; mkdir -p "$RPMTOP/BUILD" "$RPMTOP/RPMS" "$RPMTOP/SOURCES" "$RPMTOP/SPECS" "$RPMTOP/SRPMS"
     cat > "$RPMTOP/SPECS/saturday.spec" <<EOF
 Name:           saturday
