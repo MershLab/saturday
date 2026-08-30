@@ -1,13 +1,13 @@
 ; Saturday per-user Windows installer (NSIS 3)
 ; Build from the installer/ dir:
-;   makensis /DVERSION=0.8.0 saturday.nsi
+;   makensis /DVERSION=0.9.0 saturday.nsi
 ;   (CI passes the release version: makensis /DVERSION=1.2.3 saturday.nsi)
 ; Prereq: python -m PyInstaller saturday.spec --noconfirm  (produces dist\Saturday)
 
 ; Paths below are relative to this script's directory (installer/), so makensis
-; works from any CWD:  makensis -DVERSION=0.8.0 installer/saturday.nsi
+; works from any CWD:  makensis -DVERSION=0.9.0 installer/saturday.nsi
 !ifndef VERSION
-!define VERSION "0.8.0"
+!define VERSION "0.9.0"
 !endif
 
 !include "MUI2.nsh"
