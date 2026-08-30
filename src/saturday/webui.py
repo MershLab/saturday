@@ -2566,15 +2566,26 @@ def find_app_browser() -> str | None:
 
 
 def launch_app_window(url: str, width: int = 1220, height: int = 840) -> str | None:
-    """Open url in a chromeless app window; falls back to the default browser."""
+    """Open url in a chromeless app window; falls back to the default browser.
+
+    Uses its own --user-data-dir: without one, --app= against a browser
+    that's already running the user's regular profile gets redirected
+    through Chromium's single-instance IPC and opens as an ordinary tab in
+    their existing session instead of a separate window - the profile,
+    not the flag, is what Chromium keys the single-instance check on."""
     exe = find_app_browser()
     if exe is None:
         webbrowser.open(url)
         return None
+    from saturday.config import get_config_dir
+
+    profile_dir = get_config_dir() / "app-browser-profile"
+    profile_dir.mkdir(parents=True, exist_ok=True)
     argv = [
         exe,
         f"--app={url}",
         f"--window-size={width},{height}",
+        f"--user-data-dir={profile_dir}",
         "--new-window",
         "--no-first-run",
         "--no-default-browser-check",
