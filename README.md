@@ -156,6 +156,27 @@ saturday run --disable web,computer_use "summarize notes/"   # no network, no de
 
 Families: `web` (search+fetch) · `browser` · `computer_use` (pointer/keyboard/ui/screen) · `shell` · `python` · `file_writes` · `subagents` · `memory` · `external_agents`. In the app: Settings → Safety & approvals → Tool toggles. Per-session: `/toggle <name|family>` in chat; `/tools` shows what's active. Disabled tools are hidden from the model entirely — not just blocked after the fact.
 
+## Auto-delegation — spend the cheapest thing that works
+
+If you already pay for Claude Code, run models locally, and have a metered API
+key, Saturday can route work to the cheapest one that can actually do it:
+
+```sh
+saturday agents                          # what's installed, tier, success rate
+saturday agents --enable claude-code     # being installed is not permission to spend it
+```
+
+Then `external_agent` with `agent="auto"` picks cheapest-first and escalates a
+tier on failure. Tiers, cheapest first: **local** (Ollama) · **free** ·
+**subscription** (Claude Code, Cursor — already paid, so zero marginal cost) ·
+**metered** (per-token APIs). That third tier is the point: a subscription you
+already bought is often the *cheapest* place to send hard work, which a
+price-per-token router can't express.
+
+Quota is observed, not declared — a tier stays available until a real 429
+arrives, then backs off. Success rates are tracked per agent per task kind, so
+routing improves from what actually worked.
+
 ## Remote access
 
 Reach a running Saturday from your phone without opening a port:

@@ -840,6 +840,36 @@ def cmd_app(args: argparse.Namespace) -> int:
     )
 
 
+def cmd_agents(args: argparse.Namespace) -> int:
+    from saturday import routing
+
+    for name in (getattr(args, "enable", None) or []):
+        routing.set_enabled(name, True)
+        _print(f"enabled  {name}")
+    for name in (getattr(args, "disable", None) or []):
+        routing.set_enabled(name, False)
+        _print(f"disabled {name}")
+    if getattr(args, "enable", None) or getattr(args, "disable", None):
+        return 0
+
+    rows = routing.candidates(getattr(args, "task_kind", None) or "general")
+    if not rows:
+        _print("no agents known")
+        return 0
+    _print(f"{'AGENT':<14} {'TIER':<13} {'INSTALLED':<10} {'AUTO':<6} {'SUCCESS':<8} RUNS")
+    for c in rows:
+        success = f"{c.ema_success:.0%}" if c.n else "-"
+        _print(
+            f"{c.agent:<14} {routing.TIER_NAMES[c.tier]:<13} "
+            f"{'yes' if c.installed else 'no':<10} {'on' if c.enabled else 'off':<6} "
+            f"{success:<8} {c.n}"
+        )
+    if not any(c.enabled for c in rows):
+        _print("\nNothing is enabled for auto-delegation - being installed is not permission to")
+        _print("spend it. Turn one on: saturday agents --enable claude-code")
+    return 0
+
+
 def cmd_remote(args: argparse.Namespace) -> int:
     from saturday import remote as rmt
     from saturday.webui import serve as webui_serve
@@ -1263,6 +1293,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_chat.add_argument("--resume", metavar="SESSION_ID", help="continue a saved session")
     p_chat.add_argument("--yolo", action="store_true", help="fully autonomous: no approval prompts this session (/yolo toggles)")
     p_chat.set_defaults(fn=cmd_chat)
+
+    p_agents = sub.add_parser("agents", help="show external CLI agents, tiers, and auto-delegation state")
+    p_agents.add_argument("--enable", action="append", metavar="NAME", help="allow auto-delegation to this agent (repeatable)")
+    p_agents.add_argument("--disable", action="append", metavar="NAME", help="stop auto-delegating to this agent")
+    p_agents.add_argument("--task-kind", dest="task_kind", help="show success rates for this task category")
+    p_agents.set_defaults(fn=cmd_agents)
 
     p_remote = sub.add_parser("remote", help="reach this Saturday from your phone via a tunnel")
     common(p_remote)
