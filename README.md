@@ -166,6 +166,17 @@ saturday agents                          # what's installed, tier, success rate
 saturday agents --enable claude-code     # being installed is not permission to spend it
 ```
 
+Mix CLI agents and provider-backed models in `~/.saturday/agents.json` — a
+provider entry runs through Saturday itself, no binary needed, and a `:free`
+model is tiered accordingly:
+
+```json
+{
+  "free-glm": { "provider": "openrouter", "model": "z-ai/glm-5.2:free" },
+  "local":    { "provider": "ollama", "model": "llama3" }
+}
+```
+
 Then `external_agent` with `agent="auto"` picks cheapest-first and escalates a
 tier on failure. Tiers, cheapest first: **local** (Ollama) · **free** ·
 **subscription** (Claude Code, Cursor — already paid, so zero marginal cost) ·

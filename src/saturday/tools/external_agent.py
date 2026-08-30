@@ -27,6 +27,14 @@ class ExternalAgentSpec:
     binaries: tuple[str, ...]  # tried in order; first found wins
     install_hint: str
     build_argv: Callable[[str, str], list[str]]
+    # provider-backed agents run through Saturday itself instead of a binary
+    provider: str = ""
+    model: str = ""
+    tier: int | None = None
+
+    @property
+    def is_provider(self) -> bool:
+        return bool(self.provider)
 
 
 def _claude_code_argv(binary: str, prompt: str) -> list[str]:
@@ -43,6 +51,10 @@ def _cursor_argv(binary: str, prompt: str) -> list[str]:
 
 def _antigravity_argv(binary: str, prompt: str) -> list[str]:
     return [binary, "-p", prompt]
+
+
+def _opencode_argv(binary: str, prompt: str) -> list[str]:
+    return [binary, "run", prompt]
 
 
 AGENTS: dict[str, ExternalAgentSpec] = {
@@ -71,6 +83,12 @@ AGENTS: dict[str, ExternalAgentSpec] = {
         install_hint="curl -fsSL https://antigravity.google/cli/install.sh | bash",
         build_argv=_antigravity_argv,
     ),
+    "opencode": ExternalAgentSpec(
+        id="opencode",
+        binaries=("opencode",),
+        install_hint="curl -fsSL https://opencode.ai/install | bash",
+        build_argv=_opencode_argv,
+    ),
 }
 
 AGENTS["gemini"] = AGENTS["antigravity"]
@@ -98,6 +116,14 @@ def load_custom_agents() -> dict[str, ExternalAgentSpec]:
     out: dict[str, ExternalAgentSpec] = {}
     for name, cfg in raw.items():
         if not isinstance(cfg, dict):
+            continue
+        if cfg.get("provider"):
+            out[str(name)] = ExternalAgentSpec(
+                id=str(name), binaries=(), install_hint="",
+                build_argv=_templated_argv([]),
+                provider=str(cfg["provider"]), model=str(cfg.get("model") or ""),
+                tier=int(cfg["tier"]) if cfg.get("tier") is not None else None,
+            )
             continue
         binaries = cfg.get("binaries") or [name]
         if isinstance(binaries, str):
@@ -145,9 +171,11 @@ class ExternalAgentTool(Tool):
         "required": ["agent", "prompt"],
     }
 
-    def __init__(self, installer=None) -> None:
+    def __init__(self, installer=None, provider_runner=None) -> None:
         # injection point for tests; real default shells out for real
         self._installer = installer or self._default_install
+        # (provider, model, prompt) -> (ok, text); None disables provider-backed agents
+        self._provider_runner = provider_runner
         self._agents = all_agents()
         names = ["auto"] + list(self._agents)
         self.parameters = {**type(self).parameters}
@@ -207,6 +235,16 @@ class ExternalAgentTool(Tool):
 
     def _run_one(self, agent_id: str | None, args: dict) -> tuple[bool, str]:
         spec = self._agents.get(agent_id or "")
+        if spec is not None and spec.is_provider:
+            if self._provider_runner is None:
+                return False, f"{agent_id} is provider-backed but no runner is wired"
+            prompt = (args.get("prompt") or "").strip()
+            if not prompt:
+                return False, "prompt is required"
+            try:
+                return self._provider_runner(spec.provider, spec.model, prompt)
+            except Exception as exc:
+                return False, f"{agent_id} failed: {type(exc).__name__}: {exc}"
         if spec is None:
             return False, f"unknown agent {agent_id!r}; choose one of {['auto'] + list(self._agents)}"
         prompt = (args.get("prompt") or "").strip()

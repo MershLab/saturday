@@ -3063,7 +3063,7 @@ def test_pick_prefers_cheaper_tier(routed, monkeypatch):
 
     monkeypatch.setattr(ea.shutil, "which", lambda n: "/usr/bin/x")
     monkeypatch.setattr(routed, "tier_of",
-                        lambda a, o=None: routed.LOCAL if a == "codex" else routed.METERED)
+                        lambda a, o=None, spec=None: routed.LOCAL if a == "codex" else routed.METERED)
     routed.set_enabled("claude-code", True)
     routed.set_enabled("codex", True)
     assert routed.pick() == "codex"
@@ -3137,3 +3137,71 @@ def test_auto_with_nothing_enabled_explains_how_to_fix_it(routed, monkeypatch):
     monkeypatch.setattr(ea.shutil, "which", lambda n: "/usr/bin/x")
     ok, msg = ea.ExternalAgentTool().run({"agent": "auto", "prompt": "hi"})
     assert not ok and "saturday agents --enable" in msg
+
+
+def test_provider_backed_agent_needs_no_binary(routed, tmp_path):
+    """A provider entry routes through Saturday itself, so PATH is irrelevant."""
+    from saturday.tools import external_agent as ea
+
+    (tmp_path / "agents.json").write_text(json.dumps({
+        "free-glm": {"provider": "openrouter", "model": "z-ai/glm-5.2:free"},
+        "paid": {"provider": "deepseek", "model": "deepseek-chat"},
+    }))
+    agents = ea.all_agents()
+    assert agents["free-glm"].is_provider
+    # :free suffix is what marks a no-cost model
+    assert routed.tier_of("free-glm", None, agents["free-glm"]) == routed.FREE
+    assert routed.tier_of("paid", None, agents["paid"]) == routed.METERED
+
+    routed.set_enabled("free-glm", True)
+    assert routed.pick() == "free-glm"
+
+
+def test_provider_agent_runs_through_the_injected_runner(routed, tmp_path):
+    from saturday.tools import external_agent as ea
+
+    (tmp_path / "agents.json").write_text(json.dumps({
+        "free-glm": {"provider": "openrouter", "model": "z-ai/glm-5.2:free"}
+    }))
+    seen = {}
+
+    def runner(provider, model, prompt):
+        seen.update(provider=provider, model=model, prompt=prompt)
+        return True, "from provider"
+
+    ok, msg = ea.ExternalAgentTool(provider_runner=runner).run(
+        {"agent": "free-glm", "prompt": "hi"})
+    assert ok and msg == "from provider"
+    assert seen == {"provider": "openrouter", "model": "z-ai/glm-5.2:free", "prompt": "hi"}
+
+
+def test_provider_agent_without_runner_says_so(routed, tmp_path):
+    from saturday.tools import external_agent as ea
+
+    (tmp_path / "agents.json").write_text(json.dumps({"x": {"provider": "openrouter"}}))
+    ok, msg = ea.ExternalAgentTool().run({"agent": "x", "prompt": "hi"})
+    assert not ok and "no runner is wired" in msg
+
+
+def test_free_tier_429_backs_off_and_falls_through(routed, tmp_path, monkeypatch):
+    """Reproduces the real behaviour observed against OpenRouter's free tier:
+    a 429 marks the agent exhausted and the next tier serves the request."""
+    from saturday.tools import external_agent as ea
+
+    (tmp_path / "agents.json").write_text(json.dumps({
+        "free-glm": {"provider": "openrouter", "model": "z-ai/glm-5.2:free"}
+    }))
+    routed.set_enabled("free-glm", True)
+    routed.set_enabled("claude-code", True)
+    monkeypatch.setattr(ea.shutil, "which", lambda n: f"/usr/bin/{n}")
+    monkeypatch.setattr(ea.subprocess, "run", lambda argv, **k: type(
+        "R", (), {"returncode": 0, "stdout": "DELEGATED OK", "stderr": ""})())
+
+    def runner(provider, model, prompt):
+        return False, "HTTP Error 429: Too Many Requests"
+
+    ok, msg = ea.ExternalAgentTool(provider_runner=runner).run(
+        {"agent": "auto", "prompt": "hi", "task_kind": "smoke"})
+    assert ok and msg == "DELEGATED OK"
+    assert routed.quota_exhausted("free-glm")
+    assert routed.pick("smoke") == "claude-code"
