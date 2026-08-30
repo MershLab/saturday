@@ -4,6 +4,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent))
 
 
@@ -50,6 +52,7 @@ CANNED_SCAN = [
 ]
 
 
+@pytest.mark.skipif(not sys.platform.startswith("win"), reason="tests the Windows PowerShell-runner implementation")
 def test_ui_tree_parses_canned_scan_and_stores_landmarks():
     store = LandmarkStore()
     tool = UiTreeTool(landmarks=store, runner=lambda script, timeout=25.0: (0, __import__("json").dumps(CANNED_SCAN), ""))
@@ -63,6 +66,7 @@ def test_ui_tree_parses_canned_scan_and_stores_landmarks():
     assert any("center=(745,575)" in line for line in tree.splitlines())
 
 
+@pytest.mark.skipif(not sys.platform.startswith("win"), reason="tests the Windows PowerShell-runner implementation")
 def test_ui_tree_failure_reports_stderr():
     tool = UiTreeTool(runner=lambda script, timeout=25.0: (1, "", "boom details"))
     ok, err = tool.run({})
@@ -73,6 +77,7 @@ def _fake_ps_ok(script, timeout=20.0):
     return 0, "", ""
 
 
+@pytest.mark.skipif(not sys.platform.startswith("win"), reason="tests the Windows PowerShell-runner implementation")
 def test_pointer_validation_and_execution():
     store = LandmarkStore()
     store.add("Save", 745, 575, "Button")
@@ -133,6 +138,7 @@ def test_pointer_gated_by_safety():
     assert approved == ["double_click target=save"], "signature should use stable target names"
 
 
+@pytest.mark.skipif(not sys.platform.startswith("win"), reason="tests the Windows PowerShell-runner implementation")
 def test_pointer_middle_click_scripts():
     calls: list[str] = []
     tool = PointerTool(landmarks=LandmarkStore(), runner=lambda s, timeout=20.0: calls.append(s) or (0, "", ""))
@@ -143,6 +149,7 @@ def test_pointer_middle_click_scripts():
     assert "mouse_event(64,0,0,0,0)" in calls[0]
 
 
+@pytest.mark.skipif(not sys.platform.startswith("win"), reason="tests the Windows PowerShell-runner implementation")
 def test_window_close_posts_wm_close():
     scripts: list[str] = []
 
@@ -158,6 +165,7 @@ def test_window_close_posts_wm_close():
     assert "PostMessage" in scripts[-1] and "0x0010" in scripts[-1]
 
 
+@pytest.mark.skipif(not sys.platform.startswith("win"), reason="screen capture fallback is Windows-only")
 def test_screen_display_captures_specific_monitor(tmp_path, monkeypatch):
     import re
 

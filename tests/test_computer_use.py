@@ -4,6 +4,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent))
 
 from saturday.prompts.system import build_system_prompt_parts  # noqa: E402
@@ -31,6 +33,7 @@ def test_parse_combo_modifiers_and_keys():
         parse_combo("+")
 
 
+@pytest.mark.skipif(not sys.platform.startswith("win"), reason="tests the Windows PowerShell-runner implementation")
 def test_keyboard_tool_scripts(tmp_path):
     calls: list[str] = []
 
@@ -58,6 +61,7 @@ def test_keyboard_tool_scripts(tmp_path):
     assert not ok
 
 
+@pytest.mark.skipif(not sys.platform.startswith("win"), reason="tests the Windows PowerShell-runner implementation")
 def test_window_list_focus_and_pick():
     calls: list[str] = []
 
@@ -84,6 +88,7 @@ def test_window_list_focus_and_pick():
     assert WindowTool.pick(["Aa B", "Ab C"], "aa") == "Aa B"
 
 
+@pytest.mark.skipif(not sys.platform.startswith("win"), reason="tests the Windows PowerShell-runner implementation")
 def test_clipboard_roundtrip_scripts():
     calls: list[str] = []
 
@@ -155,6 +160,7 @@ def test_new_desktop_tools_gated_like_pointer():
     assert approved == ["key Ctrl+S"], "stable signature for combos"
 
 
+@pytest.mark.skipif(not sys.platform.startswith("win"), reason="tests the Windows PowerShell-runner implementation")
 def test_app_open_tool_and_gating():
     from saturday.tools.spatial import AppOpenTool, ps_app_open_script
 
@@ -188,6 +194,7 @@ def test_app_open_tool_and_gating():
     assert hook("app_open", {"target": "calc"}) is None, "app_open is the designated bg launcher"
 
 
+@pytest.mark.skipif(not sys.platform.startswith("win"), reason="live Windows integration test: real powershell/notepad.exe/taskkill")
 def test_app_open_live_focus_preserved():
     import ctypes
     import subprocess as sp

@@ -35,6 +35,7 @@ def fake_runner(responses):
 # ------------------------------------------------------------------ pointer
 
 
+@pytest.mark.skipif(not sys.platform.startswith("win"), reason="background delivery requires Windows")
 def test_pointer_background_click_posts_to_window():
     runner = fake_runner([WIN_LIST, "ok"])
     tool = PointerTool(runner=runner)
@@ -49,6 +50,7 @@ def test_pointer_background_click_posts_to_window():
     assert "PostMessageW" in post_script
 
 
+@pytest.mark.skipif(not sys.platform.startswith("win"), reason="background delivery requires Windows")
 def test_pointer_background_double_click_and_scroll():
     runner = fake_runner([WIN_LIST, "ok", WIN_LIST, "ok"])
     tool = PointerTool(runner=runner)
@@ -62,6 +64,7 @@ def test_pointer_background_double_click_and_scroll():
     assert "0x20A" in scroll and "360 -shl 16" in scroll
 
 
+@pytest.mark.skipif(not sys.platform.startswith("win"), reason="background delivery requires Windows")
 def test_pointer_background_drag_interpolates():
     runner = fake_runner([WIN_LIST, "ok"])
     tool = PointerTool(runner=runner)
@@ -72,6 +75,7 @@ def test_pointer_background_drag_interpolates():
     assert script.count("TargetAt") >= 13, "down + interpolated moves + up"
 
 
+@pytest.mark.skipif(not sys.platform.startswith("win"), reason="background delivery requires Windows")
 def test_pointer_background_unknown_window_and_move_rejected():
     tool = PointerTool(runner=fake_runner([""]))
     ok, msg = tool.run({"action": "click", "x": 1, "y": 1, "window": "ghost app"})
@@ -81,6 +85,7 @@ def test_pointer_background_unknown_window_and_move_rejected():
     assert not ok and "no meaning in background" in msg
 
 
+@pytest.mark.skipif(not sys.platform.startswith("win"), reason="tests the Windows PowerShell-runner implementation")
 def test_pointer_foreground_unchanged_without_window():
     runner = fake_runner(["ok"])
     tool = PointerTool(runner=runner)
@@ -89,6 +94,7 @@ def test_pointer_foreground_unchanged_without_window():
     assert "SetCursorPos" in runner.calls[0] and "PostMessageW" not in runner.calls[0]
 
 
+@pytest.mark.skipif(not sys.platform.startswith("win"), reason="background delivery requires Windows")
 def test_pointer_background_uses_landmarks():
     store = LandmarkStore()
     store.add("save", 250, 350, "Button")
@@ -105,6 +111,7 @@ from saturday.tools.spatial import LandmarkStore  # noqa: E402
 # ----------------------------------------------------------------- keyboard
 
 
+@pytest.mark.skipif(not sys.platform.startswith("win"), reason="background delivery requires Windows")
 def test_keyboard_background_type_posts_wm_char():
     runner = fake_runner([WIN_LIST, "ok"])
     tool = KeyboardTool(runner=runner)
@@ -116,6 +123,7 @@ def test_keyboard_background_type_posts_wm_char():
     assert "[IntPtr]13" in script, "newline becomes Enter via WM_CHAR"
 
 
+@pytest.mark.skipif(not sys.platform.startswith("win"), reason="background delivery requires Windows")
 def test_keyboard_background_key_combo():
     runner = fake_runner([WIN_LIST, "ok"])
     tool = KeyboardTool(runner=runner)
@@ -125,12 +133,14 @@ def test_keyboard_background_key_combo():
     assert "0x100" in script and "0x101" in script and "[IntPtr]13" in script
 
 
+@pytest.mark.skipif(not sys.platform.startswith("win"), reason="background delivery requires Windows")
 def test_keyboard_background_unknown_window():
     tool = KeyboardTool(runner=fake_runner([""]))
     ok, msg = tool.run({"action": "type", "text": "x", "window": "nope"})
     assert not ok and "no visible window matching" in msg
 
 
+@pytest.mark.skipif(not sys.platform.startswith("win"), reason="tests the Windows PowerShell-runner implementation")
 def test_keyboard_foreground_unchanged_without_window():
     runner = fake_runner(["ok"])
     tool = KeyboardTool(runner=runner)

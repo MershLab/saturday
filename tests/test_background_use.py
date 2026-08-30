@@ -4,6 +4,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent))
 
 
@@ -34,6 +36,7 @@ def test_ui_invoke_script_patterns_and_window_scope():
         assert marker in ps_ui_invoke_script("w", "x", "", 0, act, "")
 
 
+@pytest.mark.skipif(not sys.platform.startswith("win"), reason="ui_invoke requires Windows (UI Automation)")
 def test_ui_invoke_tool_runs_and_reports_match():
     def runner(script, timeout=30.0):
         assert isinstance(script, str)
