@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "saturday"
-version = "0.8.0"
+version = "0.9.0"
 description = "Saturday - a SOTA open agentic harness distilled from DeepSeek (R1/V3) research and Hermes agent patterns. Zero-dependency core; optional MCP/browser/vision/gateway surfaces."
 readme = "README.md"
 requires-python = ">=3.10"

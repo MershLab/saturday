@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+## 0.9.0 — launch hardening, competitive-parity UI, test suite consolidation
+
+### Fixed
+- **False CPython 3.14 xfail in the safety regex canary test**: the xfail's stated
+  reason was wrong, the canary pattern could never match on any Python version, not
+  just 3.14. Replaced with real parametrized tests against the production
+  `check_command()` dangerous-command detector; confirmed the real production
+  pattern has no analogous defect.
+- **Duplicate `tool_start` events**: two real concurrency bugs, `AppServer` was
+  mutating shared class-level `Handler` state instead of per-instance state, and
+  the event bus's subscribe/replay sequence had a window where a publish could be
+  delivered twice. Fixed with a per-instance `Handler` subclass and an atomic
+  `EventBus.subscribe_with_replay()`.
+- **Keyboard text chunking on macOS/Linux**: `KeyboardTool` was shelling out to
+  `xdotool` with the entire typed string as one unchunked argument, ignoring the
+  injected runner entirely. Long text could hit the OS `ARG_MAX` limit in
+  production. Now chunks consistently with the existing Windows path.
+- **Wrong `saturdaylabs` org references**: the OpenRouter `HTTP-Referer`
+  attribution header and the `pyproject.toml` authors field pointed at a
+  nonexistent org, left over from before the move to MershLab.
+
+### Internal
+- **Test suite consolidated from 78 files to 8**, organized by subject
+  (`test_safety`, `test_agent_core`, `test_providers`, `test_tools`,
+  `test_webui`, `test_cli`, `test_scheduling`, `test_eval`), replacing a set of
+  files named after development rounds/review passes rather than what they
+  tested. Same test coverage preserved and verified by exact test ID across the
+  reorg, `ruff check` clean.
+
 ### UI fix
 - **Settings search box no longer changes shape between tabs**: the
   `.settings-body` grid used two auto-sized rows, so the default
