@@ -173,7 +173,17 @@ every request. `cloudflared` needs no account (TLS terminates at their edge);
 
 ## Tools
 
-`shell` (+background jobs) · `read_file` · `write_file` · `edit_file` · `list_dir` · `glob` · `grep` · `python` (persistent REPL) · `web_fetch` · `todo` · `create/get/update_goal` · `job_list/output/kill` · `task` (subagents) · `external_agent` (delegate to an installed claude-code/codex/cursor/antigravity CLI)
+`shell` (+background jobs) · `read_file` · `write_file` · `edit_file` · `list_dir` · `glob` · `grep` · `python` (persistent REPL) · `web_fetch` · `todo` · `create/get/update_goal` · `job_list/output/kill` · `task` (subagents) · `external_agent` (delegate to an installed claude-code/codex/cursor/antigravity CLI — or any other, see below)
+
+Wire up any CLI agent yourself in `~/.saturday/agents.json`; a name matching a
+built-in overrides it, so a stale entry is yours to fix without waiting on us:
+
+```json
+{
+  "kimi":   { "binaries": ["kimi"], "args": ["--prompt", "{prompt}"], "install_hint": "..." },
+  "aider":  { "args": ["--message", "{prompt}"] }
+}
+```
 
 Workspace paths are sandboxed against escaping the root. Extend via plugins:
 
