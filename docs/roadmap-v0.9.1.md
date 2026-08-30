@@ -1,8 +1,9 @@
-# Roadmap toward v1.0
+# Roadmap toward v0.9.1
 
 Living list, updated as items land or scope changes. Sectioned by where an
 item came from so it stays traceable back to the actual decision, not just
-a flat backlog.
+a flat backlog. This is a lot of ground for one point release — expect it
+to get trimmed/resequenced, not built end to end in one pass.
 
 ## Carried over, still pending
 
