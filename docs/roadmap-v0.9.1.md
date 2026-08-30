@@ -63,15 +63,16 @@ the sections above.
 
 ### Reliability under no supervision
 
-- [ ] **Crash and session recovery.** An ungracefully-killed run currently
-      just leaves a session in whatever state it was in. Needs: detection
-      of orphaned/incomplete sessions on next startup, a recovery path that
-      resumes or cleanly closes them, and a "lost and found" listing so
-      nothing silently vanishes.
-- [ ] **Heartbeat / liveness signal.** No way today to check "is my
-      unattended run still alive and making progress" without tailing logs.
-      A simple liveness file or status endpoint, checked by `doctor` and
-      exposed to the web UI.
+- [x] **Crash and session recovery.** Landed: `RunState` marker per session
+      (status/pid/heartbeat), wired into `cmd_run`, the schedule watch loop,
+      and the gateway dispatcher. A present marker with status=running and
+      a dead pid is the crash signal, detected via `RunState.scan()`. Resume
+      itself already existed (`chat --resume`); this is the detection layer
+      that tells you which sessions need it.
+- [x] **Heartbeat / liveness signal.** Same `RunState` marker's heartbeat
+      field, refreshed on every tool-call via `on_tool_result`. Surfaced in
+      `doctor` (orphaned-run listing + active-run count). Web UI Runs-tab
+      surfacing still open — doctor covers the CLI/automation case for now.
 - [ ] **Resource limiting.** No CPU/memory/wall-clock caps for a run left
       unattended. An autonomous agent that can run away with resources on
       a shared or cloud box is a real operational risk, not a hypothetical
