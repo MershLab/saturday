@@ -1814,3 +1814,68 @@ def test_sessions_search_no_matches(tmp_path, monkeypatch, capsys):
     assert cli.cmd_sessions(args) == 0
     assert "no matches" in capsys.readouterr().out
 
+
+
+# ---- saturday models ------------------------------------------------------
+
+
+def test_is_free_model_rules():
+    from saturday.cli import _is_free_model
+
+    assert _is_free_model("openrouter", "z-ai/glm-5.2:free")
+    assert not _is_free_model("openrouter", "z-ai/glm-5.2")
+    assert _is_free_model("ollama", "llama3")  # local is always free
+
+
+def test_models_lists_only_reachable_providers(monkeypatch, capsys):
+    import saturday.cli as cli
+
+    def fake_probe(name, timeout):
+        if name == "openrouter":
+            return name, True, "ok", ["a/b:free", "c/d"]
+        return name, False, "no key", []
+
+    monkeypatch.setattr(cli, "_probe_provider", fake_probe)
+    monkeypatch.setattr("saturday.utils.env.load_env_file", lambda p: None)
+    args = Namespace(provider=None, free=False, add_free=False, json_out=False, timeout=1.0, env=None)
+    assert cli.cmd_models(args) == 0
+    out = capsys.readouterr().out
+    assert "openrouter - 2 models  (1 free)" in out
+    assert "a/b:free [free]" in out
+    assert "deepseek" not in out  # unreachable providers stay quiet
+
+
+def test_models_free_filter_and_json(monkeypatch, capsys):
+    import saturday.cli as cli
+
+    monkeypatch.setattr(cli, "_probe_provider",
+                        lambda n, t: (n, n == "openrouter", "ok", ["a/b:free", "c/d"]))
+    monkeypatch.setattr("saturday.utils.env.load_env_file", lambda p: None)
+    args = Namespace(provider=None, free=True, add_free=False, json_out=True, timeout=1.0, env=None)
+    assert cli.cmd_models(args) == 0
+    assert json.loads(capsys.readouterr().out) == {"openrouter": ["a/b:free"]}
+
+
+def test_add_free_writes_agents_json_and_is_idempotent(tmp_path, monkeypatch):
+    import saturday.cli as cli
+    import saturday.config as cfgmod
+
+    monkeypatch.setattr(cfgmod, "CONFIG_DIR", tmp_path)
+    found = {"openrouter": ["z-ai/glm-5.2:free", "paid/model"]}
+    added = cli._add_free_to_agents(found)
+    assert added == ["free-z-ai-glm-5-2"]
+    written = json.loads((tmp_path / "agents.json").read_text())
+    assert written["free-z-ai-glm-5-2"] == {"provider": "openrouter", "model": "z-ai/glm-5.2:free"}
+    assert "paid/model" not in json.dumps(written)
+    assert cli._add_free_to_agents(found) == []  # second run adds nothing
+
+
+def test_add_free_preserves_existing_entries(tmp_path, monkeypatch):
+    import saturday.cli as cli
+    import saturday.config as cfgmod
+
+    monkeypatch.setattr(cfgmod, "CONFIG_DIR", tmp_path)
+    (tmp_path / "agents.json").write_text(json.dumps({"mine": {"binaries": ["x"]}}))
+    cli._add_free_to_agents({"openrouter": ["a/b:free"]})
+    written = json.loads((tmp_path / "agents.json").read_text())
+    assert "mine" in written and "free-a-b" in written

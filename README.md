@@ -156,6 +156,14 @@ saturday run --disable web,computer_use "summarize notes/"   # no network, no de
 
 Families: `web` (search+fetch) · `browser` · `computer_use` (pointer/keyboard/ui/screen) · `shell` · `python` · `file_writes` · `subagents` · `memory` · `external_agents`. In the app: Settings → Safety & approvals → Tool toggles. Per-session: `/toggle <name|family>` in chat; `/tools` shows what's active. Disabled tools are hidden from the model entirely — not just blocked after the fact.
 
+## Discovering what you can actually run
+
+```sh
+saturday models                 # every model reachable with the keys you have
+saturday models --free          # only the ones that cost nothing
+saturday models --add-free      # wire those into auto-delegation
+```
+
 ## Auto-delegation — spend the cheapest thing that works
 
 If you already pay for Claude Code, run models locally, and have a metered API

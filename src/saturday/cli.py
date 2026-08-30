@@ -4,6 +4,7 @@ import argparse
 import hmac
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -840,6 +841,104 @@ def cmd_app(args: argparse.Namespace) -> int:
     )
 
 
+def _probe_provider(name: str, timeout: float) -> tuple[str, bool, str, list[str]]:
+    from saturday.llm.probe import probe_connection
+
+    profile = PROVIDERS[name]
+    key = profile.resolve_api_key()
+    if not key and name not in ("ollama", "vllm"):
+        return name, False, "no key", []
+    ok, detail, models = probe_connection(profile, key, timeout=timeout)
+    return name, ok, detail, models
+
+
+def _is_free_model(provider: str, model: str) -> bool:
+    return provider in ("ollama", "vllm") or model.endswith(":free")
+
+
+def cmd_models(args: argparse.Namespace) -> int:
+    """List models actually reachable with the keys you have configured."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from saturday.utils.env import load_env_file
+
+    load_env_file(getattr(args, "env", None))
+
+    wanted = [args.provider] if getattr(args, "provider", None) else list(PROVIDERS)
+    if getattr(args, "provider", None) and args.provider not in PROVIDERS:
+        _print(f"unknown provider {args.provider!r}; choose one of {sorted(PROVIDERS)}")
+        return 1
+
+    timeout = float(getattr(args, "timeout", None) or 8.0)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(lambda n: _probe_provider(n, timeout), wanted))
+
+    only_free = bool(getattr(args, "free", False))
+    found: dict[str, list[str]] = {}
+    for name, ok, detail, models in results:
+        if not ok:
+            if getattr(args, "provider", None):
+                _print(f"{name}: {detail}")
+            continue
+        picked = [m for m in models if not only_free or _is_free_model(name, m)]
+        if picked:
+            found[name] = sorted(picked)
+
+    if getattr(args, "json_out", False):
+        _print(json.dumps(found, indent=2))
+        return 0
+
+    if not found:
+        _print("no free models found" if only_free else "no reachable providers - run `saturday setup`")
+        return 0
+
+    total = 0
+    for name, models in sorted(found.items()):
+        free_n = sum(1 for m in models if _is_free_model(name, m))
+        suffix = f"  ({free_n} free)" if free_n and not only_free else ""
+        _print(f"\n{name} - {len(models)} model{'s' if len(models) != 1 else ''}{suffix}")
+        for m in models:
+            mark = " [free]" if _is_free_model(name, m) and not only_free else ""
+            _print(f"  {m}{mark}")
+        total += len(models)
+
+    if getattr(args, "add_free", False):
+        added = _add_free_to_agents(found)
+        _print(f"\nadded {len(added)} free model(s) to agents.json: {', '.join(added) or '(none new)'}")
+        _print("enable them for auto-delegation: saturday agents --enable <name>")
+    elif not only_free and any(_is_free_model(n, m) for n, ms in found.items() for m in ms):
+        _print("\n`saturday models --free` to list only free ones, `--add-free` to wire them up")
+    return 0
+
+
+def _add_free_to_agents(found: dict[str, list[str]]) -> list[str]:
+    """Write free models into agents.json so auto-delegation can reach them."""
+    from saturday.config import get_config_dir
+
+    path = get_config_dir() / "agents.json"
+    try:
+        existing = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    except (OSError, json.JSONDecodeError):
+        existing = {}
+    if not isinstance(existing, dict):
+        existing = {}
+
+    added = []
+    for provider, models in found.items():
+        for model in models:
+            if not _is_free_model(provider, model):
+                continue
+            name = "free-" + re.sub(r"[^a-z0-9]+", "-", model.lower().replace(":free", "")).strip("-")[:40]
+            if name in existing:
+                continue
+            existing[name] = {"provider": provider, "model": model}
+            added.append(name)
+    if added:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+    return added
+
+
 def cmd_agents(args: argparse.Namespace) -> int:
     from saturday import routing
 
@@ -856,12 +955,13 @@ def cmd_agents(args: argparse.Namespace) -> int:
     if not rows:
         _print("no agents known")
         return 0
-    _print(f"{'AGENT':<14} {'TIER':<13} {'INSTALLED':<10} {'AUTO':<6} {'SUCCESS':<8} RUNS")
+    w = max(len(c.agent) for c in rows) + 2
+    _print(f"{'AGENT':<{w}} {'TIER':<13} {'READY':<6} {'AUTO':<5} {'SUCCESS':<8} RUNS")
     for c in rows:
         success = f"{c.ema_success:.0%}" if c.n else "-"
         _print(
-            f"{c.agent:<14} {routing.TIER_NAMES[c.tier]:<13} "
-            f"{'yes' if c.installed else 'no':<10} {'on' if c.enabled else 'off':<6} "
+            f"{c.agent:<{w}} {routing.TIER_NAMES[c.tier]:<13} "
+            f"{'yes' if c.installed else 'no':<6} {'on' if c.enabled else 'off':<5} "
             f"{success:<8} {c.n}"
         )
     if not any(c.enabled for c in rows):
@@ -1293,6 +1393,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_chat.add_argument("--resume", metavar="SESSION_ID", help="continue a saved session")
     p_chat.add_argument("--yolo", action="store_true", help="fully autonomous: no approval prompts this session (/yolo toggles)")
     p_chat.set_defaults(fn=cmd_chat)
+
+    p_models = sub.add_parser("models", help="list models reachable with your configured keys")
+    p_models.add_argument("--provider", help="probe just this provider")
+    p_models.add_argument("--free", action="store_true", help="only models that cost nothing")
+    p_models.add_argument("--add-free", dest="add_free", action="store_true", help="add free models to agents.json for auto-delegation")
+    p_models.add_argument("--json", dest="json_out", action="store_true", help="machine-readable output")
+    p_models.add_argument("--timeout", type=float, default=8.0)
+    p_models.set_defaults(fn=cmd_models)
 
     p_agents = sub.add_parser("agents", help="show external CLI agents, tiers, and auto-delegation state")
     p_agents.add_argument("--enable", action="append", metavar="NAME", help="allow auto-delegation to this agent (repeatable)")
