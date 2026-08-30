@@ -1478,19 +1478,22 @@ class Handler(BaseHTTPRequestHandler):
             }
         )
 
-    def _pump_bus(self, rt: _SessionRuntime, q: Queue, replay_from: int | None = None, first_event: dict | None = None) -> None:
+    def _pump_bus(self, rt: _SessionRuntime, q: Queue, replay: list[dict] | None = None, first_event: dict | None = None) -> None:
         """Stream bus events to the client until the turn finishes.
 
-        replay_from=None skips the buffer (live-only tail); an int replays all
-        buffered events with _seq > replay_from first (used by chat POSTs to
-        cover events published before this subscriber attached). first_event is
-        written right after the response headers (per-response hello).
+        replay is the (already-fetched) list of buffered events to send before
+        switching to the live queue — fetched via bus.subscribe_with_replay()
+        so the snapshot and the queue subscription are atomic; a separate
+        subscribe() + bus.replay() pair racing a fast publish() would double
+        deliver one event (once from the replay snapshot, once from the live
+        queue). first_event is written right after the response headers
+        (per-response hello).
         """
         self._begin_stream()
         if first_event is not None and not self._stream_line(first_event):
             return
-        if replay_from is not None:
-            for evt in rt.bus.replay(replay_from):
+        if replay:
+            for evt in replay:
                 if not self._stream_line(evt):
                     return
         while True:
@@ -1525,9 +1528,9 @@ class Handler(BaseHTTPRequestHandler):
             # replay only while a run is actually live; a stale run_start_seq
             # from a finished turn must never re-send a completed exchange
             replay_from = getattr(rt, "run_start_seq", None) if rt.busy else None
-        q = rt.bus.subscribe()
+        q, replay = rt.bus.subscribe_with_replay(replay_from)
         try:
-            self._pump_bus(rt, q, replay_from=replay_from, first_event=first_event)
+            self._pump_bus(rt, q, replay=replay, first_event=first_event)
         finally:
             rt.bus.unsubscribe(q)
 
@@ -2372,9 +2375,15 @@ class Handler(BaseHTTPRequestHandler):
         # (user switched sessions mid-run) can replay exactly the live turn
         rt.run_start_seq = start_seq
         rt.bus.publish({"t": "user", "text": text, "images": len(image_paths) + len(rt.pending_images), "sid": rt.sid})
+        # Subscribe (and snapshot the replay) BEFORE starting the worker: the
+        # worker can publish its first tool_start almost immediately (no real
+        # network latency against a fast/local provider), and subscribing
+        # after worker.start() raced that publish against this thread reaching
+        # subscribe()/replay() — landing the same event in both the replay
+        # snapshot and the live queue and double-delivering it to the client.
+        q, replay = rt.bus.subscribe_with_replay(start_seq)
         worker = threading.Thread(target=_run_chat, args=(app, rt, text, image_paths), daemon=True)
         worker.start()
-        q = rt.bus.subscribe()
         try:
             hello = {
                 "t": "hello",
@@ -2383,7 +2392,7 @@ class Handler(BaseHTTPRequestHandler):
                 "model": snap["model"],
                 "project": rt.project_id or "",
             }
-            self._pump_bus(rt, q, replay_from=start_seq, first_event=hello)
+            self._pump_bus(rt, q, replay=replay, first_event=hello)
         finally:
             rt.bus.unsubscribe(q)
 
@@ -2468,18 +2477,25 @@ class AppServer(ThreadingHTTPServer):
             raise
 
     def __init__(self, address, app: AppState, token: str = "") -> None:
-        super().__init__(address, Handler)
+        # A dedicated Handler subclass per AppServer instance: the base
+        # Handler's app/token/allowed_hosts/allowed_origins are class
+        # attributes, and two AppServer instances alive in the same process
+        # (a slow-to-close prior instance racing a new one, routine in tests)
+        # would otherwise clobber each other's injected state for any
+        # in-flight request on the older server.
+        handler_cls = type(f"Handler_{id(self):x}", (Handler,), {})
+        super().__init__(address, handler_cls)
         from saturday.utils.httpd import allowed_hosts, allowed_origins
 
         self.app = app
-        Handler.app = app
-        Handler.token = token
+        handler_cls.app = app
+        handler_cls.token = token
         self.token = token
         bound_host, bound_port = self.server_address[:2]
         # pin Host/Origin to the bound loopback (or bind) address so a rebinding
         # domain or a hostile web page can never reach the API
-        Handler.allowed_hosts = allowed_hosts(bound_host, bound_port)
-        Handler.allowed_origins = allowed_origins(Handler.allowed_hosts)
+        handler_cls.allowed_hosts = allowed_hosts(bound_host, bound_port)
+        handler_cls.allowed_origins = allowed_origins(handler_cls.allowed_hosts)
 
 
 # ---------------------------------------------------------------------------
