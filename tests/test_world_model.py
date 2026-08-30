@@ -7,6 +7,8 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent))
 
 from fakes import make_scripted_model  # noqa: E402
@@ -53,6 +55,7 @@ def test_state_cache_frame_dedupe(tmp_path):
 # -- ui_tree delta mode --------------------------------------------------------
 
 
+@pytest.mark.skipif(not sys.platform.startswith("win"), reason="tests the Windows PowerShell-runner implementation")
 def test_ui_tree_delta_mode_with_fake_runner():
     a = [el("Button", "Save", 10, 10), el("Button", "OK", 50, 50)]
     b = [el("Button", "Save", 10, 10), el("Button", "Cancel", 30, 30)]
