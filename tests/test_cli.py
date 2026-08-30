@@ -1636,3 +1636,93 @@ def test_fallback_models_string_splits_into_list_on_load(tmp_path, monkeypatch):
     cfg = AgentConfig.load({"fallback_models": "gpt-4o, claude-3-5-sonnet ,  "})
     assert cfg.fallback_models == ["gpt-4o", "claude-3-5-sonnet"]
 
+
+# ---- cost budget + data-policy guardrails ---------------------------------
+
+
+def test_cost_budget_stop_aborts_run_with_cost_budget_reason():
+    from saturday.types import Usage
+
+    base = make_scripted_model([{"tool_calls": [{"name": "noop", "arguments": {}}]} for _ in range(20)])
+    orig_chat = base.chat
+
+    def chat_with_usage(messages, **kwargs):
+        resp = orig_chat(messages, **kwargs)
+        resp.message.usage = Usage(prompt_tokens=600, completion_tokens=50, total_tokens=650)
+        return resp
+
+    base.chat = chat_with_usage
+
+    class Noop:
+        name = "noop"
+        description = "n"
+        parameters = {"type": "object", "properties": {}, "required": []}
+
+        def run(self, args):
+            return True, "ok"
+
+    reg = ToolRegistry()
+    reg.register(Noop())
+    # deepseek-chat is real-priced in usage.py's list (0.27, 1.10) per
+    # million tokens; ~$0.000217/turn. Same identical-tool-call shape as
+    # test_budget_stop_aborts_run_with_budget_reason, so this needs to trip
+    # by the same turn (~4) or the stall detector wins the race instead.
+    loop = AgentLoop(base, reg, max_steps=20, max_run_cost_usd=0.0006, cost_provider="deepseek", cost_model="deepseek-chat")
+    traj = loop.run("sys", "go")
+    assert traj.stop_reason == "cost_budget"
+    assert "[budget stop] cost budget $0.00" in (traj.final_answer or "")
+
+
+def test_cost_budget_never_fires_for_an_unpriced_model():
+    from saturday.types import Usage
+
+    base = make_scripted_model([{"content": "done"}])
+    orig_chat = base.chat
+
+    def chat_with_usage(messages, **kwargs):
+        resp = orig_chat(messages, **kwargs)
+        resp.message.usage = Usage(prompt_tokens=999_999, completion_tokens=999_999, total_tokens=1_999_998)
+        return resp
+
+    base.chat = chat_with_usage
+    reg = ToolRegistry()
+    loop = AgentLoop(base, reg, max_steps=5, max_run_cost_usd=0.0001, cost_provider="totally-unknown", cost_model="not-in-the-table")
+    traj = loop.run("sys", "go")
+    assert traj.stop_reason != "cost_budget"
+
+
+def test_blocked_provider_raises_before_client_is_built(tmp_path):
+    cfg = AgentConfig(provider="openai", model="gpt-4o", workspace_root=str(tmp_path), blocked_providers=["openai"])
+    agent = Agent(cfg=cfg)
+    with pytest.raises(ValueError, match="blocked by a data-policy guardrail"):
+        agent._ensure_client()
+
+
+def test_blocked_model_raises_before_client_is_built(tmp_path):
+    cfg = AgentConfig(provider="openai", model="gpt-4o", workspace_root=str(tmp_path), blocked_models=["gpt-4o"])
+    agent = Agent(cfg=cfg)
+    with pytest.raises(ValueError, match="blocked by a data-policy guardrail"):
+        agent._ensure_client()
+
+
+def test_blocked_models_filtered_out_of_fallback_chain(tmp_path, monkeypatch):
+    import saturday.config as cfgmod
+
+    monkeypatch.setattr(cfgmod, "CONFIG_FILE", tmp_path / "config.json")
+    cfg = AgentConfig.load({"fallback_models": "gpt-4o,claude-3-5-sonnet,gpt-3.5", "blocked_models": "gpt-3.5"})
+    assert cfg.fallback_models == ["gpt-4o", "claude-3-5-sonnet"]
+
+
+def test_blocked_providers_and_models_flags_reach_overrides():
+    from saturday.cli import _overrides
+
+    args = Namespace(
+        provider=None, model=None, temperature=None, max_steps=None,
+        assistant=False, plan=False, blocked_providers="openai,xai", blocked_models="gpt-3.5",
+        max_run_cost_usd=2.5,
+    )
+    out = _overrides(args)
+    assert out["blocked_providers"] == "openai,xai"
+    assert out["blocked_models"] == "gpt-3.5"
+    assert out["max_run_cost_usd"] == 2.5
+

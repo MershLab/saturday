@@ -312,6 +312,16 @@ class AgentConfig:
     # that's genuinely cross-platform: real memory/CPU limits need OS
     # primitives that don't exist on every platform, this doesn't.
     max_wall_seconds: int = 0
+    # Dollar-denominated sibling of max_run_tokens (0 = off); estimated
+    # against the primary model's list price, same "never a fake number"
+    # rule as usage.py - unpriced models just don't trigger this.
+    max_run_cost_usd: float = 0.0
+    # Data-policy guardrails: providers/models a user has decided not to
+    # send data to, checked before a client is ever built for them. This
+    # is deliberately empty by default and user-populated, not a built-in
+    # table of claims about what any given company does with data.
+    blocked_providers: list[str] = field(default_factory=list)
+    blocked_models: list[str] = field(default_factory=list)
     # Persist "always allow" decisions across sessions (CONFIG_DIR/approvals.json)
     persist_approvals: bool = True
     # Language servers for LSP tools, e.g. {"python": ["pylsp"]}
@@ -398,6 +408,16 @@ class AgentConfig:
             data["disabled_tools"] = [s.strip() for s in data["disabled_tools"].split(",") if s.strip()]
         if isinstance(data.get("fallback_models"), str):
             data["fallback_models"] = [s.strip() for s in data["fallback_models"].split(",") if s.strip()]
+        if isinstance(data.get("blocked_providers"), str):
+            data["blocked_providers"] = [s.strip() for s in data["blocked_providers"].split(",") if s.strip()]
+        if isinstance(data.get("blocked_models"), str):
+            data["blocked_models"] = [s.strip() for s in data["blocked_models"].split(",") if s.strip()]
+        if data.get("fallback_models") and data.get("blocked_models"):
+            # a blocked model must never be reachable via the fallback
+            # chain either - blocking it only for the primary slot would
+            # be a guardrail with a hole in it.
+            blocked = set(data["blocked_models"])
+            data["fallback_models"] = [m for m in data["fallback_models"] if m not in blocked]
         if data.get("provenance_marking") not in (None, "metadata", "visible", "off"):
             data["provenance_marking"] = "metadata"
         known = {f for f in cls.__dataclass_fields__}

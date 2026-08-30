@@ -197,6 +197,10 @@ class Agent:
         return registry
 
     def _ensure_client(self) -> LLMClient:
+        if self.cfg.provider in (getattr(self.cfg, "blocked_providers", None) or ()):
+            raise ValueError(f"provider '{self.cfg.provider}' is blocked by a data-policy guardrail (blocked_providers)")
+        if self.cfg.model in (getattr(self.cfg, "blocked_models", None) or ()):
+            raise ValueError(f"model '{self.cfg.model}' is blocked by a data-policy guardrail (blocked_models)")
         signature = (
             self.cfg.provider,
             self.cfg.model,
@@ -574,6 +578,9 @@ class Agent:
             keep_reasoning_in_history=getattr(self.cfg, "keep_reasoning_in_history", False),
             max_run_tokens=int(getattr(self.cfg, "max_run_tokens", 0) or 0),
             max_wall_seconds=int(getattr(self.cfg, "max_wall_seconds", 0) or 0),
+            max_run_cost_usd=float(getattr(self.cfg, "max_run_cost_usd", 0.0) or 0.0),
+            cost_provider=self.cfg.provider or "",
+            cost_model=self.cfg.model or "",
             # optional per-tool-call watchdog (None => wait forever)
             tool_call_timeout=getattr(self.cfg, "tool_timeout", None),
             injection_guard=bool(getattr(self.cfg, "injection_guard", True)),
