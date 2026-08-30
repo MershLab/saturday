@@ -322,6 +322,10 @@ class AgentConfig:
     # table of claims about what any given company does with data.
     blocked_providers: list[str] = field(default_factory=list)
     blocked_models: list[str] = field(default_factory=list)
+    # Re-surfaces the memory tool's persistence reminder every N steps
+    # (0 = off, static system-prompt guidance only). A long run can go many
+    # turns without the agent noticing a fact was worth keeping past it.
+    memory_nudge_interval: int = 0
     # Persist "always allow" decisions across sessions (CONFIG_DIR/approvals.json)
     persist_approvals: bool = True
     # Language servers for LSP tools, e.g. {"python": ["pylsp"]}

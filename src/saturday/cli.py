@@ -855,6 +855,18 @@ def cmd_sessions(args: argparse.Namespace) -> int:
         _print(f"resumed {unpause_id}")
         return 0
 
+    query = getattr(args, "search", None)
+    if query:
+        from saturday.webui_support import search_sessions
+
+        hits = search_sessions(SessionStore(), query)
+        if not hits:
+            _print(f"no matches for {query!r}")
+            return 0
+        for h in hits:
+            _print(f"{h['sid']}  ({h['hits']} hit{'s' if h['hits'] != 1 else ''})  {h['snippet']}")
+        return 0
+
     rows = SessionStore().list_sessions()
     if not rows:
         _print("no sessions yet")
@@ -1166,6 +1178,7 @@ def _overrides(args: argparse.Namespace, ci: bool = False) -> dict:
         "max_run_cost_usd": getattr(args, "max_run_cost_usd", None),
         "blocked_providers": getattr(args, "blocked_providers", None),
         "blocked_models": getattr(args, "blocked_models", None),
+        "memory_nudge_interval": getattr(args, "memory_nudge_interval", None),
         "safety_mode": "autonomous" if getattr(args, "yolo", False) else None,
     }
     if ci:
@@ -1200,6 +1213,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--max-run-cost-usd", type=float, dest="max_run_cost_usd", help="abort the run once estimated spend exceeds this (dollar-denominated sibling of --max-run-tokens)")
     p_run.add_argument("--blocked-providers", dest="blocked_providers", help="comma-separated providers this run must never use, even via fallback")
     p_run.add_argument("--blocked-models", dest="blocked_models", help="comma-separated models this run must never use, even via fallback")
+    p_run.add_argument("--memory-nudge-interval", type=int, dest="memory_nudge_interval", help="re-surface the memory-persistence reminder every N steps (0/unset = off)")
     p_run.add_argument("--max-memory-mb", type=int, dest="max_memory_mb", help="hard memory cap for a --detach run (POSIX only; ignored elsewhere)")
     p_run.add_argument("--detach", action="store_true", help="run in a detached background process; returns immediately (log under .saturday/bg/)")
     p_run.add_argument("--background", action="store_true", help="background-only desktop mode: blocks pointer/keyboard/focus, forces non-intrusive UI Automation (pairs well with --detach)")
@@ -1219,6 +1233,7 @@ def build_parser() -> argparse.ArgumentParser:
     common(p_chat)
     p_chat.add_argument("--disable", dest="disabled_tools", help="comma-separated tools/families to turn off for this session")
     p_chat.add_argument("--fallback-models", dest="fallback_models", help="comma-separated models to fall through to if the primary model errors or is rate-limited")
+    p_chat.add_argument("--memory-nudge-interval", type=int, dest="memory_nudge_interval", help="re-surface the memory-persistence reminder every N steps (0/unset = off)")
     p_chat.add_argument("--resume", metavar="SESSION_ID", help="continue a saved session")
     p_chat.add_argument("--yolo", action="store_true", help="fully autonomous: no approval prompts this session (/yolo toggles)")
     p_chat.set_defaults(fn=cmd_chat)
@@ -1226,6 +1241,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_sessions = sub.add_parser("sessions", help="list saved sessions")
     p_sessions.add_argument("--pause", metavar="SESSION_ID", help="suspend a running session at its next step boundary")
     p_sessions.add_argument("--unpause", metavar="SESSION_ID", help="clear a pause request, letting a suspended run continue")
+    p_sessions.add_argument("--search", metavar="QUERY", help="full-text search across all sessions' messages")
     p_sessions.set_defaults(fn=cmd_sessions)
 
     p_tui = sub.add_parser("tui", help="full-screen console (alt-screen UI)")

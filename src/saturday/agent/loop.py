@@ -14,6 +14,12 @@ from saturday.prompts.templates import render_tool_response, split_reasoning
 from saturday.tools.base import ToolRegistry
 from saturday.types import Step, ToolResult, Trajectory
 
+MEMORY_NUDGE_TEXT = (
+    "[reminder] Before continuing: have you learned anything durable in this "
+    "session worth keeping past it (a user preference, a project decision, a "
+    "fact you'd otherwise have to re-derive)? If so, persist it now via the "
+    "`memory` tool rather than letting it age out with this transcript."
+)
 # per-step parallel tool-call cap (Claude Code-class harnesses allow large
 # batches; 16 covers realistic multi-edit steps without unbounded fan-out)
 MAX_TOOL_CALLS_PER_STEP = 16
@@ -128,6 +134,7 @@ class AgentLoop:
         max_run_cost_usd: float = 0.0,
         cost_provider: str = "",
         cost_model: str = "",
+        memory_nudge_interval: int = 0,
         tool_call_timeout: float | None = None,
         injection_guard: bool = True,
     ) -> None:
@@ -152,6 +159,8 @@ class AgentLoop:
         self.max_run_cost_usd = float(max_run_cost_usd or 0.0)
         self.cost_provider = cost_provider
         self.cost_model = cost_model
+        # 0 = off; re-surfaces the memory-persistence reminder every N steps
+        self.memory_nudge_interval = int(memory_nudge_interval or 0)
         # per-tool-call watchdog (None => wait forever); a hung tool must not
         # wedge the whole run since parallel results are gathered synchronously
         self.tool_call_timeout = float(tool_call_timeout) if tool_call_timeout else None
@@ -219,6 +228,16 @@ class AgentLoop:
         for step_index in range(self.max_steps):
             if self.hooks.on_step_start:
                 self.hooks.on_step_start(step_index)
+
+            if self.memory_nudge_interval and step_index > 0 and step_index % self.memory_nudge_interval == 0:
+                # a static "remember to persist facts" line in the system
+                # prompt only gets read once; long runs need it re-surfaced
+                # or durable facts age out with the transcript unnoticed.
+                # Must land here, before this step's own request is built -
+                # appending after assistant.to_openai() but before its tool
+                # results would split an assistant/tool_call pair, which
+                # strict OpenAI-compatible backends reject outright.
+                history.append({"role": "user", "content": MEMORY_NUDGE_TEXT})
 
             if self.max_wall_seconds and time.monotonic() - run_started_at >= self.max_wall_seconds:
                 last_text = next(
