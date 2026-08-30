@@ -2829,3 +2829,39 @@ def test_provenance_footer_reaches_webui_done_event(tmp_path, monkeypatch):
     _run_chat(None, rt2, "hello", [])
     done2 = [e for e in rt2.bus.buf if e.get("t") == "done"]
     assert done2 and done2[0]["final"] == "the answer"
+
+
+def test_launch_app_window_uses_isolated_profile(monkeypatch, tmp_path):
+    from saturday import webui
+    import saturday.config as cfgmod
+
+    monkeypatch.setattr(cfgmod, "CONFIG_DIR", tmp_path / "home")
+    monkeypatch.setattr(webui, "find_app_browser", lambda: "/usr/bin/chromium")
+    captured = {}
+
+    def fake_popen(argv, **kwargs):
+        captured["argv"] = argv
+
+        class P:
+            pid = 1
+
+        return P()
+
+    monkeypatch.setattr(webui.subprocess, "Popen", fake_popen)
+    webui.launch_app_window("http://127.0.0.1:8679/")
+    profile_flags = [a for a in captured["argv"] if a.startswith("--user-data-dir=")]
+    assert len(profile_flags) == 1
+    profile_dir = Path(profile_flags[0].split("=", 1)[1])
+    assert profile_dir == tmp_path / "home" / "app-browser-profile"
+    assert profile_dir.is_dir()  # created, not just referenced
+
+
+def test_launch_app_window_falls_back_to_webbrowser_when_no_app_browser(monkeypatch):
+    from saturday import webui
+
+    monkeypatch.setattr(webui, "find_app_browser", lambda: None)
+    opened = []
+    monkeypatch.setattr(webui.webbrowser, "open", lambda url: opened.append(url))
+    result = webui.launch_app_window("http://127.0.0.1:8679/")
+    assert result is None
+    assert opened == ["http://127.0.0.1:8679/"]
