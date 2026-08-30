@@ -2683,6 +2683,7 @@ function paletteBuild(q) {
     ["Show Plan tab", () => stageShow("plan", false)],
     ["Show Files tab", () => { stageShow("files", false); filesEnsure(true); }],
     ["Show Memory graph", () => stageShow("memory", false)],
+    ["Show Runs tab", () => stageShow("runs", false)],
     ["Memory: reindex the workspace", () => { stageShow("memory", false); mgLoad(true); }],
   ];
   for (const p of state.projects) {
@@ -5267,6 +5268,12 @@ function bindEvents() {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") { e.preventDefault(); openFind(); return; }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "m") { e.preventDefault(); closeMenus(); openModelMenu(); return; }
     if (e.altKey && (e.key === "m" || e.key === "M")) { e.preventDefault(); cycleFavoriteModel(); return; }
+    if (e.altKey && !e.ctrlKey && !e.metaKey && e.key >= "1" && e.key <= "8") {
+      const tabs = Array.from(document.querySelectorAll(".stage-tab"));
+      const t = tabs[+e.key - 1];
+      if (t) { e.preventDefault(); stageShow(t.dataset.tab, false); if (t.dataset.tab === "files") filesEnsure(true); }
+      return;
+    }
     if ((e.ctrlKey || e.metaKey) && e.key === "/") { e.preventDefault(); shortcutsOpen(); return; }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "n") { e.preventDefault(); newChat(); return; }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "b") { e.preventDefault(); toggleSidebar(); return; }
@@ -5449,6 +5456,17 @@ async function init() {
   setInterval(() => {
     if (stage.run && !stage.run.endedAt && stage.tab === "home") homeRunUpdate();
   }, 1000);
+  // deep link: #memory, #files, #changes... opens that panel straight away,
+  // so a link or a bookmark can point at one
+  const linkTab = (location.hash || "").replace(/^#/, "");
+  if (linkTab && stagePanes[linkTab]) {
+    stageShow(linkTab, false);
+    if (linkTab === "files") filesEnsure(true);
+  }
+  window.addEventListener("hashchange", () => {
+    const t = (location.hash || "").replace(/^#/, "");
+    if (t && stagePanes[t]) stageShow(t, false);
+  });
   $("#input").focus();
 }
 
