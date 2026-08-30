@@ -1097,11 +1097,16 @@ class KeyboardTool(Tool):
         if runner is None:
             if sys.platform.startswith("win"):
                 runner = run_ps
-            else:
+            elif sys.platform == "darwin":
                 # macOS/Linux: run_ps shells to powershell, which doesn't
                 # exist here. The non-Windows type action is chunked through
                 # this same injection point (see spatial_unix.keyboard_tool)
-                # so tests can mock it without a real xdotool on PATH.
+                # so tests can mock it without a real osascript/xdotool
+                # round-trip.
+                from saturday.tools.spatial_unix import osascript_type_chunk
+
+                runner = osascript_type_chunk
+            else:
                 from saturday.tools.spatial_unix import xdotool_type_chunk
 
                 runner = xdotool_type_chunk

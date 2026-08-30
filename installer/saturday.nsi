@@ -12,6 +12,12 @@
 
 !include "MUI2.nsh"
 
+; OutFile below resolves relative to this script's own directory, not the
+; invoking process's CWD; _output isn't checked into git, so it has to be
+; created before OutFile is written or makensis aborts with "Can't open
+; output file" (never actually exercised until a real tag-triggered build).
+!system 'if not exist "${__FILEDIR__}\_output" mkdir "${__FILEDIR__}\_output"'
+
 Name "Saturday"
 OutFile "_output\Saturday-Setup-${VERSION}.exe"
 InstallDir "$LOCALAPPDATA\Programs\Saturday"
