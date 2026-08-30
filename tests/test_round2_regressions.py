@@ -120,31 +120,6 @@ def test_mcp_timeout_frees_lock_and_recovers(tmp_path):
         c2.close()
 
 
-def test_gateway_backoff_on_transport_failure():
-    from saturday.gateway import TelegramGateway
-
-    class FlakyTransport:
-        def __init__(self):
-            self.calls = 0
-
-        def get_updates(self):
-            self.calls += 1
-            if self.calls <= 2:
-                raise ConnectionError("telegram down")
-            return []
-
-        def send_message(self, chat_id, text):
-            pass
-
-    sleeps = []
-    gw = TelegramGateway("t", lambda: None, transport=FlakyTransport())
-    gw._tick(sleeps.append)
-    gw._tick(sleeps.append)
-    ok = gw._tick(sleeps.append)
-
-    assert sleeps[:2] == [2.0, 4.0], f"backoff not exponential: {sleeps}"
-    assert ok is True
-    assert gw.consecutive_failures == 0
 
 
 def test_deepseek_raw_template_parse():

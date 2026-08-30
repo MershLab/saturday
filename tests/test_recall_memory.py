@@ -1,17 +1,93 @@
-"""Per-project memory scoping: project-tagged agents read/write a scoped
-.saturday/MEMORY.md inside the project workspace; global memory untouched."""
-from __future__ import annotations
+"""Merged from: tests/test_recall.py, tests/test_project_memory.py."""
 
+
+from __future__ import annotations
+import json
+import time
+from saturday.recall import RecallIndex, format_recall
+from saturday.tools.recall import MemorySearchTool
 import sys
 from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent))
-
 import pytest  # noqa: E402
-
 from saturday.agent.core import Agent  # noqa: E402
 from saturday.config import AgentConfig  # noqa: E402
 from saturday.tools.memory import MemoryTool, load_memory_block, memory_path  # noqa: E402
+import json  # noqa: E402
+import threading  # noqa: E402
+import urllib.error  # noqa: E402
+import urllib.request  # noqa: E402
+
+
+
+# --- from tests/test_recall.py ---
+
+def _write_transcripts(store_root, session_id: str, lines: list[tuple[str, str]], ts: float = 1_700_000_000.0) -> None:
+    store_root.mkdir(parents=True, exist_ok=True)
+    with (store_root / f"{session_id}.jsonl").open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps({"type": "meta", "id": session_id, "created": ts}) + "\n")
+        for role, text in lines:
+            fh.write(json.dumps({"type": role, "role": role, "text": text, "ts": ts}) + "\n")
+
+
+def test_index_builds_and_searches_fts5(tmp_path):
+    store = tmp_path / "sessions"
+    _write_transcripts(store, "bg-20260801", [
+        ("user", "deploy the billing service to staging"),
+        ("assistant", "The deploy script lives in scripts/deploy.py"),
+        ("tool", "[tool:shell] exit_code: 0"),
+    ])
+    _write_transcripts(store, "bg-20260802", [
+        ("user", "anything about the billing service?"),
+        ("assistant", "not in this session"),
+    ])
+    idx = RecallIndex(store_root=store, db_path=tmp_path / "recall.db")
+    hits = idx.search("deploy billing")
+    assert hits, "FTS5 recall should hit the billing/deploy session"
+    assert hits[0]["session"] == "bg-20260801"
+    # tool-result lines are not indexed — deployment finds user/assistant only
+    assert all(not h["text"].startswith("[tool:") for h in hits)
+
+
+def test_search_degrades_to_like_without_fts5(tmp_path, monkeypatch):
+    store = tmp_path / "sessions"
+    _write_transcripts(store, "bg-1", [("user", "the API key is in .env (never commit it)")])
+    idx = RecallIndex(store_root=store, db_path=tmp_path / "recall.db")
+    idx._has_fts5 = False  # simulate a build without FTS5
+    hits = idx.search("api key")
+    assert hits and "API key is in" in hits[0]["text"]
+
+
+def test_index_rebuilds_when_new_session_appears(tmp_path):
+    store = tmp_path / "sessions"
+    _write_transcripts(store, "one", [("user", "first conversation about maps")])
+    idx = RecallIndex(store_root=store, db_path=tmp_path / "recall.db")
+    assert len(idx.search("maps")) == 1
+    time.sleep(0.01)
+    _write_transcripts(store, "two", [("user", "second conversation about maps")])
+    assert len(idx.search("maps")) == 2, "stale index must rebuild on new files"
+
+
+def test_memory_search_tool_and_format(tmp_path):
+    store = tmp_path / "sessions"
+    _write_transcripts(store, "bg-9", [("user", "remember the jenkins pipeline is flaky on fridays")])
+    tool = MemorySearchTool(index=RecallIndex(store_root=store, db_path=tmp_path / "recall.db"))
+    ok, out = tool.run({"query": "jenkins pipeline"})
+    assert ok and "session bg-9" in out and "flaky" in out
+    ok2, out2 = tool.run({"query": "nonexistent-zzz"})
+    assert ok2 and "no past sessions" in out2
+    ok3, out3 = tool.run({})
+    assert not ok3
+
+
+def test_format_recall_shortens_and_strips_newlines():
+    rendered = format_recall([{"session": "bg-1", "ts": 0, "role": "user", "text": "hello\nworld very long text " * 30}])
+    assert "very long text" in rendered and "\nworld" not in rendered
+
+
+
+# --- from tests/test_project_memory.py ---
+
+sys.path.insert(0, str(Path(__file__).parent))
 
 
 @pytest.fixture(autouse=True)
@@ -79,8 +155,6 @@ def test_load_memory_block_scope_only_when_set(tmp_path):
     assert load_memory_block(scope=tmp_path) == "", "empty scope dir contributes nothing"
 
 
-# ---------------------------------------------------------------- webui wiring
-
 TOKEN = "tok"
 
 
@@ -99,12 +173,6 @@ class _Server:
     def __exit__(self, *a):
         self.http.shutdown()
         self.http.server_close()
-
-
-import json  # noqa: E402
-import threading  # noqa: E402
-import urllib.error  # noqa: E402
-import urllib.request  # noqa: E402
 
 
 def _req(base, path, method="GET", payload=None):
@@ -153,3 +221,39 @@ def test_project_sessions_get_memory_scope(tmp_path):
         assert getattr(rt_tagged.agent, "memory_scope", None) == str(proj_ws)
         mem_tool = rt_tagged.agent.registry.get("memory")
         assert mem_tool is not None and str(proj_ws) in mem_tool.scope_path
+
+
+def test_recall_indexes_real_session_shape(tmp_path):
+    from saturday.recall import RecallIndex
+    from saturday.sessions import SessionStore
+
+    store = SessionStore(root=tmp_path / "sessions")
+    sid = store.create({"task": "deploy notes"})
+    store.append(sid, {"type": "messages", "messages": [
+        {"role": "user", "content": "deploy the billing service to staging"},
+        {"role": "assistant", "content": "The deploy script lives in scripts/deploy.py"},
+        {"role": "tool", "tool_call_id": "t1", "name": "shell", "content": "ok"},
+    ]})
+
+    idx = RecallIndex(store_root=tmp_path / "sessions", db_path=tmp_path / "recall.db")
+    assert idx.rebuild() == 2, "user + assistant messages indexed; tool message skipped"
+    hits = idx.search("deploy billing")
+    assert hits, "real transcript shape must be searchable"
+    assert hits[0]["session"] == sid
+
+
+def test_recall_memory_search_tool_end_to_end(tmp_path, monkeypatch):
+    import saturday.recall as recall_mod
+    from saturday.sessions import SessionStore
+    from saturday.tools.recall import MemorySearchTool
+
+    store = SessionStore(root=tmp_path / "sessions")
+    sid = store.create({"task": "t"})
+    store.append(sid, {"type": "messages", "messages": [
+        {"role": "user", "content": "where did we put the database schema?"},
+    ]})
+
+    monkeypatch.setattr(recall_mod, "default_store_root", lambda: tmp_path / "sessions")
+    tool = MemorySearchTool()
+    ok, out = tool.run({"query": "database schema"})
+    assert ok and "database schema" in out and sid in out

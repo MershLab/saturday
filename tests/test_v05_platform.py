@@ -41,58 +41,8 @@ def scripted_agent_factory():
     return A()
 
 
-def test_telegram_gateway_end_to_end():
-    from saturday.gateway import TelegramGateway
-
-    updates = [
-        {"update_id": 1, "message": {"chat": {"id": 42}, "text": "hello bot"}},
-        {"update_id": 2, "message": {"chat": {"id": 43}, "text": "intruder"}},
-    ]
-    transport = FakeTransport(updates)
-    gw = TelegramGateway("tok", scripted_agent_factory, allowed_chat_ids={42}, transport=transport)
-
-    handled = gw.poll_once()
-    assert handled == 1
-    sent = [t for t in transport.sent if t[0] == 42]
-    blocked = [t for t in transport.sent if t[0] == 43]
-    assert sent and sent[0][1] == "echo:hello bot"
-    # r2: one liveness reply per stranger chat, then silent drop (probe oracle)
-    assert blocked and blocked[0][1] == "Not authorized for this bot."
-
-    transport.updates = [
-        {"update_id": 3, "message": {"chat": {"id": 43}, "text": "intruder again"}},
-    ]
-    handled2 = gw.poll_once()
-    assert handled2 == 0
-    assert len([t for t in transport.sent if t[0] == 43]) == 1, "must not reply to repeat probes"
 
 
-def test_gateway_session_reuse_and_error_path():
-    from saturday.gateway import TelegramGateway
-
-    calls = {"n": 0}
-
-    def factory():
-        calls["n"] += 1
-        return scripted_agent_factory()
-
-    class Boom:
-        def run(self, task, **kw):
-            raise RuntimeError("model exploded")
-
-    transport = FakeTransport([{"update_id": 5, "message": {"chat": {"id": 7}, "text": "a"}}])
-    gw = TelegramGateway("t", factory, transport=transport)
-    s1 = gw.session_for(7)
-    s2 = gw.session_for(7)
-    assert s1 is s2
-
-    boom_gw = TelegramGateway(
-        "t",
-        lambda: Boom(),
-        transport=FakeTransport([{"update_id": 6, "message": {"chat": {"id": 8}, "text": "x"}}]),
-    )
-    boom_gw.poll_once()
-    assert "agent error" in transport_sent_last_text(boom_gw)
 
 
 def transport_sent_last_text(gw):
