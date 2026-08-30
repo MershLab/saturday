@@ -96,23 +96,31 @@ All 5 items landed 2026-08-30.
 
 ### Self-management
 
-- [ ] **Real self-update system.** This is item 1 above (Omarchy-inspired
-      update/release work) — restated here because "can update itself
-      without a human re-running an installer" is a load-bearing autonomy
-      requirement, not a nice-to-have.
-- [ ] **Update locking + a receipt log.** Concurrent updates (two triggers
-      firing at once) need to be mutually exclusive, and every update
-      needs a record of what changed and when — both for debugging and for
-      the eventual rollback path.
-- [ ] **Graceful self-relaunch after an update**, so a long-running
-      instance doesn't need a human to notice a new version landed and
-      manually restart it.
-- [ ] **Model fallback.** If the configured provider/model errors or rate
-      limits, an autonomous run currently just fails the task. Needs an
-      explicit fallback chain, not a silent retry-forever loop.
-- [ ] **Cost and data-policy guardrails per model**, checked before a call
-      goes out, not just observed after the fact via the existing cost
-      metrics.
+All 5 items landed 2026-08-30.
+
+- [x] **Real self-update system.** Landed: `saturday update` — version
+      check via GitHub's releases API, live-process channel detection
+      (pip/pipx/deb/rpm/pacman/AppImage/Windows installer/macOS dmg),
+      auto-applies only where safe without privilege escalation (pip/pipx),
+      exact manual command everywhere else.
+- [x] **Update locking + a receipt log.** Landed: mutual exclusion between
+      a scheduled check and a manual run (dead-pid lock reclaim, same
+      pattern as `RunState`), JSONL receipt per attempt.
+- [x] **Graceful self-relaunch after an update.** Landed: a successful
+      pip/pipx update offers `os.execv` self-relaunch in place.
+- [x] **Model fallback.** Turned out to already exist in full —
+      `LLMClient.chat` had a real, tested per-candidate retry/fallback
+      chain with proper error classification. The actual gap was that
+      `fallback_models` had no CLI flag; added `--fallback-models`. The
+      original checklist entry was wrong about this until this pass
+      checked the code instead of assuming.
+- [x] **Cost and data-policy guardrails per model.** Landed:
+      `--max-run-cost-usd` (dollar-denominated sibling of the existing
+      `--max-run-tokens`, same step-boundary check, real list pricing,
+      never fires on an unpriced model) and `--blocked-providers`/
+      `--blocked-models` (checked before any client is built, filtered out
+      of the fallback chain too — user-populated, not a built-in table of
+      claims about what any given provider does with data).
 
 ### Reach — where the agent can be told to work and report back
 
