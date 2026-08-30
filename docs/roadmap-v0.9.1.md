@@ -5,6 +5,8 @@ item came from so it stays traceable back to the actual decision, not just
 a flat backlog. This is a lot of ground for one point release — expect it
 to get trimmed/resequenced, not built end to end in one pass.
 
+`[ ]` not started · `[~]` partially landed, real gap remains · `[x]` done.
+
 ## Carried over, still pending
 
 Nothing below has been started. Ordered roughly by dependency, not
@@ -154,13 +156,19 @@ not by reading Saturday's own source first.
 
 ### Memory and recall
 
-- [ ] **Session search across history**, not just the current one — find
-      "what did I ask it to do last week about X" without manually
-      scrolling sessions.
-- [ ] **Active memory curation.** Right now memory is whatever's in a
-      session file; nothing periodically consolidates or nudges the agent
-      to persist durable facts versus letting them age out with the
-      transcript.
+- [x] **Session search across history.** Turned out `search_sessions`
+      already existed and was fully wired for the web UI (a real search
+      box calling `/api/search`) — checked the code before assuming this
+      was missing, same discipline as the last two sections. The one real
+      gap was no CLI equivalent; landed `sessions --search`.
+- [~] **Active memory curation, partially landed.** `memory_nudge_interval`
+      re-surfaces the persistence reminder every N steps instead of once
+      in the system prompt — real progress on the "nudge" half. Still
+      open: actual consolidation/summarization when the memory file grows
+      large (today it silently truncates on read at 8000 chars; the file
+      itself can still grow unbounded on disk). That needs a real LLM
+      summarization call with its own cost/design tradeoffs, deliberately
+      not rushed into this pass.
 
 ### Extensibility
 
