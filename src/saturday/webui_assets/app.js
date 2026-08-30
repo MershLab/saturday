@@ -3354,11 +3354,103 @@ function openSettings() {
   providerHint();
   loadSchedules();
   loadCommands();
+  loadAgents();
   $("#settingsWarn").classList.add("hidden");
   $("#settingsModal").classList.remove("hidden");
   $("#cfgModel").focus();
 }
 function closeSettings() { $("#settingsModal").classList.add("hidden"); }
+
+/* ------------------------------------------------- auto-delegation agents */
+
+async function loadAgents() {
+  const wrap = $("#agentsList");
+  if (!wrap) return;
+  wrap.replaceChildren(el("span", "field-hint", "Checking\u2026"));
+  let data;
+  try { data = await api("/api/agents"); }
+  catch { wrap.replaceChildren(el("span", "field-hint", "Could not load agents.")); return; }
+  const rows = data.agents || [];
+  wrap.replaceChildren();
+  if (!rows.length) { wrap.appendChild(el("span", "field-hint", "No agents known.")); return; }
+  for (const a of rows) {
+    const row = el("div", "agent-row" + (a.installed ? "" : " agent-missing"));
+    const lbl = el("label", "toggle");
+    const cb = el("input");
+    cb.type = "checkbox";
+    cb.checked = !!a.enabled;
+    cb.disabled = !a.installed;
+    cb.addEventListener("change", async () => {
+      try {
+        await api("/api/agents", { method: "POST", body: JSON.stringify({ agent: a.agent, enabled: cb.checked }) });
+      } catch { cb.checked = !cb.checked; }
+    });
+    lbl.appendChild(cb);
+    lbl.appendChild(el("span", "", a.agent));
+    row.appendChild(lbl);
+    row.appendChild(el("span", "agent-tier tier-" + a.tier_name, a.tier_name));
+    const stat = a.runs
+      ? Math.round(a.success * 100) + "% over " + a.runs + " run" + (a.runs === 1 ? "" : "s")
+      : (a.installed ? "not used yet" : "not installed");
+    row.appendChild(el("span", "agent-stat", stat));
+    wrap.appendChild(row);
+  }
+}
+
+async function loadModels() {
+  const wrap = $("#modelsList");
+  if (!wrap) return;
+  wrap.replaceChildren(el("span", "field-hint", "Probing providers\u2026"));
+  const free = $("#modelsFreeOnly").checked ? "?free=1" : "";
+  let data;
+  try { data = await api("/api/models" + free); }
+  catch { wrap.replaceChildren(el("span", "field-hint", "Could not reach providers.")); return; }
+  const providers = data.providers || {};
+  wrap.replaceChildren();
+  const names = Object.keys(providers).sort();
+  if (!names.length) { wrap.appendChild(el("span", "field-hint", "No reachable providers \u2014 add an API key first.")); return; }
+  for (const prov of names) {
+    wrap.appendChild(el("div", "models-provider", prov + "  (" + providers[prov].length + ")"));
+    for (const m of providers[prov]) {
+      const lbl = el("label", "toggle model-row");
+      const cb = el("input");
+      cb.type = "checkbox";
+      cb.dataset.provider = prov;
+      cb.dataset.model = m.id;
+      cb.checked = !!m.free;
+      lbl.appendChild(cb);
+      lbl.appendChild(el("span", "", m.id + (m.free ? "  [free]" : "")));
+      wrap.appendChild(lbl);
+    }
+  }
+}
+
+function wireAgentsUi() {
+  const refresh = $("#btnRefreshAgents");
+  if (refresh) refresh.addEventListener("click", loadAgents);
+  const browse = $("#btnBrowseModels");
+  if (browse) browse.addEventListener("click", () => {
+    $("#modelBrowser").classList.toggle("hidden");
+    if (!$("#modelBrowser").classList.contains("hidden")) loadModels();
+  });
+  const freeOnly = $("#modelsFreeOnly");
+  if (freeOnly) freeOnly.addEventListener("change", loadModels);
+  const add = $("#btnAddFreeModels");
+  if (add) add.addEventListener("click", async () => {
+    const picks = {};
+    for (const cb of $("#modelsList").querySelectorAll("input[type=checkbox]:checked")) {
+      (picks[cb.dataset.provider] = picks[cb.dataset.provider] || []).push(cb.dataset.model);
+    }
+    if (!Object.keys(picks).length) return;
+    add.disabled = true;
+    try {
+      const out = await api("/api/models", { method: "POST", body: JSON.stringify({ models: picks }) });
+      add.textContent = "Added " + (out.added || []).length;
+      await loadAgents();
+    } catch { add.textContent = "Failed"; }
+    setTimeout(() => { add.textContent = "Add selected to auto-delegation"; add.disabled = false; }, 2500);
+  });
+}
 
 function settingsShow(sec) {
   for (const b of document.querySelectorAll("#setNav button")) b.classList.toggle("on", b.dataset.sec === sec);
@@ -5223,6 +5315,7 @@ async function init() {
   if (sbPref === "0" || (narrow && sbPref !== "1")) $("#sidebar").classList.add("collapsed");
   updateTokMeter();
   loadCtx();
+  wireAgentsUi();
   // Workbench dashboard elapsed clock (only touches the DOM while a run is live)
   setInterval(() => {
     if (stage.run && !stage.run.endedAt && stage.tab === "home") homeRunUpdate();

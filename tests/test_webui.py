@@ -2957,3 +2957,69 @@ def test_allow_host_widens_pin_without_losing_loopback(tmp_path):
         assert "https://brave-mode-1234.trycloudflare.com" in srv.RequestHandlerClass.allowed_origins
     finally:
         srv.server_close()
+
+
+# ---- agents + models API (GUI parity for the CLI features) ---------------
+
+
+def test_agents_endpoint_lists_and_toggles(tmp_path, monkeypatch):
+    import saturday.config as cfgmod
+    from saturday.tools import external_agent as ea
+
+    monkeypatch.setattr(cfgmod, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ea.shutil, "which", lambda n: "/usr/bin/x")
+    app = AppState(cfg_overrides={"workspace_root": str(tmp_path)})
+    with _Server(app) as srv:
+        status, data = _req(srv.base, "/api/agents")
+        assert status == 200
+        names = {a["agent"] for a in data["agents"]}
+        assert "claude-code" in names
+        assert all(a["enabled"] is False for a in data["agents"])
+
+        status, data = _req(srv.base, "/api/agents", "POST",
+                            {"agent": "claude-code", "enabled": True})
+        assert status == 200 and data["enabled"] == ["claude-code"]
+
+        _, data = _req(srv.base, "/api/agents")
+        row = next(a for a in data["agents"] if a["agent"] == "claude-code")
+        assert row["enabled"] is True and row["tier_name"] == "subscription"
+
+
+def test_agents_post_requires_a_name(tmp_path, monkeypatch):
+    import saturday.config as cfgmod
+
+    monkeypatch.setattr(cfgmod, "CONFIG_DIR", tmp_path)
+    app = AppState(cfg_overrides={"workspace_root": str(tmp_path)})
+    with _Server(app) as srv:
+        status, data = _req(srv.base, "/api/agents", "POST", {"enabled": True})
+        assert status == 400 and data["ok"] is False
+
+
+def test_models_endpoint_marks_free_and_filters(tmp_path, monkeypatch):
+    import saturday.cli as cli
+    import saturday.config as cfgmod
+
+    monkeypatch.setattr(cfgmod, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(cli, "_probe_provider",
+                        lambda n, t: (n, n == "openrouter", "ok", ["a/b:free", "c/d"]))
+    app = AppState(cfg_overrides={"workspace_root": str(tmp_path)})
+    with _Server(app) as srv:
+        _, data = _req(srv.base, "/api/models")
+        ids = {m["id"]: m["free"] for m in data["providers"]["openrouter"]}
+        assert ids == {"a/b:free": True, "c/d": False}
+
+        _, data = _req(srv.base, "/api/models?free=1")
+        assert [m["id"] for m in data["providers"]["openrouter"]] == ["a/b:free"]
+
+
+def test_models_post_wires_free_models_into_agents(tmp_path, monkeypatch):
+    import saturday.config as cfgmod
+
+    monkeypatch.setattr(cfgmod, "CONFIG_DIR", tmp_path)
+    app = AppState(cfg_overrides={"workspace_root": str(tmp_path)})
+    with _Server(app) as srv:
+        status, data = _req(srv.base, "/api/models", "POST",
+                            {"models": {"openrouter": ["z-ai/glm-5.2:free"]}})
+        assert status == 200 and data["added"] == ["free-z-ai-glm-5-2"]
+    written = json.loads((tmp_path / "agents.json").read_text())
+    assert written["free-z-ai-glm-5-2"]["model"] == "z-ai/glm-5.2:free"
