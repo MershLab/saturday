@@ -2816,3 +2816,130 @@ def test_summary_math():
     ])
     assert summary["full"]["pass_rate"] == 0.5 and summary["full"]["avg_steps"] == 3.5
 
+
+# ---- external_agent tool ---------------------------------------------------
+
+
+def test_external_agent_unknown_agent_id():
+    from saturday.tools.external_agent import ExternalAgentTool
+
+    ok, msg = ExternalAgentTool().run({"agent": "not-a-real-agent", "prompt": "hi"})
+    assert not ok and "unknown agent" in msg
+
+
+def test_external_agent_empty_prompt():
+    from saturday.tools.external_agent import ExternalAgentTool
+
+    ok, msg = ExternalAgentTool().run({"agent": "claude-code", "prompt": "  "})
+    assert not ok and "prompt is required" in msg
+
+
+def test_external_agent_missing_binary_no_install_gives_hint(monkeypatch):
+    from saturday.tools import external_agent as ea
+
+    monkeypatch.setattr(ea.shutil, "which", lambda name: None)
+    ok, msg = ea.ExternalAgentTool().run({"agent": "claude-code", "prompt": "hi"})
+    assert not ok
+    assert "not installed" in msg
+    assert "npm install -g @anthropic-ai/claude-code" in msg
+
+
+def test_external_agent_missing_binary_install_true_but_installer_fails(monkeypatch):
+    from saturday.tools import external_agent as ea
+
+    monkeypatch.setattr(ea.shutil, "which", lambda name: None)
+    tool = ea.ExternalAgentTool(installer=lambda spec: (False, "network unreachable"))
+    ok, msg = tool.run({"agent": "codex", "prompt": "hi", "install": True})
+    assert not ok and "auto-install failed" in msg and "network unreachable" in msg
+
+
+def test_external_agent_install_succeeds_then_runs(monkeypatch):
+    from saturday.tools import external_agent as ea
+
+    calls = {"which": 0}
+
+    def fake_which(name):
+        calls["which"] += 1
+        return None if calls["which"] == 1 else f"/usr/bin/{name}"
+
+    monkeypatch.setattr(ea.shutil, "which", fake_which)
+
+    def fake_run(argv, **kwargs):
+        class R:
+            returncode = 0
+            stdout = "delegate says hi"
+            stderr = ""
+
+        return R()
+
+    monkeypatch.setattr(ea.subprocess, "run", fake_run)
+    tool = ea.ExternalAgentTool(installer=lambda spec: (True, "installed"))
+    ok, msg = tool.run({"agent": "gemini", "prompt": "hi", "install": True})
+    assert ok and msg == "delegate says hi"
+
+
+def test_external_agent_runs_when_already_installed(monkeypatch):
+    from saturday.tools import external_agent as ea
+
+    monkeypatch.setattr(ea.shutil, "which", lambda name: f"/usr/bin/{name}")
+    captured = {}
+
+    def fake_run(argv, **kwargs):
+        captured["argv"] = argv
+
+        class R:
+            returncode = 0
+            stdout = "ok from claude"
+            stderr = ""
+
+        return R()
+
+    monkeypatch.setattr(ea.subprocess, "run", fake_run)
+    ok, msg = ea.ExternalAgentTool().run({"agent": "claude-code", "prompt": "fix the bug"})
+    assert ok and msg == "ok from claude"
+    assert captured["argv"] == ["/usr/bin/claude", "-p", "fix the bug"]
+
+
+def test_external_agent_nonzero_exit_surfaces_stderr(monkeypatch):
+    from saturday.tools import external_agent as ea
+
+    monkeypatch.setattr(ea.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    def fake_run(argv, **kwargs):
+        class R:
+            returncode = 1
+            stdout = ""
+            stderr = "auth error: bad key"
+
+        return R()
+
+    monkeypatch.setattr(ea.subprocess, "run", fake_run)
+    ok, msg = ea.ExternalAgentTool().run({"agent": "cursor", "prompt": "hi"})
+    assert not ok and "exited 1" in msg and "auth error" in msg
+
+
+def test_external_agent_timeout(monkeypatch):
+    from saturday.tools import external_agent as ea
+    import subprocess as sp
+
+    monkeypatch.setattr(ea.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    def fake_run(argv, **kwargs):
+        raise sp.TimeoutExpired(cmd=argv, timeout=kwargs.get("timeout"))
+
+    monkeypatch.setattr(ea.subprocess, "run", fake_run)
+    ok, msg = ea.ExternalAgentTool().run({"agent": "codex", "prompt": "hi", "timeout": 5})
+    assert not ok and "timed out after 5" in msg
+
+
+def test_external_agent_registered_in_core_plugin():
+    from saturday.plugins import core_plugin
+
+    names = {t.name for t in core_plugin().tools}
+    assert "external_agent" in names
+
+
+def test_external_agents_family_maps_to_the_tool():
+    assert ToolRegistry.TOOL_FAMILIES["external_agents"] == frozenset({"external_agent"})
+    assert ToolRegistry.expand_tool_names(["external_agents"]) == {"external_agent"}
+

@@ -73,6 +73,7 @@ class ToolRegistry:
         "file_writes": frozenset({"write_file", "edit_file"}),
         "subagents": frozenset({"task"}),
         "memory": frozenset({"memory", "skill_save", "skill_load", "skills_index"}),
+        "external_agents": frozenset({"external_agent"}),
     }
 
     @staticmethod
