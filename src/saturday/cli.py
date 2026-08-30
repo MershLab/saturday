@@ -93,9 +93,9 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     def on_session_id(sid: str) -> None:
         nonlocal run_state
-        from saturday.config import CONFIG_DIR
+        from saturday.config import get_config_dir
 
-        run_state = RunState(CONFIG_DIR / "sessions", sid)
+        run_state = RunState(get_config_dir() / "sessions", sid)
         run_state.start()
 
     def on_result(result) -> None:
@@ -521,6 +521,22 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     except Exception as exc:
         _print(f"tools         : FAILED to build registry - {exc}")
         failures += 1
+
+    from saturday.config import get_config_dir
+    from saturday.sessions import RunState
+
+    runs = RunState.scan(get_config_dir() / "sessions")
+    orphaned = [r for r in runs if r["orphaned"]]
+    live = [r for r in runs if r["alive"] and r["status"] == "running"]
+    if orphaned:
+        ids = ", ".join(r["id"] for r in orphaned[:5])
+        more = f" (+{len(orphaned) - 5} more)" if len(orphaned) > 5 else ""
+        _print(f"runs          : {len(orphaned)} orphaned (crashed mid-run) - {ids}{more}")
+        _print("                resume with: saturday chat --resume <session-id>")
+    elif live:
+        _print(f"runs          : {len(live)} currently active, no orphaned runs")
+    else:
+        _print("runs          : none tracked as running")
 
     guardrails = bool(getattr(cfg, "destructive_guardrails", True))
     _print(f"guardrails    : {'on - irreversible data ops ask + db files auto-backed-up' if guardrails else 'OFF (destructive_guardrails=false)'}")
