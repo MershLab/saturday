@@ -1752,6 +1752,13 @@ def test_stream_tail_replays_inflight_run(tmp_path):
         assert status == 200 and data["ok"] is True
         t.join(timeout=30)
         assert any(e.get("t") == "done" for e in got), "original stream should finish"
+        # t.join() only waits for the original stream's thread; the tail
+        # reader is a second, independent connection and can lag behind on
+        # a loaded machine (observed on CI, never locally) — give it its
+        # own deadline instead of asserting immediately.
+        deadline = time.time() + 10
+        while time.time() < deadline and not any(e.get("t") == "done" for e in tail):
+            time.sleep(0.05)
         assert any(e.get("t") == "done" for e in tail), "tail should see the same done event"
 
 
