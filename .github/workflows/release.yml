@@ -125,6 +125,14 @@ jobs:
   pypi:
     runs-on: ubuntu-latest
     needs: build  # never publish to PyPI while the installer matrix is red
+    # No PYPI_TOKEN secret exists on this repo, so the publish action falls
+    # back to PyPI's Trusted Publishing (OIDC), which needs this permission.
+    # The other required half is on PyPI's side: the "saturday" project's
+    # Trusted Publisher settings need a publisher added for this repo/
+    # workflow (or PYPI_TOKEN needs to be set instead) — real action nobody
+    # but the project owner can take, tracked in docs/release-pypi-todo.md.
+    permissions:
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
