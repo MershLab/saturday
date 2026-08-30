@@ -107,6 +107,17 @@ def cmd_run(args: argparse.Namespace) -> int:
             body = (result.output if result.ok else (result.error or ""))[:400]
             _print("\n" + paint(f"[tool:{result.name} {status}]", color) + " " + body + "\n")
 
+    def on_step_start(_step_index: int) -> None:
+        # a paused run should suspend, not abort
+        if run_state is None:
+            return
+        import time as _t
+
+        # blocks this run's own thread; saturday sessions --unpause clears
+        # the file below and lets it continue
+        while run_state.pause_requested():
+            _t.sleep(1.0)
+
     agent = Agent(cfg=AgentConfig.load(_overrides(args, ci=ci)))
     try:
         if args.quiet and sys.stdout.isatty():
@@ -115,6 +126,7 @@ def cmd_run(args: argparse.Namespace) -> int:
                     args.task,
                     attachments=getattr(args, "images", None),
                     on_tool_result=on_result,
+                    on_step_start=on_step_start,
                     session_id=args.session,
                     on_session_id=on_session_id,
                 )
@@ -125,6 +137,7 @@ def cmd_run(args: argparse.Namespace) -> int:
                 on_text_delta=on_text,
                 on_reasoning_delta=on_reasoning,
                 on_tool_result=on_result,
+                on_step_start=on_step_start,
                 session_id=args.session,
                 on_session_id=on_session_id,
             )
@@ -782,7 +795,19 @@ def cmd_app(args: argparse.Namespace) -> int:
 
 
 def cmd_sessions(args: argparse.Namespace) -> int:
-    from saturday.sessions import SessionStore
+    from saturday.config import get_config_dir
+    from saturday.sessions import RunState, SessionStore
+
+    pause_id = getattr(args, "pause", None)
+    unpause_id = getattr(args, "unpause", None)
+    if pause_id:
+        RunState(get_config_dir() / "sessions", pause_id).request_pause()
+        _print(f"pause requested for {pause_id} (takes effect at the next step boundary)")
+        return 0
+    if unpause_id:
+        RunState(get_config_dir() / "sessions", unpause_id).clear_pause()
+        _print(f"resumed {unpause_id}")
+        return 0
 
     rows = SessionStore().list_sessions()
     if not rows:
@@ -1102,6 +1127,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_chat.set_defaults(fn=cmd_chat)
 
     p_sessions = sub.add_parser("sessions", help="list saved sessions")
+    p_sessions.add_argument("--pause", metavar="SESSION_ID", help="suspend a running session at its next step boundary")
+    p_sessions.add_argument("--unpause", metavar="SESSION_ID", help="clear a pause request, letting a suspended run continue")
     p_sessions.set_defaults(fn=cmd_sessions)
 
     p_tui = sub.add_parser("tui", help="full-screen console (alt-screen UI)")
