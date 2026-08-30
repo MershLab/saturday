@@ -27,12 +27,35 @@ def _print(*args: str) -> None:
     print(*args, flush=True)
 
 
+def _preflight_check(args: argparse.Namespace) -> str | None:
+    """The subset of doctor's checks that matter before an unattended run
+    starts: a background process failing minutes later over a missing key
+    is a silent failure nobody's watching for. No network probe here on
+    purpose - that's a real wait on every detach, not worth it for what's
+    normally an already-working setup."""
+    try:
+        cfg = AgentConfig.load(_overrides(args))
+        profile = cfg.profile()
+    except ValueError as exc:
+        return f"provider config: {exc}"
+    needs_key = profile.name not in ("ollama", "vllm")
+    if needs_key and not profile.resolve_api_key():
+        return f"missing API key ({profile.api_key_env})"
+    return None
+
+
 def _spawn_detached(args: argparse.Namespace) -> int:
     """Re-launch this exact run in a fully detached process; return immediately.
 
     Output goes to .saturday/bg/<id>.log; checkpointing under the same session id
     makes the run crash-safe and resumable via chat --resume."""
     import time as _t
+
+    problem = _preflight_check(args)
+    if problem is not None:
+        _print(f"[detach aborted] {problem}")
+        _print("[detach aborted] run 'saturday doctor' for the full check")
+        return 1
 
     session_id = getattr(args, "session", None) or _t.strftime("bg-%Y%m%d-%H%M%S")
     log_dir = Path(".saturday") / "bg"
