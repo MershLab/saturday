@@ -207,6 +207,17 @@ def _valid_expr(expr: str) -> bool:
 
 def run_scheduled_task(sched: Schedule, timeout: float = 1800.0) -> tuple[int, str]:
     """Fire one schedule entry as a one-shot agent run. Never raises."""
+    from saturday.sessions import RunState
+
+    run_state: RunState | None = None
+
+    def on_session_id(sid: str) -> None:
+        nonlocal run_state
+        from saturday.config import CONFIG_DIR
+
+        run_state = RunState(CONFIG_DIR / "sessions", sid)
+        run_state.start()
+
     try:
         from saturday.agent.core import Agent
         from saturday.config import AgentConfig
@@ -217,10 +228,18 @@ def run_scheduled_task(sched: Schedule, timeout: float = 1800.0) -> tuple[int, s
         if sched.provider:
             overrides["provider"] = sched.provider
         agent = Agent(cfg=AgentConfig.load(overrides))
-        result = agent.run(sched.task)
+        result = agent.run(
+            sched.task,
+            on_session_id=on_session_id,
+            on_tool_result=lambda _r: run_state.heartbeat() if run_state else None,
+        )
+        if run_state is not None:
+            run_state.done()
         final = getattr(result, "final", "") or result if isinstance(result, str) else str(result)
         return 0, f"ok: {str(final)[:400]}"
     except Exception as exc:
+        if run_state is not None:
+            run_state.mark_crashed()
         return 1, f"error: {type(exc).__name__}: {exc}"
 
 

@@ -15,7 +15,7 @@ from saturday.agent.loop import AgentLoop
 from saturday.agent.memory import TokenMeter, estimate_tokens
 from saturday.llm.client import LLMClient, LLMContextOverflow, classify_error
 from saturday.safety import ApprovalPolicy, check_command
-from saturday.sessions import EphemeralSessionStore, SessionStore
+from saturday.sessions import EphemeralSessionStore, RunState, SessionStore
 from saturday.tools.base import ToolRegistry
 import time
 import urllib.error
@@ -583,6 +583,87 @@ def test_list_sessions_uncapped_by_default(tmp_path):
     assert {r["id"] for r in rows} == set(sids)
     # newest first
     assert rows[0]["id"] == sids[-1]
+
+
+def test_run_state_start_heartbeat_done(tmp_path):
+    rs = RunState(tmp_path / "s", "abc123")
+    assert not rs.path.exists()
+    rs.start()
+    assert rs.path.is_file()
+    data = json.loads(rs.path.read_text())
+    assert data["status"] == "running"
+    assert data["pid"] == os.getpid()
+    first_hb = data["heartbeat"]
+
+    time.sleep(0.01)
+    rs.heartbeat()
+    data2 = json.loads(rs.path.read_text())
+    assert data2["status"] == "running"
+    assert data2["heartbeat"] >= first_hb
+
+    rs.done()
+    assert not rs.path.exists()
+
+
+def test_run_state_heartbeat_before_start_is_noop(tmp_path):
+    rs = RunState(tmp_path / "s", "never-started")
+    rs.heartbeat()  # must not create a marker for a run that never started
+    assert not rs.path.exists()
+
+
+def test_run_state_mark_crashed(tmp_path):
+    rs = RunState(tmp_path / "s", "will-crash")
+    rs.start()
+    rs.mark_crashed()
+    data = json.loads(rs.path.read_text())
+    assert data["status"] == "crashed"
+
+
+def test_run_state_done_clears_pause_marker_too(tmp_path):
+    rs = RunState(tmp_path / "s", "paused-run")
+    rs.start()
+    rs.request_pause()
+    assert rs.pause_requested()
+    rs.done()
+    assert not rs.pause_path.exists()
+
+
+def test_run_state_pause_roundtrip(tmp_path):
+    rs = RunState(tmp_path / "s", "pausable")
+    assert not rs.pause_requested()
+    rs.request_pause()
+    assert rs.pause_requested()
+    rs.clear_pause()
+    assert not rs.pause_requested()
+
+
+def test_run_state_scan_detects_orphaned_run(tmp_path):
+    root = tmp_path / "s"
+    live = RunState(root, "still-alive")
+    live.start()  # real pid (this test process) - genuinely alive
+
+    import subprocess
+
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait()
+    dead_pid = proc.pid  # guaranteed dead: already reaped
+
+    dead = RunState(root, "orphaned")
+    dead.start()
+    data = json.loads(dead.path.read_text())
+    data["pid"] = dead_pid
+    dead.path.write_text(json.dumps(data))
+
+    finished = RunState(root, "finished-cleanly")
+    finished.start()
+    finished.done()  # no marker left at all
+
+    rows = {r["id"]: r for r in RunState.scan(root)}
+    assert rows["still-alive"]["alive"] is True
+    assert rows["still-alive"]["orphaned"] is False
+    assert rows["orphaned"]["alive"] is False
+    assert rows["orphaned"]["orphaned"] is True
+    assert "finished-cleanly" not in rows
 
 
 def test_search_finds_needle_in_oldest_session(tmp_path):
