@@ -469,6 +469,7 @@ class Agent:
         on_step_start: Callable[[int], None] | None = None,
         initial_history: list[dict] | None = None,
         session_id: str | None = None,
+        on_session_id: Callable[[str], None] | None = None,
     ) -> Trajectory:
         client = self._ensure_client()
         registry = self.effective_registry()
@@ -580,6 +581,8 @@ class Agent:
         loop.set_meter_state(getattr(self, "_meter_state", None))
         sysprompt = self.system_prompt(registry)
         sid = session_id or self.session_store.create({"task": task})
+        if on_session_id is not None:
+            on_session_id(sid)
 
         base_checkpoint = base.on_checkpoint
 

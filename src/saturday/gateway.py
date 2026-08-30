@@ -154,13 +154,32 @@ class TelegramGateway:
         return True
 
     def _process(self, chat_id: Any, sess: ChatSession, text: str) -> None:
+        from saturday.sessions import RunState
+
         lock = self._lock_for(chat_id)
         with lock:
+            run_state: RunState | None = None
+
+            def on_session_id(sid: str) -> None:
+                nonlocal run_state
+                from saturday.config import CONFIG_DIR
+
+                run_state = RunState(CONFIG_DIR / "sessions", sid)
+                run_state.start()
+
             try:
-                traj = sess.agent.run(text)
+                traj = sess.agent.run(
+                    text,
+                    on_session_id=on_session_id,
+                    on_tool_result=lambda _r: run_state.heartbeat() if run_state else None,
+                )
                 reply = traj.final_answer or f"[stopped: {traj.stop_reason}]"
+                if run_state is not None:
+                    run_state.done()
             except Exception as exc:
                 reply = f"agent error: {type(exc).__name__}: {exc}"
+                if run_state is not None:
+                    run_state.mark_crashed()
             try:
                 self.transport.send_message(chat_id, reply)
             except Exception as exc:

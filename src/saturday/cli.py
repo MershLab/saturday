@@ -87,7 +87,20 @@ def cmd_run(args: argparse.Namespace) -> int:
             sys.stdout.write(delta)
             sys.stdout.flush()
 
+    from saturday.sessions import RunState
+
+    run_state: RunState | None = None
+
+    def on_session_id(sid: str) -> None:
+        nonlocal run_state
+        from saturday.config import CONFIG_DIR
+
+        run_state = RunState(CONFIG_DIR / "sessions", sid)
+        run_state.start()
+
     def on_result(result) -> None:
+        if run_state is not None:
+            run_state.heartbeat()
         if not args.quiet:
             color = "green" if result.ok else "red"
             status = "ok" if result.ok else "ERROR"
@@ -95,21 +108,32 @@ def cmd_run(args: argparse.Namespace) -> int:
             _print("\n" + paint(f"[tool:{result.name} {status}]", color) + " " + body + "\n")
 
     agent = Agent(cfg=AgentConfig.load(_overrides(args, ci=ci)))
-    if args.quiet and sys.stdout.isatty():
-        with Spinner("saturday working"):
+    try:
+        if args.quiet and sys.stdout.isatty():
+            with Spinner("saturday working"):
+                traj = agent.run(
+                    args.task,
+                    attachments=getattr(args, "images", None),
+                    on_tool_result=on_result,
+                    session_id=args.session,
+                    on_session_id=on_session_id,
+                )
+        else:
             traj = agent.run(
                 args.task,
                 attachments=getattr(args, "images", None),
+                on_text_delta=on_text,
+                on_reasoning_delta=on_reasoning,
+                on_tool_result=on_result,
+                session_id=args.session,
+                on_session_id=on_session_id,
             )
-    else:
-        traj = agent.run(
-            args.task,
-            attachments=getattr(args, "images", None),
-            on_text_delta=on_text,
-            on_reasoning_delta=on_reasoning,
-            on_tool_result=on_result,
-            session_id=args.session,
-        )
+    except BaseException:
+        if run_state is not None:
+            run_state.mark_crashed()
+        raise
+    if run_state is not None:
+        run_state.done()
     if not args.quiet:
         _print("\n" + "-" * 60)
     final = traj.final_answer or f"[no answer; stopped: {traj.stop_reason}]"

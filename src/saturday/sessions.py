@@ -587,3 +587,114 @@ class EphemeralSessionStore(SessionStore):
 
     def load_checkpoint(self, session_id: str) -> list[dict[str, Any]] | None:
         return None
+
+
+def _pid_alive(pid: int) -> bool:
+    """Cross-platform "is this pid still running", no extra dependency."""
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return False
+        ctypes.windll.kernel32.CloseHandle(handle)
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists, just owned by someone else
+    return True
+
+
+class RunState:
+    """Tracks whether anything is actively working on a session right now —
+    separate from SessionStore's audit-chain concerns, which only care
+    about tamper-evidence of what was already written, not liveness.
+
+    A missing .run file means "not currently tracked as running", whether
+    because it finished cleanly or predates this feature — both read the
+    same as "nothing to recover". A present file with status="running"
+    and a dead pid is the actual crash signal: something started and
+    never got to call done()."""
+
+    def __init__(self, root: str | Path, session_id: str) -> None:
+        self.root = Path(root)
+        self.session_id = session_id
+        safe = "".join(c for c in str(session_id) if c.isalnum() or c in "-_") or "session"
+        self.path = self.root / f"{safe}.run"
+        self.pause_path = self.root / f"{safe}.pause"
+
+    def _write(self, status: str) -> None:
+        self.root.mkdir(parents=True, exist_ok=True)
+        payload = {"status": status, "pid": os.getpid(), "heartbeat": time.time()}
+        tmp = self.path.with_suffix(".run.tmp")
+        tmp.write_text(json.dumps(payload), encoding="utf-8")
+        os.replace(tmp, self.path)
+
+    def start(self) -> None:
+        self._write("running")
+
+    def heartbeat(self) -> None:
+        if self.path.is_file():
+            self._write("running")
+
+    def done(self) -> None:
+        try:
+            self.path.unlink()
+        except FileNotFoundError:
+            pass
+        try:
+            self.pause_path.unlink()
+        except FileNotFoundError:
+            pass
+
+    def mark_crashed(self) -> None:
+        """Best-effort immediate marker written from an except handler right
+        before the process dies; a later scan would reach the same
+        conclusion from the dead pid regardless, this just avoids the wait."""
+        self._write("crashed")
+
+    def pause_requested(self) -> bool:
+        return self.pause_path.is_file()
+
+    def request_pause(self) -> None:
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.pause_path.write_text("", encoding="utf-8")
+
+    def clear_pause(self) -> None:
+        try:
+            self.pause_path.unlink()
+        except FileNotFoundError:
+            pass
+
+    @staticmethod
+    def scan(root: str | Path) -> list[dict[str, Any]]:
+        """All tracked run markers under root, each annotated with whether
+        the recorded pid is actually still alive right now."""
+        root = Path(root)
+        if not root.is_dir():
+            return []
+        out = []
+        for p in root.glob("*.run"):
+            try:
+                data = json.loads(p.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            pid = data.get("pid")
+            alive = isinstance(pid, int) and _pid_alive(pid)
+            out.append(
+                {
+                    "id": p.stem,
+                    "status": data.get("status", "unknown"),
+                    "pid": pid,
+                    "heartbeat": data.get("heartbeat"),
+                    "alive": alive,
+                    "orphaned": data.get("status") == "running" and not alive,
+                }
+            )
+        return out
