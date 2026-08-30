@@ -396,6 +396,8 @@ class AgentConfig:
             data.update({k: v for k, v in overrides.items() if v is not None})
         if isinstance(data.get("disabled_tools"), str):
             data["disabled_tools"] = [s.strip() for s in data["disabled_tools"].split(",") if s.strip()]
+        if isinstance(data.get("fallback_models"), str):
+            data["fallback_models"] = [s.strip() for s in data["fallback_models"].split(",") if s.strip()]
         if data.get("provenance_marking") not in (None, "metadata", "visible", "off"):
             data["provenance_marking"] = "metadata"
         known = {f for f in cls.__dataclass_fields__}

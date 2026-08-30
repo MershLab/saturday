@@ -1162,6 +1162,7 @@ def _overrides(args: argparse.Namespace, ci: bool = False) -> dict:
         "max_run_tokens": getattr(args, "max_run_tokens", None),
         "max_wall_seconds": getattr(args, "max_wall_seconds", None),
         "disabled_tools": getattr(args, "disabled_tools", None),
+        "fallback_models": getattr(args, "fallback_models", None),
         "safety_mode": "autonomous" if getattr(args, "yolo", False) else None,
     }
     if ci:
@@ -1190,6 +1191,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--ci", action="store_true", help="CI mode: non-interactive (deny approvals), quiet, prints 'CI RESULT: PASS|FAIL', exit 1 on failure")
     p_run.add_argument("--plan", action="store_true", help="plan mode: read-only tools only; agent outputs an implementation plan instead of executing")
     p_run.add_argument("--disable", dest="disabled_tools", help="comma-separated tools/families to turn off (e.g. web,computer_use; families: web, browser, computer_use, shell, python, file_writes, subagents, memory)")
+    p_run.add_argument("--fallback-models", dest="fallback_models", help="comma-separated models to fall through to if the primary model errors or is rate-limited")
     p_run.add_argument("--max-run-tokens", type=int, dest="max_run_tokens", help="abort the run once cumulative tokens exceed this (hard spend policy)")
     p_run.add_argument("--max-wall-seconds", type=int, dest="max_wall_seconds", help="abort the run once elapsed wall-clock time exceeds this (unattended runaway guard)")
     p_run.add_argument("--max-memory-mb", type=int, dest="max_memory_mb", help="hard memory cap for a --detach run (POSIX only; ignored elsewhere)")
@@ -1210,6 +1212,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_chat = sub.add_parser("chat", help="interactive REPL session")
     common(p_chat)
     p_chat.add_argument("--disable", dest="disabled_tools", help="comma-separated tools/families to turn off for this session")
+    p_chat.add_argument("--fallback-models", dest="fallback_models", help="comma-separated models to fall through to if the primary model errors or is rate-limited")
     p_chat.add_argument("--resume", metavar="SESSION_ID", help="continue a saved session")
     p_chat.add_argument("--yolo", action="store_true", help="fully autonomous: no approval prompts this session (/yolo toggles)")
     p_chat.set_defaults(fn=cmd_chat)
