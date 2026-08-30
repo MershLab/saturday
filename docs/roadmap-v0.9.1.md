@@ -133,16 +133,24 @@ All 5 items landed 2026-08-30.
 
 ### Planning and delegation
 
-- [ ] **Structured task decomposition**, distinct from a single-shot
-      `run`. Breaking a goal into ordered sub-tasks with dependencies, not
-      just handing the whole thing to one long agent loop.
-- [ ] **A first-class subagent orchestration story.** Engine support
-      already exists (`enable_subagents`); this is documenting and exposing
-      it as a real, driven-by-the-planner surface, matching the pending
-      item in the carried-over list above.
-- [ ] **Cross-session goal tracking.** State that persists across
-      restarts about what the agent is working toward, not just what
-      happened in one session's transcript.
+Turned out this whole section already existed, checked against the actual
+code on 2026-08-30 rather than assumed. Same root cause as the model-
+fallback correction: this checklist was built by comparing feature lists,
+not by reading Saturday's own source first.
+
+- [x] **Structured task decomposition.** `TodoTool` (write/mark/read an
+      ordered step list, checkpoint-persisted) — part of the default-
+      enabled `workflow` plugin.
+- [x] **Subagent orchestration.** `SubagentTask`/the `task` tool:
+      continuable children with their own history, background execution,
+      live progress forwarded to the web UI transcript, `enable_subagents`
+      defaults to `True`. Already documented in `README.md` (tools list +
+      a dedicated "Live subagent progress" feature callout) — no
+      documentation gap either.
+- [x] **Cross-session goal tracking.** `GoalStore` + `create_goal`/
+      `get_goal`/`update_goal` tools, checkpoint-persisted via the same
+      generic `export_state`/`import_state` mechanism `TodoTool` uses —
+      also part of the default `workflow` plugin.
 
 ### Memory and recall
 
