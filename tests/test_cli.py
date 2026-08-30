@@ -17,6 +17,7 @@ from saturday.usage import estimate_cost_usd
 import json
 from argparse import Namespace
 import re
+import sys
 import threading
 import urllib.error
 import urllib.request
@@ -475,6 +476,44 @@ def test_budget_stop_aborts_run_with_budget_reason():
     assert "[budget stop]" in (traj.final_answer or "")
 
 
+def test_wall_clock_stop_aborts_run_with_wall_clock_reason(monkeypatch):
+    import saturday.agent.loop as loopmod
+
+    # run_started_at, then one time.monotonic() call per step's check
+    clock = iter([1000.0, 1000.0, 1005.0, 1010.0, 1015.0, 1020.0])
+    monkeypatch.setattr(loopmod.time, "monotonic", lambda: next(clock))
+
+    base = make_scripted_model([{"tool_calls": [{"name": "noop", "arguments": {}}]} for _ in range(5)])
+
+    class Noop:
+        name = "noop"
+        description = "n"
+        parameters = {"type": "object", "properties": {}, "required": []}
+
+        def run(self, args):
+            return True, "ok"
+
+    reg = ToolRegistry()
+    reg.register(Noop())
+    loop = AgentLoop(base, reg, max_steps=10, max_wall_seconds=3)
+    traj = loop.run("sys", "go")
+    assert traj.stop_reason == "wall_clock"
+    assert "[budget stop]" in (traj.final_answer or "")
+    assert "wall-clock limit 3s" in (traj.final_answer or "")
+
+
+def test_wall_clock_off_by_default_does_not_interfere(monkeypatch):
+    import saturday.agent.loop as loopmod
+
+    monkeypatch.setattr(loopmod.time, "monotonic", lambda: 1000.0)  # never advances
+
+    base = make_scripted_model([{"content": "done"}])
+    reg = ToolRegistry()
+    loop = AgentLoop(base, reg, max_steps=10)  # max_wall_seconds defaults to 0 (off)
+    traj = loop.run("sys", "go")
+    assert traj.stop_reason != "wall_clock"
+
+
 def test_no_budget_by_default():
     base = make_scripted_model([{"content": "done"}])
     loop = AgentLoop(base, ToolRegistry(), max_steps=3)
@@ -720,6 +759,70 @@ def test_sessions_pause_and_unpause(tmp_path, monkeypatch, capsys):
     assert cli.cmd_sessions(args) == 0
     assert "resumed" in capsys.readouterr().out
     assert not rs.pause_requested()
+
+
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="resource module is POSIX-only")
+def test_spawn_detached_applies_posix_memory_limit(monkeypatch, tmp_path, capsys):
+    import saturday.cli as cli
+
+    monkeypatch.setattr("saturday.config.CONFIG_FILE", tmp_path / "config.json")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "x")
+    monkeypatch.chdir(tmp_path)
+
+    captured = {}
+
+    class FakeProc:
+        pid = 4242
+
+    def fake_popen(argv, **kwargs):
+        captured.update(kwargs)
+        return FakeProc()
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+    args = Namespace(
+        provider=None, model=None, temperature=None, max_steps=None,
+        assistant=False, plan=False, max_run_tokens=None, disabled_tools=None, yolo=False,
+        session=None, max_memory_mb=512,
+    )
+    rc = cli._spawn_detached(args)
+    assert rc == 0
+    assert callable(captured["preexec_fn"])
+
+    calls = []
+    monkeypatch.setattr("resource.setrlimit", lambda which, limits: calls.append((which, limits)))
+    captured["preexec_fn"]()
+    import resource
+
+    assert calls == [(resource.RLIMIT_AS, (512 * 1024 * 1024, 512 * 1024 * 1024))]
+
+
+def test_spawn_detached_ignores_memory_limit_on_windows(monkeypatch, tmp_path, capsys):
+    import saturday.cli as cli
+
+    monkeypatch.setattr("saturday.config.CONFIG_FILE", tmp_path / "config.json")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "x")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "_is_windows", lambda: True)
+
+    captured = {}
+
+    class FakeProc:
+        pid = 4242
+
+    def fake_popen(argv, **kwargs):
+        captured.update(kwargs)
+        return FakeProc()
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+    args = Namespace(
+        provider=None, model=None, temperature=None, max_steps=None,
+        assistant=False, plan=False, max_run_tokens=None, disabled_tools=None, yolo=False,
+        session=None, max_memory_mb=512,
+    )
+    rc = cli._spawn_detached(args)
+    assert rc == 0
+    assert captured["preexec_fn"] is None
+    assert "ignored on Windows" in capsys.readouterr().out
 
 
 def test_doctor_reports_orphaned_run(tmp_path, monkeypatch, capsys):

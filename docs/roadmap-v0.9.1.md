@@ -83,10 +83,12 @@ the sections above.
       gateway's per-chat dispatch; deliberately not the scheduler, since it
       fires due schedules synchronously and blocking there would stall
       every other pending cron job.
-- [ ] **Startup self-audit.** Check config, keys, and known-risky settings
-      at boot the way `doctor` does on demand today, but automatically and
-      before an unattended run starts, not only when a human remembers to
-      run it.
+- [x] **Startup self-audit.** Landed: `_preflight_check` runs before a
+      `--detach` spawn (provider config + key presence, no network probe -
+      that's a real wait on every detach for what's normally an
+      already-working setup). Aborts before `subprocess.Popen` instead of
+      spawning a process that fails minutes later in a log nobody's
+      watching.
 
 ### Self-management
 
