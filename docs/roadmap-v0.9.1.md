@@ -18,9 +18,9 @@ skills work is explicitly required before SWE-bench per direct instruction.
    marker-file state tracking for breaking changes between versions.
 2. **Skills / capability work, required before running SWE-bench-verified.**
    Direct instruction: don't run the benchmark until the harness is
-   "capable enough with skills and other stuff." Ties directly into the
-   `optional-skills/` library found in `MershLab/harness` — likely the
-   fastest real path to satisfying this, not a from-scratch build.
+   "capable enough with skills and other stuff." Covered in detail by the
+   autonomy checklist below — this item is the gate, that section is the
+   plan.
 3. **`gbrain` / `gstack` research** (github.com/garrytan/gbrain,
    github.com/garrytan/gstack) — not yet actually looked at.
 4. **PyPI Trusted Publisher setup.** Blocked on a human action on pypi.org
@@ -53,12 +53,116 @@ skills work is explicitly required before SWE-bench per direct instruction.
    - SEO/positioning — claim "harness-first" explicitly in README H1 and
      packaging copy
 
-## Newer, larger items
+## Autonomy checklist
 
-Tracked separately once this list is confirmed and sequenced — covers the
-`MershLab/harness` ports (ACP adapter, MCP server via `mcp_serve.py`,
-`claude-code-subagent`, Docker sandbox recipe, `mini_swe_runner.py`, the
-broader `plugins/` surface) and the net-new asks (universal external-agent
-spawner for Claude Code/Codex/Cursor/Gemini CLI, universal model/MCP
-connector, a ComfyUI-style visual stack builder), all discussed 2026-08-30
-but not yet added here pending confirmation on sequencing.
+What "autonomous" actually requires, broken into build steps. Framed as
+capability gaps, not features for their own sake — each item exists
+because unattended, long-running operation breaks without it. Checked
+against what Saturday has today; nothing here is double-counted against
+the sections above.
+
+### Reliability under no supervision
+
+- [ ] **Crash and session recovery.** An ungracefully-killed run currently
+      just leaves a session in whatever state it was in. Needs: detection
+      of orphaned/incomplete sessions on next startup, a recovery path that
+      resumes or cleanly closes them, and a "lost and found" listing so
+      nothing silently vanishes.
+- [ ] **Heartbeat / liveness signal.** No way today to check "is my
+      unattended run still alive and making progress" without tailing logs.
+      A simple liveness file or status endpoint, checked by `doctor` and
+      exposed to the web UI.
+- [ ] **Resource limiting.** No CPU/memory/wall-clock caps for a run left
+      unattended. An autonomous agent that can run away with resources on
+      a shared or cloud box is a real operational risk, not a hypothetical
+      one.
+- [ ] **Pause/resume as a distinct control**, separate from stop. Right now
+      the only controls are "let it run" or "kill it" — no way to suspend a
+      long task and pick it back up later without losing state.
+- [ ] **Startup self-audit.** Check config, keys, and known-risky settings
+      at boot the way `doctor` does on demand today, but automatically and
+      before an unattended run starts, not only when a human remembers to
+      run it.
+
+### Self-management
+
+- [ ] **Real self-update system.** This is item 1 above (Omarchy-inspired
+      update/release work) — restated here because "can update itself
+      without a human re-running an installer" is a load-bearing autonomy
+      requirement, not a nice-to-have.
+- [ ] **Update locking + a receipt log.** Concurrent updates (two triggers
+      firing at once) need to be mutually exclusive, and every update
+      needs a record of what changed and when — both for debugging and for
+      the eventual rollback path.
+- [ ] **Graceful self-relaunch after an update**, so a long-running
+      instance doesn't need a human to notice a new version landed and
+      manually restart it.
+- [ ] **Model fallback.** If the configured provider/model errors or rate
+      limits, an autonomous run currently just fails the task. Needs an
+      explicit fallback chain, not a silent retry-forever loop.
+- [ ] **Cost and data-policy guardrails per model**, checked before a call
+      goes out, not just observed after the fact via the existing cost
+      metrics.
+
+### Reach — where the agent can be told to work and report back
+
+- [ ] **Additional gateway platforms beyond Telegram** — Discord, Slack, at
+      minimum. Multi-platform reach is what makes "runs while you're away
+      and tells you what happened" actually useful day to day.
+- [ ] **Webhook / external-trigger surface**, so other systems (CI, a cron
+      job outside Saturday itself, another service) can kick off a run
+      without going through chat or the scheduler.
+- [ ] **Remote execution backends** — at minimum Docker and SSH, so an
+      unattended run doesn't have to live on the same machine as the
+      person who started it.
+
+### Planning and delegation
+
+- [ ] **Structured task decomposition**, distinct from a single-shot
+      `run`. Breaking a goal into ordered sub-tasks with dependencies, not
+      just handing the whole thing to one long agent loop.
+- [ ] **A first-class subagent orchestration story.** Engine support
+      already exists (`enable_subagents`); this is documenting and exposing
+      it as a real, driven-by-the-planner surface, matching the pending
+      item in the carried-over list above.
+- [ ] **Cross-session goal tracking.** State that persists across
+      restarts about what the agent is working toward, not just what
+      happened in one session's transcript.
+
+### Memory and recall
+
+- [ ] **Session search across history**, not just the current one — find
+      "what did I ask it to do last week about X" without manually
+      scrolling sessions.
+- [ ] **Active memory curation.** Right now memory is whatever's in a
+      session file; nothing periodically consolidates or nudges the agent
+      to persist durable facts versus letting them age out with the
+      transcript.
+
+### Extensibility
+
+- [ ] **MCP server mode** — expose Saturday itself as something other
+      tools (any MCP-speaking client) can connect to, not just a client of
+      other MCP servers. Restated from the existing competitive-roadmap
+      gap; this checklist is why it matters for autonomy specifically —
+      other systems delegating work in.
+- [ ] **A curated MCP catalog/picker with basic security screening**
+      before connecting to a new server, instead of trusting whatever's
+      configured.
+- [ ] **A skills hub** — sharing format + directory, restated from the
+      carried-over list; skills are how the agent gets *better* at
+      recurring autonomous work over time instead of re-solving it from
+      scratch each run.
+- [ ] **A pluggable external-agent runner** — a generic interface for
+      spawning another CLI agent (Claude Code, Codex, Cursor, Gemini CLI,
+      others) as a delegate, installing it if it's missing, rather than one
+      hardcoded integration per tool.
+- [ ] **A visual stack-builder UI** for assembling a full agent
+      configuration — models, tools, skills, MCP connections — without
+      hand-editing config files. The most novel, least-scoped item here;
+      needs its own design pass before implementation starts.
+
+None of this is sequenced yet. The reliability and self-management
+sections are the actual prerequisite for "leave it running unattended,"
+which is the literal definition of autonomous — those two probably come
+first regardless of what else gets reordered.
