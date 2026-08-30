@@ -516,6 +516,66 @@ def test_wall_clock_off_by_default_does_not_interfere(monkeypatch):
     assert traj.stop_reason != "wall_clock"
 
 
+def test_memory_nudge_reaches_a_later_call_not_the_first():
+    from saturday.agent.loop import MEMORY_NUDGE_TEXT
+
+    class Noop:
+        name = "noop"
+        description = "n"
+        parameters = {"type": "object", "properties": {}, "required": []}
+
+        def run(self, args):
+            return True, "ok"
+
+    base = make_scripted_model([{"tool_calls": [{"name": "noop", "arguments": {}}]} for _ in range(5)] + [{"content": "done"}])
+    reg = ToolRegistry()
+    reg.register(Noop())
+    loop = AgentLoop(base, reg, max_steps=10, memory_nudge_interval=2)
+    loop.run("sys", "go")
+
+    def has_nudge(call):
+        return any(m.get("content") == MEMORY_NUDGE_TEXT for m in call["messages"])
+
+    assert not has_nudge(base.calls[0]), "step 0 must not be nudged (step_index > 0 required)"
+    assert any(has_nudge(c) for c in base.calls[1:]), "a later step should carry the nudge"
+
+
+def test_memory_nudge_never_splits_a_tool_call_from_its_result():
+    class Noop:
+        name = "noop"
+        description = "n"
+        parameters = {"type": "object", "properties": {}, "required": []}
+
+        def run(self, args):
+            return True, "ok"
+
+    base = make_scripted_model([{"tool_calls": [{"name": "noop", "arguments": {}}]} for _ in range(6)] + [{"content": "done"}])
+    reg = ToolRegistry()
+    reg.register(Noop())
+    loop = AgentLoop(base, reg, max_steps=10, memory_nudge_interval=1)
+    loop.run("sys", "go")
+
+    for call in base.calls:
+        msgs = call["messages"]
+        for i, m in enumerate(msgs):
+            if m.get("role") == "assistant" and m.get("tool_calls"):
+                nxt = msgs[i + 1] if i + 1 < len(msgs) else None
+                assert nxt is not None and nxt.get("role") == "tool", (
+                    f"assistant tool_calls at index {i} not immediately followed by a tool result "
+                    f"(got {nxt!r} instead) - the nudge landed inside a tool_call/result pair"
+                )
+
+
+def test_memory_nudge_off_by_default():
+    from saturday.agent.loop import MEMORY_NUDGE_TEXT
+
+    base = make_scripted_model([{"content": "done"}])
+    reg = ToolRegistry()
+    loop = AgentLoop(base, reg, max_steps=10)  # memory_nudge_interval defaults to 0 (off)
+    loop.run("sys", "go")
+    assert not any(m.get("content") == MEMORY_NUDGE_TEXT for c in base.calls for m in c["messages"])
+
+
 def test_no_budget_by_default():
     base = make_scripted_model([{"content": "done"}])
     loop = AgentLoop(base, ToolRegistry(), max_steps=3)
@@ -1725,4 +1785,32 @@ def test_blocked_providers_and_models_flags_reach_overrides():
     assert out["blocked_providers"] == "openai,xai"
     assert out["blocked_models"] == "gpt-3.5"
     assert out["max_run_cost_usd"] == 2.5
+
+
+def test_sessions_search_flag(tmp_path, monkeypatch, capsys):
+    import saturday.cli as cli
+    import saturday.config as cfgmod
+
+    monkeypatch.setattr(cfgmod, "CONFIG_DIR", tmp_path / "home")
+    store = SessionStore(root=tmp_path / "home" / "sessions")
+    sid = store.create({"task": "filler"})
+    store.append(sid, {"type": "messages", "messages": [{"role": "assistant", "content": "the quantum ferret protocol"}]})
+
+    args = Namespace(pause=None, unpause=None, search="quantum ferret")
+    assert cli.cmd_sessions(args) == 0
+    out = capsys.readouterr().out
+    assert sid in out and "ferret" in out
+
+
+def test_sessions_search_no_matches(tmp_path, monkeypatch, capsys):
+    import saturday.cli as cli
+    import saturday.config as cfgmod
+
+    monkeypatch.setattr(cfgmod, "CONFIG_DIR", tmp_path / "home")
+    store = SessionStore(root=tmp_path / "home" / "sessions")
+    store.create({"task": "filler"})
+
+    args = Namespace(pause=None, unpause=None, search="nothing matches this")
+    assert cli.cmd_sessions(args) == 0
+    assert "no matches" in capsys.readouterr().out
 

@@ -581,6 +581,7 @@ class Agent:
             max_run_cost_usd=float(getattr(self.cfg, "max_run_cost_usd", 0.0) or 0.0),
             cost_provider=self.cfg.provider or "",
             cost_model=self.cfg.model or "",
+            memory_nudge_interval=int(getattr(self.cfg, "memory_nudge_interval", 0) or 0),
             # optional per-tool-call watchdog (None => wait forever)
             tool_call_timeout=getattr(self.cfg, "tool_timeout", None),
             injection_guard=bool(getattr(self.cfg, "injection_guard", True)),
