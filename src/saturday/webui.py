@@ -2476,7 +2476,7 @@ class AppServer(ThreadingHTTPServer):
                 return  # listener gone; serve_forever's finally already ran
             raise
 
-    def __init__(self, address, app: AppState, token: str = "") -> None:
+    def __init__(self, address, app: AppState, token: str = "", extra_hosts: set[str] | None = None) -> None:
         # A dedicated Handler subclass per AppServer instance: the base
         # Handler's app/token/allowed_hosts/allowed_origins are class
         # attributes, and two AppServer instances alive in the same process
@@ -2494,8 +2494,20 @@ class AppServer(ThreadingHTTPServer):
         bound_host, bound_port = self.server_address[:2]
         # pin Host/Origin to the bound loopback (or bind) address so a rebinding
         # domain or a hostile web page can never reach the API
-        handler_cls.allowed_hosts = allowed_hosts(bound_host, bound_port)
+        hosts = allowed_hosts(bound_host, bound_port)
+        # a tunnel forwards Host: <name>.trycloudflare.com, which the loopback pin rejects
+        for extra in extra_hosts or ():
+            hosts.add(extra)
+        handler_cls.allowed_hosts = hosts
         handler_cls.allowed_origins = allowed_origins(handler_cls.allowed_hosts)
+
+    def allow_host(self, authority: str) -> None:
+        """Widen the Host allowlist post-bind; a tunnel only knows its name after the port exists."""
+        from saturday.utils.httpd import allowed_origins
+
+        cls = self.RequestHandlerClass
+        cls.allowed_hosts = set(cls.allowed_hosts) | {authority}
+        cls.allowed_origins = allowed_origins(cls.allowed_hosts)
 
 
 # ---------------------------------------------------------------------------
@@ -2676,6 +2688,7 @@ def serve(
     token: str | None = None,
     cfg_overrides: dict | None = None,
     env_path: str | None = None,
+    tunnel_provider: str | None = None,
 ) -> int:
     from saturday.utils.env import load_env_file
 
@@ -2736,6 +2749,25 @@ def serve(
     url = f"http://{display_host}:{bound_port}/"
     auth_qs = f"?k={token}" if token else ""
     print(f"Saturday app  ::  {url}", flush=True)
+
+    tunnel = None
+    if tunnel_provider:
+        from saturday import remote as _remote
+
+        try:
+            tunnel = _remote.start_tunnel(tunnel_provider, bound_port)
+        except RuntimeError as exc:
+            print(f"Saturday app :: REFUSED: {exc}", flush=True)
+            srv.server_close()
+            return 2
+        srv.allow_host(tunnel.host)
+        remote_url = f"{tunnel.url}/{auth_qs}"
+        print(f"remote        ::  {remote_url}", flush=True)
+        print(f"tunnel        ::  {tunnel.provider}"
+              + ("  (TLS terminates at the provider)" if tunnel.provider == "cloudflared" else ""),
+              flush=True)
+        for line in _remote.qr_lines(remote_url):
+            print(line, flush=True)
     if not token:
         # parity with `saturday serve`'s --no-token warning: this endpoint can
         # drive a full-capability agent, so an open bind must be a visible choice
@@ -2765,6 +2797,8 @@ def serve(
     except KeyboardInterrupt:
         pass
     finally:
+        if tunnel is not None:
+            tunnel.close()
         srv.server_close()
     return 0
 

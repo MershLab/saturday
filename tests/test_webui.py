@@ -2865,3 +2865,95 @@ def test_launch_app_window_falls_back_to_webbrowser_when_no_app_browser(monkeypa
     result = webui.launch_app_window("http://127.0.0.1:8679/")
     assert result is None
     assert opened == ["http://127.0.0.1:8679/"]
+
+
+# ---- remote access (tunnel) ----------------------------------------------
+
+
+def test_argv_per_provider():
+    from saturday import remote as rmt
+
+    assert rmt._argv("cloudflared", 8679) == ["cloudflared", "tunnel", "--url", "http://127.0.0.1:8679"]
+    assert rmt._argv("tailscale", 8679) == ["tailscale", "funnel", "--bg=false", "8679"]
+    with pytest.raises(ValueError):
+        rmt._argv("nope", 1)
+
+
+def test_available_providers_reflects_path(monkeypatch):
+    from saturday import remote as rmt
+
+    monkeypatch.setattr(rmt.shutil, "which", lambda n: "/usr/bin/x" if n == "tailscale" else None)
+    assert rmt.available_providers() == ["tailscale"]
+    monkeypatch.setattr(rmt.shutil, "which", lambda n: None)
+    assert rmt.available_providers() == []
+
+
+def test_start_tunnel_missing_binary_names_the_installer(monkeypatch):
+    from saturday import remote as rmt
+
+    monkeypatch.setattr(rmt.shutil, "which", lambda n: None)
+    with pytest.raises(RuntimeError, match="cloudflared is not installed"):
+        rmt.start_tunnel("cloudflared", 8679)
+
+
+class _FakeProc:
+    def __init__(self, lines, exits=False):
+        self.stdout = iter(lines)
+        self._exits = exits
+        self.terminated = False
+
+    def poll(self):
+        return 1 if self._exits else None
+
+    def terminate(self):
+        self.terminated = True
+
+    def wait(self, timeout=None):
+        return 0
+
+
+def test_start_tunnel_parses_url_and_host(monkeypatch):
+    from saturday import remote as rmt
+
+    lines = ["starting\n", "|  https://brave-mode-1234.trycloudflare.com    |\n", "ready\n"]
+    monkeypatch.setattr(rmt.shutil, "which", lambda n: "/usr/bin/cloudflared")
+    monkeypatch.setattr(rmt.subprocess, "Popen", lambda *a, **k: _FakeProc(lines))
+    tun = rmt.start_tunnel("cloudflared", 8679, timeout=5)
+    assert tun.url == "https://brave-mode-1234.trycloudflare.com"
+    assert tun.host == "brave-mode-1234.trycloudflare.com"
+    assert tun.provider == "cloudflared"
+
+
+def test_start_tunnel_surfaces_real_output_on_failure(monkeypatch):
+    """A dead tunnel must report its own words - 'tunnel failed' is unfixable."""
+    from saturday import remote as rmt
+
+    monkeypatch.setattr(rmt.shutil, "which", lambda n: "/usr/bin/cloudflared")
+    monkeypatch.setattr(rmt.subprocess, "Popen",
+                        lambda *a, **k: _FakeProc(["ERR failed to connect\n"], exits=True))
+    with pytest.raises(RuntimeError, match="failed to connect"):
+        rmt.start_tunnel("cloudflared", 8679, timeout=5)
+
+
+def test_qr_lines_absent_without_qrencode(monkeypatch):
+    from saturday import remote as rmt
+
+    monkeypatch.setattr(rmt.shutil, "which", lambda n: None)
+    assert rmt.qr_lines("https://x") == []
+
+
+def test_allow_host_widens_pin_without_losing_loopback(tmp_path):
+    """The Host pin rejects a tunnel hostname by design; remote must widen it
+    explicitly, and must not drop the loopback entries doing so."""
+    app = AppState(cfg_overrides={"workspace_root": str(tmp_path)})
+    srv = AppServer(("127.0.0.1", 0), app, token="t")
+    try:
+        before = set(srv.RequestHandlerClass.allowed_hosts)
+        assert not any("trycloudflare" in h for h in before)
+        srv.allow_host("brave-mode-1234.trycloudflare.com")
+        after = set(srv.RequestHandlerClass.allowed_hosts)
+        assert "brave-mode-1234.trycloudflare.com" in after
+        assert before <= after
+        assert "https://brave-mode-1234.trycloudflare.com" in srv.RequestHandlerClass.allowed_origins
+    finally:
+        srv.server_close()

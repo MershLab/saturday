@@ -156,6 +156,21 @@ saturday run --disable web,computer_use "summarize notes/"   # no network, no de
 
 Families: `web` (search+fetch) · `browser` · `computer_use` (pointer/keyboard/ui/screen) · `shell` · `python` · `file_writes` · `subagents` · `memory` · `external_agents`. In the app: Settings → Safety & approvals → Tool toggles. Per-session: `/toggle <name|family>` in chat; `/tools` shows what's active. Disabled tools are hidden from the model entirely — not just blocked after the fact.
 
+## Remote access
+
+Reach a running Saturday from your phone without opening a port:
+
+```bash
+saturday remote                    # picks whichever tunnel is on PATH
+saturday remote --tunnel tailscale # or force one
+```
+
+The server stays bound to loopback; the tunnel connects outbound, so this works
+behind NAT and firewalls with no port forwarding. The access token still gates
+every request. `cloudflared` needs no account (TLS terminates at their edge);
+`tailscale` needs one but is end-to-end encrypted. A QR is printed when
+`qrencode` is installed.
+
 ## Tools
 
 `shell` (+background jobs) · `read_file` · `write_file` · `edit_file` · `list_dir` · `glob` · `grep` · `python` (persistent REPL) · `web_fetch` · `todo` · `create/get/update_goal` · `job_list/output/kill` · `task` (subagents) · `external_agent` (delegate to an installed claude-code/codex/cursor/antigravity CLI)

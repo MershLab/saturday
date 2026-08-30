@@ -840,6 +840,32 @@ def cmd_app(args: argparse.Namespace) -> int:
     )
 
 
+def cmd_remote(args: argparse.Namespace) -> int:
+    from saturday import remote as rmt
+    from saturday.webui import serve as webui_serve
+
+    provider = getattr(args, "tunnel", None)
+    if not provider:
+        found = rmt.available_providers()
+        if not found:
+            _print("no tunnel provider found on PATH. Install one:")
+            for name, hint in rmt.INSTALL_HINTS.items():
+                _print(f"  {name:<12} {hint}")
+            _print("cloudflared needs no account; tailscale is end-to-end encrypted.")
+            return 1
+        provider = found[0]
+
+    return webui_serve(
+        host="127.0.0.1",
+        port=args.port,
+        open_window=False,
+        token="" if args.no_token else (args.token or None),
+        cfg_overrides=_overrides(args),
+        env_path=getattr(args, "env", None),
+        tunnel_provider=provider,
+    )
+
+
 def cmd_sessions(args: argparse.Namespace) -> int:
     from saturday.config import get_config_dir
     from saturday.sessions import RunState, SessionStore
@@ -1237,6 +1263,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_chat.add_argument("--resume", metavar="SESSION_ID", help="continue a saved session")
     p_chat.add_argument("--yolo", action="store_true", help="fully autonomous: no approval prompts this session (/yolo toggles)")
     p_chat.set_defaults(fn=cmd_chat)
+
+    p_remote = sub.add_parser("remote", help="reach this Saturday from your phone via a tunnel")
+    common(p_remote)
+    p_remote.add_argument("--tunnel", choices=["cloudflared", "tailscale"], help="tunnel provider (default: first found on PATH)")
+    p_remote.add_argument("--port", type=int, default=8679)
+    p_remote.add_argument("--token", help="fixed access token (default: random per launch)")
+    p_remote.add_argument("--no-token", action="store_true", help="disable the access token (dangerous over a public tunnel)")
+    p_remote.set_defaults(fn=cmd_remote)
 
     p_sessions = sub.add_parser("sessions", help="list saved sessions")
     p_sessions.add_argument("--pause", metavar="SESSION_ID", help="suspend a running session at its next step boundary")
