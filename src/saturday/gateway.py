@@ -162,9 +162,9 @@ class TelegramGateway:
 
             def on_session_id(sid: str) -> None:
                 nonlocal run_state
-                from saturday.config import CONFIG_DIR
+                from saturday.config import get_config_dir
 
-                run_state = RunState(CONFIG_DIR / "sessions", sid)
+                run_state = RunState(get_config_dir() / "sessions", sid)
                 run_state.start()
 
             try:

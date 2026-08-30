@@ -5,7 +5,7 @@ from fakes import make_scripted_model
 from saturday.agent.todo import TodoTool
 from saturday.config import AgentConfig
 from saturday.repl import ConsoleApprover, FileEditGate, Repl, render_file_diff
-from saturday.sessions import SessionStore
+from saturday.sessions import RunState, SessionStore
 from saturday.tools.base import ToolRegistry
 from saturday.tools.shell import ShellTool
 from saturday.agent.core import Agent
@@ -697,6 +697,57 @@ def test_doctor_uses_provider_specific_probe(monkeypatch, tmp_path, capsys):
     assert cli.cmd_doctor(args) == 0
     assert seen == {"name": "azure-openai", "api_key": "azure-test-key", "timeout": 8}
     assert "reachable — 1 models found" in capsys.readouterr().out
+
+
+def test_doctor_reports_orphaned_run(tmp_path, monkeypatch, capsys):
+    import subprocess as sp
+    import sys as _sys
+
+    import saturday.cli as cli
+    import saturday.config as cfgmod
+
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setattr(cfgmod, "CONFIG_DIR", home)
+    monkeypatch.setattr(cfgmod, "CONFIG_FILE", None)
+    monkeypatch.chdir(workspace)
+
+    proc = sp.Popen([_sys.executable, "-c", "pass"])
+    proc.wait()
+    rs = RunState(home / "sessions", "dropped-mid-task")
+    rs.start()
+    data = json.loads(rs.path.read_text())
+    data["pid"] = proc.pid
+    rs.path.write_text(json.dumps(data))
+
+    args = Namespace(
+        provider="ollama", model=None, temperature=None, max_steps=None,
+        assistant=False, plan=False, env=None, privacy=False, offline=True,
+    )
+    cli.cmd_doctor(args)
+    out = capsys.readouterr().out
+    assert "orphaned" in out and "dropped-mid-task" in out
+
+
+def test_doctor_reports_no_runs_when_none_tracked(tmp_path, monkeypatch, capsys):
+    import saturday.cli as cli
+    import saturday.config as cfgmod
+
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setattr(cfgmod, "CONFIG_DIR", home)
+    monkeypatch.setattr(cfgmod, "CONFIG_FILE", None)
+    monkeypatch.chdir(workspace)
+
+    args = Namespace(
+        provider="ollama", model=None, temperature=None, max_steps=None,
+        assistant=False, plan=False, env=None, privacy=False, offline=True,
+    )
+    cli.cmd_doctor(args)
+    out = capsys.readouterr().out
+    assert "runs          : none tracked as running" in out
 
 
 def test_doctor_offline_skips_probe_and_never_fails_on_endpoint(tmp_path, monkeypatch, capsys):
