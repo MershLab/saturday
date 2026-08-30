@@ -11,11 +11,9 @@ Nothing below has been started. Ordered roughly by dependency, not
 importance — the update system gates real self-update testing, and the
 skills work is explicitly required before SWE-bench per direct instruction.
 
-1. **Omarchy-inspired update/release system.** Version-check against the
-   latest GitHub release, delegated self-update per install channel (pip
-   wheel vs deb vs rpm vs AppImage vs PKGBUILD vs the Windows installer all
-   update differently), plus a timestamp-named migration-script system with
-   marker-file state tracking for breaking changes between versions.
+1. [x] **Omarchy-inspired update/release system.** Landed as `saturday
+   update` (see the self-management section below) — version check,
+   channel detection, locking, receipts, self-relaunch.
 2. **Skills / capability work, required before running SWE-bench-verified.**
    Direct instruction: don't run the benchmark until the harness is
    "capable enough with skills and other stuff." Covered in detail by the
@@ -29,14 +27,13 @@ skills work is explicitly required before SWE-bench per direct instruction.
    in `docs/release-pypi-todo.md`. Every other v0.9.0 artifact (6 platform
    installers + GitHub Release) already shipped; this is the one remaining
    gap.
-5. **Isolated app-window profile for the browser fallback.** `pywebview`
-   needs system GTK (`gi`) or Qt (`qtpy`) for a true native window on
-   Linux, which a PyInstaller bundle can't carry (isolated interpreter, no
-   access to system site-packages) — expected, not the bug. The actual bug:
-   `launch_app_window` in `webui.py` reuses the user's already-running
-   Chromium session/profile instead of a genuinely separate chromeless
-   window, because it doesn't set an isolated `--user-data-dir`. Cheap,
-   scoped fix — was mid-fix when scope moved to this list.
+5. [x] **Isolated app-window profile for the browser fallback.** Landed:
+   `launch_app_window` now sets its own `--user-data-dir`, so the app
+   window is a genuinely separate Chromium instance instead of getting
+   redirected into whatever regular browser session is already running
+   (reproduced live, then fixed, 2026-08-30). `pywebview` still needs
+   system GTK/Qt for a true native window on Linux — that's an inherent
+   platform constraint, not this bug.
 6. **Real Linux/Wayland computer-use gap.** The `xdotool`-based backend in
    `spatial_unix.py` is X11-only and confirmed not to work on a real
    Hyprland/Wayland setup. Flagged, not fixed.
