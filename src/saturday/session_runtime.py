@@ -289,6 +289,22 @@ class EventBus:
             self.subs.append(q)
         return q
 
+    def subscribe_with_replay(self, after: int | None) -> tuple[Queue, list[dict]]:
+        """Atomically subscribe and snapshot buffered events with _seq > after.
+
+        Subscribing and reading the replay buffer must happen under the same
+        lock acquisition: doing them as two separate calls (subscribe(), then
+        replay()) leaves a window where a publish() lands in between and gets
+        added to both the buffer snapshot the caller replays AND fanned out to
+        the freshly-subscribed queue, double-delivering that one event to the
+        caller (observed as duplicate tool_start events for a fast tool call
+        racing the POST /api/chat handler's own subscribe)."""
+        q: Queue = Queue(maxsize=self.SUB_QUEUE_MAX)
+        with self._lock:
+            self.subs.append(q)
+            replay = [e for e in self.buf if e.get("_seq", 0) > after] if after is not None else []
+        return q, replay
+
     def unsubscribe(self, q: Queue) -> None:
         with self._lock:
             if q in self.subs:
