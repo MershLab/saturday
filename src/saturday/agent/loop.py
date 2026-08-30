@@ -125,6 +125,9 @@ class AgentLoop:
         summarizer: Callable[[str], str] | None = None,
         max_run_tokens: int = 0,
         max_wall_seconds: int = 0,
+        max_run_cost_usd: float = 0.0,
+        cost_provider: str = "",
+        cost_model: str = "",
         tool_call_timeout: float | None = None,
         injection_guard: bool = True,
     ) -> None:
@@ -145,6 +148,10 @@ class AgentLoop:
         self.max_run_tokens = int(max_run_tokens or 0)
         # wall-clock cap: stop_reason="wall_clock" when elapsed time crosses
         self.max_wall_seconds = int(max_wall_seconds or 0)
+        # dollar-denominated sibling of max_run_tokens: stop_reason="cost_budget"
+        self.max_run_cost_usd = float(max_run_cost_usd or 0.0)
+        self.cost_provider = cost_provider
+        self.cost_model = cost_model
         # per-tool-call watchdog (None => wait forever); a hung tool must not
         # wedge the whole run since parallel results are gathered synchronously
         self.tool_call_timeout = float(tool_call_timeout) if tool_call_timeout else None
@@ -315,6 +322,25 @@ class AgentLoop:
                 traj.stop_reason = "budget"
                 self._emit_checkpoint(history)
                 return traj
+
+            if self.max_run_cost_usd and self.cost_provider and self.cost_model:
+                from saturday.usage import estimate_cost_usd
+
+                spent = estimate_cost_usd(self.cost_provider, self.cost_model, traj.usage.prompt_tokens, traj.usage.completion_tokens)
+                # unpriced model (spent is None): never blocks, "never a
+                # fake number" applies to enforcement too, not just display
+                if spent is not None and spent >= self.max_run_cost_usd:
+                    last_text = next(
+                        (s.assistant.content for s in reversed(traj.steps) if s.assistant.content),
+                        None,
+                    )
+                    traj.final_answer = (
+                        f"[budget stop] cost budget ${self.max_run_cost_usd:.2f} reached (~${spent:.2f} spent) "
+                        "before the goal completed." + (f" Last output: {last_text}" if last_text else "")
+                    )
+                    traj.stop_reason = "cost_budget"
+                    self._emit_checkpoint(history)
+                    return traj
 
             executed = assistant.tool_calls[:MAX_TOOL_CALLS_PER_STEP]
             # stall detector: three consecutive steps issuing the exact same

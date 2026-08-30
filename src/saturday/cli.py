@@ -1163,6 +1163,9 @@ def _overrides(args: argparse.Namespace, ci: bool = False) -> dict:
         "max_wall_seconds": getattr(args, "max_wall_seconds", None),
         "disabled_tools": getattr(args, "disabled_tools", None),
         "fallback_models": getattr(args, "fallback_models", None),
+        "max_run_cost_usd": getattr(args, "max_run_cost_usd", None),
+        "blocked_providers": getattr(args, "blocked_providers", None),
+        "blocked_models": getattr(args, "blocked_models", None),
         "safety_mode": "autonomous" if getattr(args, "yolo", False) else None,
     }
     if ci:
@@ -1194,6 +1197,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--fallback-models", dest="fallback_models", help="comma-separated models to fall through to if the primary model errors or is rate-limited")
     p_run.add_argument("--max-run-tokens", type=int, dest="max_run_tokens", help="abort the run once cumulative tokens exceed this (hard spend policy)")
     p_run.add_argument("--max-wall-seconds", type=int, dest="max_wall_seconds", help="abort the run once elapsed wall-clock time exceeds this (unattended runaway guard)")
+    p_run.add_argument("--max-run-cost-usd", type=float, dest="max_run_cost_usd", help="abort the run once estimated spend exceeds this (dollar-denominated sibling of --max-run-tokens)")
+    p_run.add_argument("--blocked-providers", dest="blocked_providers", help="comma-separated providers this run must never use, even via fallback")
+    p_run.add_argument("--blocked-models", dest="blocked_models", help="comma-separated models this run must never use, even via fallback")
     p_run.add_argument("--max-memory-mb", type=int, dest="max_memory_mb", help="hard memory cap for a --detach run (POSIX only; ignored elsewhere)")
     p_run.add_argument("--detach", action="store_true", help="run in a detached background process; returns immediately (log under .saturday/bg/)")
     p_run.add_argument("--background", action="store_true", help="background-only desktop mode: blocks pointer/keyboard/focus, forces non-intrusive UI Automation (pairs well with --detach)")
