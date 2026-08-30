@@ -128,7 +128,7 @@ PROVIDERS: dict[str, ProviderProfile] = {
         # OpenRouter app attribution (docs): HTTP-Referer identifies the app
         # for usage pages/rankings; X-Title sets its display name.
         profile_headers={
-            "HTTP-Referer": "https://github.com/saturdaylabs/saturday",
+            "HTTP-Referer": "https://github.com/MershLab/saturday",
             "X-Title": "Saturday",
         },
     ),

@@ -9,7 +9,7 @@ description = "Saturday - a SOTA open agentic harness distilled from DeepSeek (R
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-authors = [{ name = "Saturday Labs" }]
+authors = [{ name = "MershLab" }]
 keywords = ["agents", "llm", "deepseek", "hermes", "harness", "tools", "evals"]
 classifiers = [
     "Development Status :: 4 - Beta",

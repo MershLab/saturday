@@ -171,7 +171,7 @@ def test_google_omits_sampling_params(monkeypatch):
 def test_openrouter_sends_attribution_headers_and_bearer(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
     client = build_client(AgentConfig(provider="openrouter"))
-    assert client.extra_headers.get("HTTP-Referer") == "https://github.com/saturdaylabs/saturday"
+    assert client.extra_headers.get("HTTP-Referer") == "https://github.com/MershLab/saturday"
     assert client.extra_headers.get("X-Title") == "Saturday"
     assert client.api_key == "or-key"
 
