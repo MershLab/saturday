@@ -77,9 +77,12 @@ the sections above.
       unattended. An autonomous agent that can run away with resources on
       a shared or cloud box is a real operational risk, not a hypothetical
       one.
-- [ ] **Pause/resume as a distinct control**, separate from stop. Right now
-      the only controls are "let it run" or "kill it" — no way to suspend a
-      long task and pick it back up later without losing state.
+- [x] **Pause/resume as a distinct control**, separate from stop. Landed:
+      `saturday sessions --pause/--unpause <id>`, file-based (not signals,
+      so it's identical across platforms). Wired into `cmd_run` and the
+      gateway's per-chat dispatch; deliberately not the scheduler, since it
+      fires due schedules synchronously and blocking there would stall
+      every other pending cron job.
 - [ ] **Startup self-audit.** Check config, keys, and known-risky settings
       at boot the way `doctor` does on demand today, but automatically and
       before an unattended run starts, not only when a human remembers to
