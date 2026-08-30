@@ -184,10 +184,13 @@ not by reading Saturday's own source first.
       carried-over list; skills are how the agent gets *better* at
       recurring autonomous work over time instead of re-solving it from
       scratch each run.
-- [ ] **A pluggable external-agent runner** — a generic interface for
-      spawning another CLI agent (Claude Code, Codex, Cursor, Gemini CLI,
-      others) as a delegate, installing it if it's missing, rather than one
-      hardcoded integration per tool.
+- [x] **A pluggable external-agent runner.** Landed: `external_agent` tool
+      + `ExternalAgentSpec` registry (Claude Code, Codex, Cursor, Gemini
+      CLI), auto-installs on `install=true`. Registry-based so adding
+      another agent or fixing a wrong invocation flag later is a one-line
+      change. Claude Code's own flags are exact; the other three are
+      best-effort against currently-documented behavior — called out
+      honestly, not presented with false uniform confidence.
 - [ ] **A visual stack-builder UI** for assembling a full agent
       configuration — models, tools, skills, MCP connections — without
       hand-editing config files. The most novel, least-scoped item here;
