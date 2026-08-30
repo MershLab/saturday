@@ -4488,7 +4488,7 @@ async function workspaceFiles() {
     for (const e of data.entries || []) {
       if (files.length >= 400) break;
       const rpath = (rel ? rel.replace(/\/+$/, "") + "/" : "") + e.name;
-      if (e.dir) await walk(rpath + "/", depth + 1);
+      if (e.dir) { files.push(rpath + "/"); await walk(rpath + "/", depth + 1); }
       else files.push(rpath);
     }
   }
