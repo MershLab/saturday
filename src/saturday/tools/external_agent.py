@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass
 from typing import Callable
 
@@ -139,6 +140,7 @@ class ExternalAgentTool(Tool):
             "prompt": {"type": "string", "description": "Full standalone instructions for the delegate"},
             "install": {"type": "boolean", "description": "auto-install the CLI if missing (default false - asks first otherwise)"},
             "timeout": {"type": "number", "description": "seconds before giving up (default 600)"},
+            "task_kind": {"type": "string", "description": "for agent=auto: task category, so routing learns per kind"},
         },
         "required": ["agent", "prompt"],
     }
@@ -147,7 +149,7 @@ class ExternalAgentTool(Tool):
         # injection point for tests; real default shells out for real
         self._installer = installer or self._default_install
         self._agents = all_agents()
-        names = list(self._agents)
+        names = ["auto"] + list(self._agents)
         self.parameters = {**type(self).parameters}
         self.parameters["properties"] = {
             **type(self).parameters["properties"],
@@ -156,7 +158,8 @@ class ExternalAgentTool(Tool):
         self.description = (
             f"Delegate a task to a different installed CLI agent ({', '.join(names)}) "
             "instead of Saturday's own subagents - for when a task specifically calls for a "
-            "different model/tool ecosystem. Installs the CLI automatically if install=true. "
+            "different model/tool ecosystem. agent='auto' picks the cheapest enabled one that "
+            "can do it and escalates on failure. Installs the CLI automatically if install=true. "
             "Add your own in CONFIG_DIR/agents.json."
         )
 
@@ -171,10 +174,41 @@ class ExternalAgentTool(Tool):
         return True, "installed"
 
     def run(self, args: dict) -> tuple[bool, str]:
-        agent_id = args.get("agent")
+        if args.get("agent") == "auto":
+            return self._run_auto(args)
+        return self._run_one(args.get("agent"), args)
+
+    def _run_auto(self, args: dict) -> tuple[bool, str]:
+        """Cheapest enabled agent first, escalating one tier per failure."""
+        from saturday import routing
+
+        task_kind = str(args.get("task_kind") or "general")
+        tried: set[str] = set()
+        errors: list[str] = []
+        for _ in range(3):
+            agent = routing.pick(task_kind, exclude=tried)
+            if agent is None:
+                break
+            tried.add(agent)
+            started = time.time()
+            ok, msg = self._run_one(agent, args)
+            routing.record(agent, task_kind, ok, time.time() - started, note="" if ok else msg)
+            if ok:
+                return True, msg
+            if routing.looks_like_quota_error(msg):
+                routing.mark_quota_exhausted(agent)
+            errors.append(f"{agent}: {msg[:200]}")
+        if not tried:
+            return False, (
+                "no agent available for auto-delegation. Enable one with "
+                "`saturday agents --enable <name>` (see `saturday agents`)."
+            )
+        return False, "all candidates failed:\n" + "\n".join(errors)
+
+    def _run_one(self, agent_id: str | None, args: dict) -> tuple[bool, str]:
         spec = self._agents.get(agent_id or "")
         if spec is None:
-            return False, f"unknown agent {agent_id!r}; choose one of {list(self._agents)}"
+            return False, f"unknown agent {agent_id!r}; choose one of {['auto'] + list(self._agents)}"
         prompt = (args.get("prompt") or "").strip()
         if not prompt:
             return False, "prompt is required"

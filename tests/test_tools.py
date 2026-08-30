@@ -3025,3 +3025,115 @@ def test_external_agents_family_maps_to_the_tool():
     assert ToolRegistry.TOOL_FAMILIES["external_agents"] == frozenset({"external_agent"})
     assert ToolRegistry.expand_tool_names(["external_agents"]) == {"external_agent"}
 
+
+
+# ---- auto-delegation routing ---------------------------------------------
+
+
+@pytest.fixture
+def routed(tmp_path, monkeypatch):
+    import saturday.config as cfgmod
+    from saturday import routing
+
+    monkeypatch.setattr(cfgmod, "CONFIG_DIR", tmp_path)
+    return routing
+
+
+def test_tier_defaults_and_override(routed):
+    assert routed.tier_of("claude-code") == routed.SUBSCRIPTION
+    assert routed.tier_of("ollama") == routed.LOCAL
+    assert routed.tier_of("something-unknown") == routed.METERED
+    assert routed.tier_of("claude-code", {"claude-code": routed.METERED}) == routed.METERED
+
+
+def test_enable_is_explicit_not_inferred_from_path(routed, monkeypatch):
+    """Installed means available; only an explicit enable means auto may spend it."""
+    from saturday.tools import external_agent as ea
+
+    monkeypatch.setattr(ea.shutil, "which", lambda n: "/usr/bin/x")
+    assert routed.pick() is None
+    routed.set_enabled("claude-code", True)
+    assert routed.pick() == "claude-code"
+    routed.set_enabled("claude-code", False)
+    assert routed.pick() is None
+
+
+def test_pick_prefers_cheaper_tier(routed, monkeypatch):
+    from saturday.tools import external_agent as ea
+
+    monkeypatch.setattr(ea.shutil, "which", lambda n: "/usr/bin/x")
+    monkeypatch.setattr(routed, "tier_of",
+                        lambda a, o=None: routed.LOCAL if a == "codex" else routed.METERED)
+    routed.set_enabled("claude-code", True)
+    routed.set_enabled("codex", True)
+    assert routed.pick() == "codex"
+
+
+def test_ema_moves_and_breaks_ties_within_a_tier(routed, monkeypatch):
+    from saturday.tools import external_agent as ea
+
+    monkeypatch.setattr(ea.shutil, "which", lambda n: "/usr/bin/x")
+    routed.set_enabled("claude-code", True)
+    routed.set_enabled("codex", True)
+    for _ in range(5):
+        routed.record("claude-code", "general", ok=False, note="boom")
+        routed.record("codex", "general", ok=True)
+    assert routed.pick() == "codex"
+    ema, n = routed.stats("claude-code", "general")
+    assert ema < 0.3 and n == 5
+
+
+def test_quota_error_detection_and_backoff(routed):
+    assert routed.looks_like_quota_error("HTTP 429 too many requests")
+    assert routed.looks_like_quota_error("usage limit reached")
+    assert not routed.looks_like_quota_error("syntax error on line 3")
+
+    assert not routed.quota_exhausted("claude-code")
+    routed.mark_quota_exhausted("claude-code")
+    assert routed.quota_exhausted("claude-code")
+    # window expiry lets it back in
+    assert not routed.quota_exhausted("claude-code", now=time.time() + routed.QUOTA_BACKOFF_SECONDS + 1)
+
+
+def test_exhausted_agent_is_skipped_for_the_next_pick(routed, monkeypatch):
+    from saturday.tools import external_agent as ea
+
+    monkeypatch.setattr(ea.shutil, "which", lambda n: "/usr/bin/x")
+    routed.set_enabled("claude-code", True)
+    routed.set_enabled("codex", True)
+    routed.mark_quota_exhausted("claude-code")
+    assert routed.pick() == "codex"
+
+
+def test_auto_escalates_past_a_failing_agent(routed, monkeypatch):
+    from saturday.tools import external_agent as ea
+
+    monkeypatch.setattr(ea.shutil, "which", lambda n: f"/usr/bin/{n}")
+    routed.set_enabled("claude-code", True)
+    routed.set_enabled("codex", True)
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv[0])
+
+        class R:
+            returncode = 0 if "codex" in argv[0] else 1
+            stdout = "second agent worked"
+            stderr = "429 quota exceeded"
+
+        return R()
+
+    monkeypatch.setattr(ea.subprocess, "run", fake_run)
+    ok, msg = ea.ExternalAgentTool().run({"agent": "auto", "prompt": "hi"})
+    assert ok and msg == "second agent worked"
+    assert len(calls) == 2, "should have escalated after the first failure"
+    # the 429 marked the first one as out of quota
+    assert routed.quota_exhausted("claude-code")
+
+
+def test_auto_with_nothing_enabled_explains_how_to_fix_it(routed, monkeypatch):
+    from saturday.tools import external_agent as ea
+
+    monkeypatch.setattr(ea.shutil, "which", lambda n: "/usr/bin/x")
+    ok, msg = ea.ExternalAgentTool().run({"agent": "auto", "prompt": "hi"})
+    assert not ok and "saturday agents --enable" in msg
