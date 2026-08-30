@@ -52,6 +52,13 @@ jobs:
           choco install nsis -y --no-progress
           $v = "${env:GITHUB_REF_NAME}" -replace "^v", ""
           if ($v -eq "${env:GITHUB_REF_NAME}") { $v = python -c "from saturday import __version__; print(__version__)" }
+          # OutFile resolves relative to the script's own directory
+          # (installer\_output), and it isn't checked into git. Two prior
+          # attempts to create it from inside the .nsi via !system had no
+          # visible effect (silently no-op or mis-resolved) and both left
+          # the exact same "Can't open output file" error with no further
+          # diagnostic; creating it here removes all ambiguity about cwd.
+          New-Item -ItemType Directory -Force -Path installer\_output | Out-Null
           & "${env:ProgramFiles(x86)}\NSIS\makensis.exe" "/DVERSION=$v" installer\saturday.nsi
 
       - name: Linux packages (deb + rpm + AppImage)
