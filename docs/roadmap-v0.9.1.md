@@ -63,6 +63,8 @@ the sections above.
 
 ### Reliability under no supervision
 
+All 5 items landed 2026-08-30.
+
 - [x] **Crash and session recovery.** Landed: `RunState` marker per session
       (status/pid/heartbeat), wired into `cmd_run`, the schedule watch loop,
       and the gateway dispatcher. A present marker with status=running and
@@ -73,10 +75,12 @@ the sections above.
       field, refreshed on every tool-call via `on_tool_result`. Surfaced in
       `doctor` (orphaned-run listing + active-run count). Web UI Runs-tab
       surfacing still open — doctor covers the CLI/automation case for now.
-- [ ] **Resource limiting.** No CPU/memory/wall-clock caps for a run left
-      unattended. An autonomous agent that can run away with resources on
-      a shared or cloud box is a real operational risk, not a hypothetical
-      one.
+- [x] **Resource limiting.** Landed: `--max-wall-seconds` (cross-platform,
+      checked at each step boundary, same pattern as the existing
+      `--max-run-tokens`) and `--max-memory-mb` (real OS-enforced RLIMIT_AS
+      on a `--detach` spawn, POSIX only - Windows has no stdlib equivalent
+      without a real dependency, ignored there with a printed note rather
+      than silently doing nothing).
 - [x] **Pause/resume as a distinct control**, separate from stop. Landed:
       `saturday sessions --pause/--unpause <id>`, file-based (not signals,
       so it's identical across platforms). Wired into `cmd_run` and the
