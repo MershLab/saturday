@@ -38,6 +38,21 @@ def _run(argv: list[str], timeout: float = 20.0) -> tuple[int, str, str]:
         return 1, "", f"{type(exc).__name__}: {exc}"
 
 
+# conservative vs. the real Linux ARG_MAX (typically ~2MB): keeps each
+# xdotool invocation small so a hung/failing chunk fails fast and pinpoints
+# roughly where in the text it happened, at the cost of more subprocess
+# spawns for very long text.
+_TYPE_CHUNK_CHARS = 256
+
+
+def xdotool_type_chunk(text: str, timeout: float = 60.0) -> tuple[int, str, str]:
+    """Default (non-mocked) runner for KeyboardTool's chunked type action: one
+    xdotool invocation per text chunk. Kept as its own argv-building call
+    (not reusing _run directly) so KeyboardTool can inject a fake in tests
+    without shelling out."""
+    return _run(["xdotool", "type", "--delay", "15", text], timeout=timeout)
+
+
 def _notes() -> str:
     return " (macOS/Linux backend — verify on real hardware)"
 
@@ -270,17 +285,32 @@ def keyboard_tool(self, args: dict) -> tuple[bool, str]:
             script = f'tell application "System Events" to key code {code}{using}'
         rc, _, err = _run(["osascript", "-e", script], timeout=20.0)
         return (True, f"{action} ok") if rc == 0 else (False, (err or "keyboard failed")[:300])
+    if action == "type":
+        text = str(args.get("text") or "")
+        if not text:
+            return False, "action=type needs text="
+        # chunked (not one shell-out for the whole string): a long paste as a
+        # single xdotool argv element risks the real ARG_MAX and gives no
+        # partial-progress error location; mirrors the Windows path's
+        # statement-batching for the same reason. self._run_ps is the
+        # injection point (real xdotool_type_chunk by default) so this stays
+        # mockable in tests without a real xdotool on PATH.
+        sent = 0
+        for start in range(0, len(text), _TYPE_CHUNK_CHARS):
+            chunk = text[start : start + _TYPE_CHUNK_CHARS]
+            rc, _, err = self._run_ps(chunk, timeout=60.0)
+            if rc != 0:
+                return False, f"keyboard failed at char {sent}: {(err or 'xdotool not found or failed').strip()[-300:]}"
+            sent += len(chunk)
+        return True, f"typed {len(text)} chars ok"
     if shutil.which("xdotool") is None:
         return False, "xdotool not found (required for keyboard on Linux)"
-    if action == "type":
-        rc, _, err = _run(["xdotool", "type", "--delay", "15", str(args.get("text") or "")], timeout=60.0)
-    else:
-        spec = str(args.get("key") or "")
-        sym = translate_linux_key(spec)
-        if sym is None:
-            return False, f"unsupported key-combo on Linux: {spec!r}"
-        rc, _, err = _run(["xdotool", "key", sym], timeout=10.0)
-    return (True, f"{action} ok") if rc == 0 else (False, (err or "keyboard failed")[:300])
+    spec = str(args.get("key") or "")
+    sym = translate_linux_key(spec)
+    if sym is None:
+        return False, f"unsupported key-combo on Linux: {spec!r}"
+    rc, _, err = _run(["xdotool", "key", sym], timeout=10.0)
+    return (True, "key ok") if rc == 0 else (False, (err or "keyboard failed")[:300])
 
 
 def parse_combo_mac(spec: str) -> tuple[int, list[str]] | None:
