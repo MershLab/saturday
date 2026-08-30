@@ -2752,6 +2752,15 @@ class _WindowControls:
         return True
 
 
+def embedded_window_hint() -> str:
+    """One actionable line telling the user how to get the embedded window."""
+    if sys.platform == "darwin":
+        return "install pyobjc:  uv tool install --force --with 'pywebview[cocoa]' saturday"
+    if os.name == "nt":
+        return "install the WebView2 runtime from microsoft.com/edge/webview2"
+    return "add a GUI backend:  uv tool install --force --with 'pywebview[qt]' saturday"
+
+
 def launch_embedded_window(url: str, width: int, height: int) -> bool:
     """Frameless embedded window with a custom title bar (pywebview/WebView2).
 
@@ -2764,6 +2773,14 @@ def launch_embedded_window(url: str, width: int, height: int) -> bool:
     except Exception as exc:
         print(f"[saturday] embedded window unavailable ({type(exc).__name__})", flush=True)
         return False
+    if not os.environ.get("SATURDAY_DEBUG"):
+        # pywebview probes every backend in turn and logs a full traceback for
+        # each one it cannot import. Missing backends are the normal case on a
+        # machine that has one of them, so the tracebacks are noise, not news;
+        # the single hint line below is what the user can actually act on.
+        import logging
+
+        logging.getLogger("pywebview").setLevel(logging.CRITICAL)
     try:
         controls = _WindowControls()
         win = webview.create_window(
@@ -2779,7 +2796,13 @@ def launch_embedded_window(url: str, width: int, height: int) -> bool:
         controls._win = win
         webview.start()
     except Exception as exc:
-        print(f"[saturday] embedded window failed ({type(exc).__name__})", flush=True)
+        print(f"[saturday] no embedded window ({type(exc).__name__}); "
+              f"using a browser window instead.", flush=True)
+        print(f"[saturday] to embed it, {embedded_window_hint()}", flush=True)
+        if os.environ.get("SATURDAY_DEBUG"):
+            import traceback
+
+            traceback.print_exc()
         return False
     return True
 
