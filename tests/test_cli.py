@@ -773,6 +773,43 @@ def test_doctor_reports_no_runs_when_none_tracked(tmp_path, monkeypatch, capsys)
     assert "runs          : none tracked as running" in out
 
 
+def test_preflight_check_catches_missing_key(monkeypatch, tmp_path):
+    import saturday.cli as cli
+
+    monkeypatch.setattr("saturday.config.CONFIG_FILE", tmp_path / "config.json")
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    args = Namespace(
+        provider=None, model=None, temperature=None, max_steps=None,
+        assistant=False, plan=False, max_run_tokens=None, disabled_tools=None, yolo=False,
+    )
+    problem = cli._preflight_check(args)
+    assert problem is not None and "DEEPSEEK_API_KEY" in problem
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "x")
+    assert cli._preflight_check(args) is None
+
+
+def test_spawn_detached_aborts_without_launching_on_bad_preflight(monkeypatch, tmp_path, capsys):
+    import saturday.cli as cli
+
+    monkeypatch.setattr("saturday.config.CONFIG_FILE", tmp_path / "config.json")
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    def exploding_popen(*a, **k):
+        raise AssertionError("must not spawn a process when preflight fails")
+
+    monkeypatch.setattr("subprocess.Popen", exploding_popen)
+    args = Namespace(
+        provider=None, model=None, temperature=None, max_steps=None,
+        assistant=False, plan=False, max_run_tokens=None, disabled_tools=None, yolo=False,
+        session=None,
+    )
+    rc = cli._spawn_detached(args)
+    assert rc == 1
+    assert "detach aborted" in capsys.readouterr().out
+
+
 def test_doctor_offline_skips_probe_and_never_fails_on_endpoint(tmp_path, monkeypatch, capsys):
     """--offline (CI mode): no probe at all, so an absent local provider cannot
     fail the harness check — the probe function must not even be imported."""
