@@ -99,6 +99,10 @@ jobs:
       - name: makepkg
         run: |
           cp dist/saturday-*.whl packaging/arch/
+          wheel="$(basename packaging/arch/saturday-*.whl)"
+          ver="${wheel#saturday-}"
+          ver="${ver%-py3-none-any.whl}"
+          sed -i "s/^pkgver=.*/pkgver=$ver/" packaging/arch/PKGBUILD
           useradd -m builder
           chmod -R a+rwX packaging/arch
           su builder -c "cd packaging/arch && makepkg -f --noconfirm"
