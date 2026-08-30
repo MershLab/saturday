@@ -17,8 +17,10 @@ from saturday.usage import estimate_cost_usd
 import json
 from argparse import Namespace
 import re
+import subprocess
 import sys
 import threading
+import time
 import urllib.error
 import urllib.request
 import pytest
@@ -1388,4 +1390,224 @@ def test_project_clone_receives_identity(tmp_path: Path):
     rcfg = proj_rt.agent.cfg
     assert rcfg is not app.base_cfg, "project runtime holds a clone"
     assert rcfg.assistant_name == "Friday"
+
+
+# ---- self-update system --------------------------------------------------
+
+
+def test_version_parse_and_compare():
+    from saturday.update import _parse_version, is_newer
+
+    assert _parse_version("v1.2.3") == (1, 2, 3)
+    assert _parse_version("0.9.0") == (0, 9, 0)
+    assert is_newer("0.9.1", "0.9.0")
+    assert is_newer("1.0.0", "0.9.9")
+    assert not is_newer("0.9.0", "0.9.0")
+    assert not is_newer("0.8.9", "0.9.0")
+
+
+def test_latest_release_parses_real_shaped_response(monkeypatch):
+    from saturday import update as upd
+
+    class FakeResp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self, _n):
+            return json.dumps(
+                {"tag_name": "v0.9.1", "html_url": "https://x/releases/v0.9.1", "assets": [{"name": "a.deb"}, {"name": "b.rpm"}]}
+            ).encode()
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: FakeResp())
+    rel = upd.latest_release()
+    assert rel == {"tag": "v0.9.1", "url": "https://x/releases/v0.9.1", "assets": ["a.deb", "b.rpm"]}
+
+
+def test_latest_release_never_raises_on_network_failure(monkeypatch):
+    from saturday import update as upd
+
+    def boom(*a, **k):
+        raise OSError("network unreachable")
+
+    monkeypatch.setattr("urllib.request.urlopen", boom)
+    assert upd.latest_release() is None
+
+
+def test_detect_channel_pip_and_pipx(monkeypatch):
+    from saturday import update as upd
+
+    monkeypatch.setattr(sys, "frozen", False, raising=False)
+    monkeypatch.delenv("PIPX_HOME", raising=False)
+    monkeypatch.setattr(upd.sys, "executable", "/usr/bin/python3")
+    assert upd.detect_channel() == "pip"
+
+    monkeypatch.setenv("PIPX_HOME", "/home/x/.local/pipx")
+    assert upd.detect_channel() == "pipx"
+
+
+def test_detect_channel_frozen_platforms(monkeypatch):
+    from saturday import update as upd
+
+    monkeypatch.setattr(upd.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(upd.sys, "platform", "darwin")
+    assert upd.detect_channel() == "macos-dmg"
+
+    monkeypatch.setattr(upd.sys, "platform", "win32")
+    assert upd.detect_channel() == "windows-installer"
+
+    monkeypatch.setattr(upd.sys, "platform", "linux")
+    monkeypatch.setenv("APPIMAGE", "/tmp/Saturday.AppImage")
+    assert upd.detect_channel() == "appimage"
+
+    monkeypatch.delenv("APPIMAGE", raising=False)
+    monkeypatch.setattr(upd.shutil, "which", lambda name: "/usr/bin/dpkg" if name == "dpkg" else None)
+    monkeypatch.setattr(upd, "_pkg_query", lambda cmd: cmd[0] == "dpkg")
+    assert upd.detect_channel() == "deb"
+
+    monkeypatch.setattr(upd.shutil, "which", lambda name: None)
+    assert upd.detect_channel() == "linux-bundle-unknown"
+
+
+def test_update_lock_rejects_concurrent_and_reclaims_dead(tmp_path, monkeypatch):
+    from saturday import update as upd
+    import saturday.config as cfgmod
+
+    monkeypatch.setattr(cfgmod, "CONFIG_DIR", tmp_path / "home")
+
+    with upd.update_lock():
+        with pytest.raises(upd.UpdateInProgress):
+            with upd.update_lock():
+                pass
+    # lock released cleanly after the first `with` exits
+    with upd.update_lock():
+        pass
+
+    # a lock left by a dead pid must not block forever
+    lock = upd._lock_path()
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait()
+    lock.write_text(json.dumps({"pid": proc.pid, "started": time.time()}))
+    with upd.update_lock():
+        pass
+
+
+def test_record_receipt_writes_jsonl(tmp_path, monkeypatch):
+    from saturday import update as upd
+    import saturday.config as cfgmod
+
+    monkeypatch.setattr(cfgmod, "CONFIG_DIR", tmp_path / "home")
+    upd.record_receipt(from_version="0.9.0", to_version="0.9.1", channel="pip", ok=True, detail="updated")
+    path = tmp_path / "home" / "update-log.jsonl"
+    entry = json.loads(path.read_text().splitlines()[0])
+    assert entry["from"] == "0.9.0" and entry["to"] == "0.9.1" and entry["ok"] is True
+
+
+def test_perform_update_pip_success_and_failure(monkeypatch):
+    from saturday import update as upd
+
+    class Ok:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr(upd.subprocess, "run", lambda *a, **k: Ok())
+    ok, detail = upd.perform_update("pip")
+    assert ok and detail == "updated"
+
+    class Fail:
+        returncode = 1
+        stdout = ""
+        stderr = "boom"
+
+    monkeypatch.setattr(upd.subprocess, "run", lambda *a, **k: Fail())
+    ok, detail = upd.perform_update("pip")
+    assert not ok and "boom" in detail
+
+
+def test_perform_update_manual_channel_returns_hint_not_action():
+    from saturday import update as upd
+
+    ok, detail = upd.perform_update("deb")
+    assert not ok
+    assert "apt-get" in detail
+
+
+def test_cmd_update_reports_up_to_date(monkeypatch, capsys):
+    import saturday.cli as cli
+
+    monkeypatch.setattr("saturday.update.current_version", lambda: "0.9.1")
+    monkeypatch.setattr("saturday.update.latest_release", lambda: {"tag": "v0.9.1", "url": "", "assets": []})
+    args = Namespace(apply=False)
+    assert cli.cmd_update(args) == 0
+    assert "up to date" in capsys.readouterr().out
+
+
+def test_cmd_update_check_only_prints_manual_hint(monkeypatch, capsys):
+    import saturday.cli as cli
+
+    monkeypatch.setattr("saturday.update.current_version", lambda: "0.9.0")
+    monkeypatch.setattr("saturday.update.latest_release", lambda: {"tag": "v0.9.1", "url": "", "assets": []})
+    monkeypatch.setattr("saturday.update.detect_channel", lambda: "pip")
+    args = Namespace(apply=False)
+    assert cli.cmd_update(args) == 0
+    out = capsys.readouterr().out
+    assert "update available: 0.9.0 -> v0.9.1" in out
+    assert "--apply" in out
+
+
+def test_cmd_update_apply_success_relaunches(monkeypatch, capsys, tmp_path):
+    import saturday.cli as cli
+    import saturday.config as cfgmod
+
+    monkeypatch.setattr(cfgmod, "CONFIG_DIR", tmp_path / "home")
+    monkeypatch.setattr("saturday.update.current_version", lambda: "0.9.0")
+    monkeypatch.setattr("saturday.update.latest_release", lambda: {"tag": "v0.9.1", "url": "", "assets": []})
+    monkeypatch.setattr("saturday.update.detect_channel", lambda: "pip")
+    monkeypatch.setattr("saturday.update.perform_update", lambda channel: (True, "updated"))
+    relaunched = []
+    monkeypatch.setattr("saturday.update.relaunch", lambda: relaunched.append(True))
+
+    args = Namespace(apply=True, relaunch=True)
+    assert cli.cmd_update(args) == 0
+    assert relaunched == [True]
+    log = (tmp_path / "home" / "update-log.jsonl").read_text()
+    assert '"ok": true' in log
+
+
+def test_cmd_update_apply_failure_no_relaunch(monkeypatch, capsys, tmp_path):
+    import saturday.cli as cli
+    import saturday.config as cfgmod
+
+    monkeypatch.setattr(cfgmod, "CONFIG_DIR", tmp_path / "home")
+    monkeypatch.setattr("saturday.update.current_version", lambda: "0.9.0")
+    monkeypatch.setattr("saturday.update.latest_release", lambda: {"tag": "v0.9.1", "url": "", "assets": []})
+    monkeypatch.setattr("saturday.update.detect_channel", lambda: "deb")
+    monkeypatch.setattr("saturday.update.perform_update", lambda channel: (False, "manual only"))
+    relaunched = []
+    monkeypatch.setattr("saturday.update.relaunch", lambda: relaunched.append(True))
+
+    args = Namespace(apply=True, relaunch=True)
+    assert cli.cmd_update(args) == 1
+    assert relaunched == []
+    assert "update failed" in capsys.readouterr().out
+
+
+def test_cmd_update_respects_held_lock(monkeypatch, capsys, tmp_path):
+    import saturday.cli as cli
+    import saturday.config as cfgmod
+    from saturday import update as upd
+
+    monkeypatch.setattr(cfgmod, "CONFIG_DIR", tmp_path / "home")
+    monkeypatch.setattr("saturday.update.current_version", lambda: "0.9.0")
+    monkeypatch.setattr("saturday.update.latest_release", lambda: {"tag": "v0.9.1", "url": "", "assets": []})
+    monkeypatch.setattr("saturday.update.detect_channel", lambda: "pip")
+
+    with upd.update_lock():
+        args = Namespace(apply=True, relaunch=True)
+        assert cli.cmd_update(args) == 1
+    assert "already running" in capsys.readouterr().out
 
