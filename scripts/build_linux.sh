@@ -97,7 +97,9 @@ if [ "$TARGET" = appimage ] || [ "$TARGET" = all ]; then
   install -m 0755 packaging/linux/AppRun "$APPDIR/AppRun"
   install -m 0644 packaging/linux/saturday.desktop "$APPDIR/saturday.desktop"
   install -m 0644 packaging/icons/saturday-256.png "$APPDIR/saturday.png"
-  LD="$STAGE/linuxdeploy-$ARCH.AppImage"
+  # Absolute: this script cd's into $STAGE below, and a relative $LD
+  # resolved from the original cwd stops working the moment cwd changes.
+  LD="$(pwd)/$STAGE/linuxdeploy-$ARCH.AppImage"
   [ -f "$LD" ] || curl -fL "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-$ARCH.AppImage" -o "$LD"
   chmod +x "$LD"
   cd "$STAGE"
