@@ -209,6 +209,9 @@ def run_scheduled_task(sched: Schedule, timeout: float = 1800.0) -> tuple[int, s
     """Fire one schedule entry as a one-shot agent run. Never raises."""
     from saturday.sessions import RunState
 
+    # no on_step_start / pause support here on purpose: watch() below fires
+    # due schedules synchronously in one loop, so a paused run would stall
+    # every other due cron job, not just this one.
     run_state: RunState | None = None
 
     def on_session_id(sid: str) -> None:

@@ -699,6 +699,29 @@ def test_doctor_uses_provider_specific_probe(monkeypatch, tmp_path, capsys):
     assert "reachable — 1 models found" in capsys.readouterr().out
 
 
+def test_sessions_pause_and_unpause(tmp_path, monkeypatch, capsys):
+    import saturday.cli as cli
+    import saturday.config as cfgmod
+
+    home = tmp_path / "home"
+    monkeypatch.setattr(cfgmod, "CONFIG_DIR", home)
+    monkeypatch.setattr(cfgmod, "CONFIG_FILE", None)
+
+    rs = RunState(home / "sessions", "long-task")
+    rs.start()
+    assert not rs.pause_requested()
+
+    args = Namespace(pause="long-task", unpause=None)
+    assert cli.cmd_sessions(args) == 0
+    assert "pause requested" in capsys.readouterr().out
+    assert rs.pause_requested()
+
+    args = Namespace(pause=None, unpause="long-task")
+    assert cli.cmd_sessions(args) == 0
+    assert "resumed" in capsys.readouterr().out
+    assert not rs.pause_requested()
+
+
 def test_doctor_reports_orphaned_run(tmp_path, monkeypatch, capsys):
     import subprocess as sp
     import sys as _sys

@@ -167,11 +167,21 @@ class TelegramGateway:
                 run_state = RunState(get_config_dir() / "sessions", sid)
                 run_state.start()
 
+            def on_step_start(_step_index: int) -> None:
+                # only blocks this chat's own dispatch thread - other chats
+                # each get their own thread and lock, so a paused chat
+                # doesn't stall anyone else's.
+                if run_state is None:
+                    return
+                while run_state.pause_requested():
+                    time.sleep(1.0)
+
             try:
                 traj = sess.agent.run(
                     text,
                     on_session_id=on_session_id,
                     on_tool_result=lambda _r: run_state.heartbeat() if run_state else None,
+                    on_step_start=on_step_start,
                 )
                 reply = traj.final_answer or f"[stopped: {traj.stop_reason}]"
                 if run_state is not None:
