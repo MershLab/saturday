@@ -3023,3 +3023,43 @@ def test_models_post_wires_free_models_into_agents(tmp_path, monkeypatch):
         assert status == 200 and data["added"] == ["free-z-ai-glm-5-2"]
     written = json.loads((tmp_path / "agents.json").read_text())
     assert written["free-z-ai-glm-5-2"]["model"] == "z-ai/glm-5.2:free"
+
+
+def test_remote_endpoint_reports_state_and_providers(tmp_path, monkeypatch):
+    from saturday import remote as rmt
+
+    monkeypatch.setattr(rmt.shutil, "which", lambda n: "/usr/bin/x" if n == "cloudflared" else None)
+    app = AppState(cfg_overrides={"workspace_root": str(tmp_path)})
+    with _Server(app) as srv:
+        _, data = _req(srv.base, "/api/remote")
+        assert data["running"] is False and data["available"] == ["cloudflared"]
+
+
+def test_remote_start_allowlists_the_tunnel_host(tmp_path, monkeypatch):
+    """Starting a tunnel must widen the Host pin or every request 403s."""
+    from saturday import remote as rmt
+
+    tun = rmt.Tunnel(url="https://x-y-z.trycloudflare.com", host="x-y-z.trycloudflare.com",
+                     provider="cloudflared", proc=None)
+    monkeypatch.setattr(rmt, "available_providers", lambda: ["cloudflared"])
+    monkeypatch.setattr(rmt, "start_tunnel", lambda p, port, **k: tun)
+    app = AppState(cfg_overrides={"workspace_root": str(tmp_path)})
+    with _Server(app) as srv:
+        status, data = _req(srv.base, "/api/remote", "POST", {"start": True})
+        assert status == 200 and data["running"] is True
+        assert data["url"].startswith("https://x-y-z.trycloudflare.com/")
+        assert "k=" in data["url"], "token must ride the pairing URL"
+        assert "x-y-z.trycloudflare.com" in srv.http.RequestHandlerClass.allowed_hosts
+
+        _, data = _req(srv.base, "/api/remote", "POST", {"start": False})
+        assert data["running"] is False
+
+
+def test_remote_start_without_provider_explains(tmp_path, monkeypatch):
+    from saturday import remote as rmt
+
+    monkeypatch.setattr(rmt, "available_providers", lambda: [])
+    app = AppState(cfg_overrides={"workspace_root": str(tmp_path)})
+    with _Server(app) as srv:
+        status, data = _req(srv.base, "/api/remote", "POST", {"start": True})
+        assert status == 400 and "cloudflared" in data["hints"]

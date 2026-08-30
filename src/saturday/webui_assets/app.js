@@ -3355,6 +3355,7 @@ function openSettings() {
   loadSchedules();
   loadCommands();
   loadAgents();
+  loadRemote();
   $("#settingsWarn").classList.add("hidden");
   $("#settingsModal").classList.remove("hidden");
   $("#cfgModel").focus();
@@ -3423,6 +3424,51 @@ async function loadModels() {
       wrap.appendChild(lbl);
     }
   }
+}
+
+async function loadRemote() {
+  const st = $("#remoteState");
+  const btn = $("#btnRemoteToggle");
+  const box = $("#remoteUrl");
+  if (!st) return;
+  let d;
+  try { d = await api("/api/remote"); }
+  catch { st.textContent = "Could not check remote state."; return; }
+  if (d.running) {
+    st.textContent = "Running via " + d.provider;
+    btn.textContent = "Stop";
+    box.classList.remove("hidden");
+    box.replaceChildren();
+    const a = el("a", "", d.url);
+    a.href = d.url; a.target = "_blank"; a.rel = "noopener";
+    box.appendChild(a);
+    box.appendChild(el("div", "field-hint", "Open this on your phone. Anyone with the link and token can drive this agent."));
+  } else {
+    box.classList.add("hidden");
+    btn.textContent = "Start";
+    st.textContent = d.available && d.available.length
+      ? "Ready \u2014 will use " + d.available[0]
+      : "No tunnel provider installed (cloudflared needs no account).";
+    btn.disabled = !(d.available && d.available.length);
+  }
+}
+
+function wireRemoteUi() {
+  const btn = $("#btnRemoteToggle");
+  if (!btn) return;
+  btn.addEventListener("click", async () => {
+    const starting = btn.textContent === "Start";
+    btn.disabled = true;
+    btn.textContent = starting ? "Starting\u2026" : "Stopping\u2026";
+    try {
+      const out = await api("/api/remote", { method: "POST", body: JSON.stringify({ start: starting }) });
+      if (!out.ok && out.error) $("#remoteState").textContent = out.error;
+    } catch (e) {
+      $("#remoteState").textContent = "Failed to " + (starting ? "start" : "stop") + " the tunnel.";
+    }
+    btn.disabled = false;
+    await loadRemote();
+  });
 }
 
 function wireAgentsUi() {
@@ -4613,6 +4659,81 @@ function atMaybe() {
     pop.classList.remove("hidden");
   });
 }
+
+/* ------------------------------------------------- workspace tree picker */
+
+const treeState = { open: new Set(), cache: new Map() };
+
+async function treeChildren(rel) {
+  if (treeState.cache.has(rel)) return treeState.cache.get(rel);
+  let data;
+  try { data = await api("/api/ws?sid=" + encodeURIComponent(state.sid || "") + "&path=" + encodeURIComponent(rel)); }
+  catch { return []; }
+  const entries = (data.entries || []).slice().sort((a, b) =>
+    (a.dir === b.dir) ? a.name.localeCompare(b.name) : (a.dir ? -1 : 1));
+  treeState.cache.set(rel, entries);
+  return entries;
+}
+
+function treeInsert(path) {
+  const input = $("#input");
+  const pos = input.selectionStart || input.value.length;
+  const before = input.value.slice(0, pos);
+  const sep = (before && !before.endsWith(" ")) ? " " : "";
+  input.value = before + sep + path + " " + input.value.slice(pos);
+  const caret = (before + sep + path + " ").length;
+  input.setSelectionRange(caret, caret);
+  closeTree();
+  input.focus();
+  autoGrow(input);
+  updateSendEnabled();
+}
+
+async function treeRender() {
+  const pop = $("#treePop");
+  pop.replaceChildren();
+  const head = el("div", "tree-head");
+  head.appendChild(el("span", "hint", "Click a name to add it to your message"));
+  const close = el("button", "btn-sub", "Close");
+  close.addEventListener("click", closeTree);
+  head.appendChild(close);
+  pop.appendChild(head);
+
+  async function level(rel, depth) {
+    for (const e of await treeChildren(rel)) {
+      const path = (rel ? rel.replace(/\/+$/, "") + "/" : "") + e.name;
+      const row = el("div", "tree-row" + (e.dir ? " tree-dir" : ""));
+      row.style.paddingLeft = (8 + depth * 14) + "px";
+      const isOpen = treeState.open.has(path);
+      const caret = el("span", "tree-caret", e.dir ? (isOpen ? "\u25be" : "\u25b8") : "");
+      if (e.dir) {
+        caret.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          isOpen ? treeState.open.delete(path) : treeState.open.add(path);
+          treeRender();
+        });
+      }
+      row.appendChild(caret);
+      row.appendChild(el("span", "tree-name", e.name + (e.dir ? "/" : "")));
+      row.addEventListener("click", () => treeInsert(path + (e.dir ? "/" : "")));
+      pop.appendChild(row);
+      if (e.dir && isOpen) await level(path + "/", depth + 1);
+    }
+  }
+  await level("", 0);
+  if (pop.childElementCount === 1) pop.appendChild(el("div", "hint", "Workspace is empty."));
+}
+
+function closeTree() { $("#treePop").classList.add("hidden"); }
+
+async function toggleTree() {
+  const pop = $("#treePop");
+  if (!pop.classList.contains("hidden")) { closeTree(); return; }
+  treeState.cache.clear();
+  pop.classList.remove("hidden");
+  await treeRender();
+}
+
 function atPick(file) {
   const input = $("#input");
   const pos = input.selectionStart || 0;
@@ -5316,6 +5437,8 @@ async function init() {
   updateTokMeter();
   loadCtx();
   wireAgentsUi();
+  $("#treeBtn").addEventListener("click", toggleTree);
+  wireRemoteUi();
   // Workbench dashboard elapsed clock (only touches the DOM while a run is live)
   setInterval(() => {
     if (stage.run && !stage.run.endedAt && stage.tab === "home") homeRunUpdate();
