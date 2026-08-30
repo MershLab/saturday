@@ -1611,3 +1611,28 @@ def test_cmd_update_respects_held_lock(monkeypatch, capsys, tmp_path):
         assert cli.cmd_update(args) == 1
     assert "already running" in capsys.readouterr().out
 
+
+# ---- model fallback CLI exposure -----------------------------------------
+# The fallback chain itself (LLMClient.chat: per-candidate retries, error
+# classification, backoff) already existed and is fully tested elsewhere;
+# fallback_models just had no way to actually be set outside a hand-edited
+# config.json. This only tests the new CLI plumbing.
+
+
+def test_fallback_models_flag_reaches_overrides():
+    from saturday.cli import _overrides
+
+    args = Namespace(
+        provider=None, model=None, temperature=None, max_steps=None,
+        assistant=False, plan=False, fallback_models="gpt-4o,claude-3-5-sonnet",
+    )
+    assert _overrides(args)["fallback_models"] == "gpt-4o,claude-3-5-sonnet"
+
+
+def test_fallback_models_string_splits_into_list_on_load(tmp_path, monkeypatch):
+    import saturday.config as cfgmod
+
+    monkeypatch.setattr(cfgmod, "CONFIG_FILE", tmp_path / "config.json")
+    cfg = AgentConfig.load({"fallback_models": "gpt-4o, claude-3-5-sonnet ,  "})
+    assert cfg.fallback_models == ["gpt-4o", "claude-3-5-sonnet"]
+
