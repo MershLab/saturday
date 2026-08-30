@@ -158,7 +158,7 @@ Families: `web` (search+fetch) · `browser` · `computer_use` (pointer/keyboard/
 
 ## Tools
 
-`shell` (+background jobs) · `read_file` · `write_file` · `edit_file` · `list_dir` · `glob` · `grep` · `python` (persistent REPL) · `web_fetch` · `todo` · `create/get/update_goal` · `job_list/output/kill` · `task` (subagents) · `external_agent` (delegate to an installed claude-code/codex/cursor/gemini CLI)
+`shell` (+background jobs) · `read_file` · `write_file` · `edit_file` · `list_dir` · `glob` · `grep` · `python` (persistent REPL) · `web_fetch` · `todo` · `create/get/update_goal` · `job_list/output/kill` · `task` (subagents) · `external_agent` (delegate to an installed claude-code/codex/cursor/antigravity CLI)
 
 Workspace paths are sandboxed against escaping the root. Extend via plugins:
 

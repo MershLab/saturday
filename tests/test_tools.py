@@ -2939,6 +2939,38 @@ def test_external_agent_registered_in_core_plugin():
     assert "external_agent" in names
 
 
+def test_gemini_alias_resolves_to_antigravity():
+    """Google retired Gemini CLI mid-2026; an existing config saying "gemini"
+    must keep working rather than failing with "unknown agent"."""
+    from saturday.tools import external_agent as ea
+
+    assert ea.AGENTS["gemini"] is ea.AGENTS["antigravity"]
+    assert ea.AGENTS["gemini"].binaries == ("agy",)
+
+
+def test_antigravity_uses_verified_headless_flag(monkeypatch):
+    from saturday.tools import external_agent as ea
+
+    monkeypatch.setattr(ea.shutil, "which", lambda name: f"/usr/bin/{name}")
+    captured = {}
+
+    def fake_run(argv, **kwargs):
+        captured["argv"] = argv
+
+        class R:
+            returncode = 0
+            stdout = "ok"
+            stderr = ""
+
+        return R()
+
+    monkeypatch.setattr(ea.subprocess, "run", fake_run)
+    ok, _ = ea.ExternalAgentTool().run({"agent": "antigravity", "prompt": "hi"})
+    assert ok
+    # `agy -p "<prompt>"` per antigravity.google/docs/cli/headless
+    assert captured["argv"] == ["/usr/bin/agy", "-p", "hi"]
+
+
 def test_external_agents_family_maps_to_the_tool():
     assert ToolRegistry.TOOL_FAMILIES["external_agents"] == frozenset({"external_agent"})
     assert ToolRegistry.expand_tool_names(["external_agents"]) == {"external_agent"}
