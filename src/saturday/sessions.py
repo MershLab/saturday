@@ -389,15 +389,27 @@ class SessionStore:
         """All sessions, newest first. UNCAPPED by default — a cap here once
         hid real chats behind a flood of files (landmine #8): hiding user data
         is never an acceptable default. Callers that want pagination can pass
-        limit explicitly."""
-        rows = sorted(self.root.glob("*.jsonl"), key=lambda x: x.stat().st_mtime, reverse=True)
-        if limit is not None:
-            rows = rows[:limit]
-        out = []
-        for p in rows:
+        limit explicitly.
+
+        Ordered by the ``created`` header field, not filesystem mtime: mtime
+        resolution varies by OS/filesystem and can tie under rapid creation
+        (observed on Windows CI), which broke "newest first" for sessions
+        created within the same tick. ``created`` is written under this
+        store's append lock, so it is strictly ordered for a given root even
+        when mtime is not."""
+        entries: list[tuple[float, Path, dict[str, Any]]] = []
+        for p in self.root.glob("*.jsonl"):
             first = self._meta_for_path(p)
             if first is None:
                 continue
+            created = first.get("created")
+            sort_key = float(created) if isinstance(created, (int, float)) else p.stat().st_mtime
+            entries.append((sort_key, p, first))
+        entries.sort(key=lambda e: e[0], reverse=True)
+        if limit is not None:
+            entries = entries[:limit]
+        out = []
+        for _, p, first in entries:
             out.append(
                 {
                     "id": first.get("id", p.stem),
