@@ -1289,6 +1289,66 @@ class Handler(BaseHTTPRequestHandler):
             days = 14
         self._send_json({"window_days": days, **usage_summary(limit_days=days)})
 
+    def _get_agents(self) -> None:
+        from saturday import routing
+
+        kind = (self._query_params().get("task_kind") or ["general"])[0]
+        rows = [
+            {
+                "agent": c.agent, "tier": c.tier, "tier_name": routing.TIER_NAMES[c.tier],
+                "installed": c.installed, "enabled": c.enabled,
+                "success": c.ema_success if c.n else None, "runs": c.n,
+            }
+            for c in routing.candidates(kind)
+        ]
+        self._send_json({"agents": rows})
+
+    def _post_agents(self, payload: dict) -> None:
+        from saturday import routing
+
+        name = str(payload.get("agent") or "")
+        if not name:
+            self._send_json({"ok": False, "error": "agent required"}, status=400)
+            return
+        routing.set_enabled(name, bool(payload.get("enabled")))
+        self._send_json({"ok": True, "enabled": sorted(routing.enabled_agents())})
+
+    def _get_models(self) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+
+        from saturday.cli import _is_free_model, _probe_provider
+        from saturday.config import PROVIDERS
+
+        q = self._query_params()
+        only_free = (q.get("free") or ["0"])[0] not in ("0", "", "false")
+        names = [(q.get("provider") or [""])[0]] if (q.get("provider") or [""])[0] else list(PROVIDERS)
+        names = [n for n in names if n in PROVIDERS]
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            results = list(pool.map(lambda n: _probe_provider(n, 8.0), names))
+        out = {}
+        for name, ok, _detail, models in results:
+            if not ok:
+                continue
+            picked = [
+                {"id": m, "free": _is_free_model(name, m)}
+                for m in sorted(models)
+                if not only_free or _is_free_model(name, m)
+            ]
+            if picked:
+                out[name] = picked
+        self._send_json({"providers": out})
+
+    def _post_models(self, payload: dict) -> None:
+        """Wire chosen models into agents.json so auto-delegation can reach them."""
+        from saturday.cli import _add_free_to_agents
+
+        picks = payload.get("models") or {}
+        if not isinstance(picks, dict):
+            self._send_json({"ok": False, "error": "models must be {provider: [id,...]}"}, status=400)
+            return
+        added = _add_free_to_agents({str(k): [str(m) for m in v] for k, v in picks.items()})
+        self._send_json({"ok": True, "added": added})
+
     def _get_sessions(self) -> None:
         app = self.app
         rows = app.store.list_sessions()
@@ -2408,6 +2468,8 @@ _GET_ROUTES = [
     ("/api/state", "_get_state"),
     ("/api/trust", "_get_trust"),
     ("/api/metrics", "_get_metrics"),
+    ("/api/agents", "_get_agents"),
+    ("/api/models", "_get_models"),
     ("/api/sessions", "_get_sessions"),
     ("/api/projects", "_get_projects"),
     ("/api/export/all", "_get_export_all"),
@@ -2430,6 +2492,8 @@ _POST_ROUTES = {
     "/api/hooks": "_post_hooks",
     "/api/approvals/remove": "_post_approvals_remove",
     "/api/approve": "_post_approve",
+    "/api/agents": "_post_agents",
+    "/api/models": "_post_models",
     "/api/stop": "_post_stop",
     "/api/config": "_post_config",
     "/api/rename": "_post_rename",

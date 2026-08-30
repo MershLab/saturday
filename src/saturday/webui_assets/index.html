@@ -405,6 +405,22 @@
             <input id="cfgMaxRunTokens" type="number" min="0" max="10000000" step="1000" placeholder="0 = unlimited">
             <span class="field-hint">The run stops with a budget notice once cumulative tokens reach this. 0 disables the cap.</span>
           </div>
+          <div class="field" style="margin-top:14px">
+            <span class="field-label">Auto-delegation &mdash; spend the cheapest thing that works</span>
+            <div id="agentsList" class="agents-list"></div>
+            <div class="agents-actions">
+              <button id="btnRefreshAgents" class="btn-sub" type="button">Refresh</button>
+              <button id="btnBrowseModels" class="btn-sub" type="button">Browse models&hellip;</button>
+            </div>
+            <span class="field-hint">Being installed is not permission to spend it &mdash; turn one on to let <code>agent=auto</code> use it. Cheapest tier runs first and escalates on failure.</span>
+          </div>
+          <div id="modelBrowser" class="field hidden" style="margin-top:12px">
+            <span class="field-label">Models your keys can reach</span>
+            <label class="toggle"><input id="modelsFreeOnly" type="checkbox" checked><span>free only</span></label>
+            <div id="modelsList" class="models-list"></div>
+            <button id="btnAddFreeModels" class="btn-sub" type="button">Add selected to auto-delegation</button>
+            <span class="field-hint">Free models cost nothing to run, so they sit at the bottom of the cost ladder and get tried first.</span>
+          </div>
           <div class="field" style="margin-top:12px">
             <span class="field-label">Saved command rules ("always allow")</span>
             <div id="approvalRules"></div>
