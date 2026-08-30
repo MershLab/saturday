@@ -8,7 +8,6 @@ from pathlib import Path
 import pytest  # noqa: E402
 from saturday.config import PROVIDERS, AgentConfig  # noqa: E402
 from saturday.llm.providers import build_client  # noqa: E402
-import pytest
 import json
 import threading
 from fakes import make_scripted_model
@@ -21,18 +20,13 @@ from saturday.tools.base import ToolRegistry
 import time
 import urllib.error
 from fakes import FakeLLM, assistant  # noqa: E402
-from saturday.agent.loop import AgentLoop, _strip_think  # noqa: E402
-from saturday.llm.client import LLMClient, LLMContextOverflow, classify_error  # noqa: E402
-from saturday.safety import ApprovalPolicy, check_command  # noqa: E402
-from saturday.sessions import SessionStore  # noqa: E402
-from saturday.tools.base import ToolRegistry  # noqa: E402
+from saturday.agent.loop import _strip_think  # noqa: E402
 from saturday.tools.shell import ShellTool  # noqa: E402
 
 
 
 # --- from tests/test_providers.py ---
 
-sys.path.insert(0, str(Path(__file__).parent))
 
 
 @pytest.fixture(autouse=True)

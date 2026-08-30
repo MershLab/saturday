@@ -1,26 +1,126 @@
-"""Merged from: tests/test_recall.py, tests/test_project_memory.py."""
-
-
 from __future__ import annotations
 import json
+import sys
+import types
+from pathlib import Path
+from fakes import make_scripted_model
+from saturday.agent.core import Agent
+from saturday.config import AgentConfig
+from saturday.eval.builtin import builtin_suite
+from saturday.eval.runner import (  # noqa: E402
+    EvalCase,
+    EvalRunner,
+    composite,
+    contains_any,
+    file_created,
+    regex_matches,
+)
+from saturday.tasks import SubagentTask
+from saturday.tools.base import ToolRegistry
+from saturday.tools.files import WriteFile
 import time
 from saturday.recall import RecallIndex, format_recall
 from saturday.tools.recall import MemorySearchTool
-import sys
-from pathlib import Path
-import pytest  # noqa: E402
-from saturday.agent.core import Agent  # noqa: E402
-from saturday.config import AgentConfig  # noqa: E402
-from saturday.tools.memory import MemoryTool, load_memory_block, memory_path  # noqa: E402
-import json  # noqa: E402
-import threading  # noqa: E402
-import urllib.error  # noqa: E402
-import urllib.request  # noqa: E402
+import pytest
+from saturday.tools.memory import MemoryTool, load_memory_block, memory_path
+import threading
+import urllib.error
+import urllib.request
+import subprocess
+from saturday.verify import detect_project, run_verification
+
+def test_verifiers(tmp_path: Path):
+    class T:
+        final_answer = "The count is 25 exactly."
+        task = "t"
+
+    assert contains_any("25")(T()) == 1.0
+    assert regex_matches(r"entries:\s*\d+")(types.SimpleNamespace(final_answer="entries: 7")) == 1.0
+    assert regex_matches(r"entries:\s*\d+")(types.SimpleNamespace(final_answer="nope")) == 0.0
+    f = tmp_path / "artifact.txt"
+    f.write_text("payload", encoding="utf-8")
+    v = composite(file_created(str(f), must_contain=("payload",)), contains_any("payload"))
+    assert v(types.SimpleNamespace(final_answer="payload")) == 1.0
 
 
+class ScriptedAgent:
+    def __init__(self, answer: str) -> None:
+        self.answer = answer
 
-# --- from tests/test_recall.py ---
+    def run(self, task: str):
+        from saturday.types import Trajectory
 
+        return Trajectory(task=task, system_prompt="s", final_answer=self.answer, stop_reason="done")
+
+
+def test_eval_runner_saves_and_scores(tmp_path: Path):
+    runner = EvalRunner(lambda: ScriptedAgent("answer: 25"), out_dir=str(tmp_path))
+    cases = [
+        EvalCase(id="c1", task="t1", verifier=contains_any("25")),
+        EvalCase(id="c2", task="t2", verifier=regex_matches(r"\d+")),
+    ]
+    results = runner.run(cases)
+    summary = EvalRunner.summarize(results)
+    assert summary["cases"] == 2
+    assert summary["mean_reward"] == 1.0
+    assert summary["pass_rate"] == 1.0
+    saved = json.loads((tmp_path / "c1.json").read_text(encoding="utf-8"))
+    assert saved["reward"] == 1.0 and saved["task"] == "t1"
+
+
+def test_subagent_tool_reports_and_errors():
+    ok_tool = SubagentTask(runner=lambda prompt: "sub report done")
+    ok, out = ok_tool.run({"prompt": "do it"})
+    assert ok and out == "sub report done"
+    bad = SubagentTask(runner=lambda prompt: (_ for _ in ()).throw(RuntimeError("boom")))
+    ok, err = bad.run({"prompt": "x"})
+    assert not ok and "boom" in err
+
+
+def _offline_agent(tmp_path: Path) -> Agent:
+    cfg = AgentConfig(provider="deepseek", model="deepseek-reasoner", workspace_root=str(tmp_path), max_steps=5)
+
+    class StubProfile:
+        name = "deepseek"
+
+    cfg.profile = lambda: StubProfile()
+
+    registry = ToolRegistry()
+    registry.register(WriteFile(root=str(tmp_path)))
+
+    agent = Agent(cfg=cfg, enable_subagents=False, registry=registry)
+    return agent
+
+
+def test_agent_facade_with_injected_client(tmp_path: Path, monkeypatch):
+    import saturday.agent.core as core
+
+    scripted = make_scripted_model(
+        [
+            {"tool_calls": [{"name": "write_file", "arguments": {"path": "z.txt", "content": "ok"}}]},
+            {"content": "wrote z.txt"},
+        ]
+    )
+
+    def fake_build(self):
+        self.client = scripted
+        return scripted
+
+    monkeypatch.setattr(core.Agent, "_ensure_client", fake_build)
+    agent = _offline_agent(tmp_path)
+    traj = agent.run("write z.txt containing ok")
+    assert traj.stop_reason == "done"
+    assert traj.final_answer == "wrote z.txt"
+    assert (tmp_path / "z.txt").read_text() == "ok"
+
+
+def test_builtin_suite_defined():
+    cases = builtin_suite()
+    ids = [c.id for c in cases]
+    assert len(cases) >= 3 and len(ids) == len(set(ids))
+
+
+# ---- merged from test_recall_memory.py ----
 def _write_transcripts(store_root, session_id: str, lines: list[tuple[str, str]], ts: float = 1_700_000_000.0) -> None:
     store_root.mkdir(parents=True, exist_ok=True)
     with (store_root / f"{session_id}.jsonl").open("w", encoding="utf-8") as fh:
@@ -257,3 +357,40 @@ def test_recall_memory_search_tool_end_to_end(tmp_path, monkeypatch):
     tool = MemorySearchTool()
     ok, out = tool.run({"query": "database schema"})
     assert ok and "database schema" in out and sid in out
+
+
+
+# ---- merged from test_verify_project.py ----
+def test_detect_pytest_from_tests_dir(tmp_path):
+    (tmp_path / "tests").mkdir()
+    labels = [label for label, _ in detect_project(tmp_path)]
+    assert "pytest" in labels
+
+
+def test_detect_skips_without_toolchain(tmp_path):
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    # npm may or may not exist here; only assert other recipes absent
+    labels = [label for label, _ in detect_project(tmp_path)]
+    assert "pytest" not in labels and "_test" not in labels
+
+
+def test_run_verification_reports_failures(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_run(argv, **kw):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 1, "boom", "trace")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    results = run_verification(tmp_path, [("pytest", ["python", "-m", "pytest", "-q"])])
+    assert results[0][1] is False and "boom" in results[0][2]
+
+
+def test_run_verification_timeout_never_raises(tmp_path, monkeypatch):
+    def fake_run(argv, **kw):
+        raise subprocess.TimeoutExpired(argv, 1)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    results = run_verification(tmp_path, [("pytest", ["python", "-m", "pytest", "-q"])])
+    assert results[0][1] is False and "timed out" in results[0][2]
+

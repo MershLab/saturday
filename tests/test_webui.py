@@ -1,6 +1,4 @@
 """Merged from: tests/test_webui_core.py, tests/test_webui_e2e.py, tests/test_webui_newui.py, tests/test_frontend_wiring.py, tests/test_competitive_ui.py, tests/test_webui_projects.py, tests/test_settings.py, tests/test_desktop_window.py."""
-
-
 from __future__ import annotations
 import os
 import sys
@@ -10,35 +8,19 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-import pytest  # noqa: E402
-from fakes import make_scripted_model  # noqa: E402
-from saturday.webui import AppState, AppServer, WebApprover  # noqa: E402
 import pytest
-from saturday.webui import AppState, AppServer  # noqa: E402
+from fakes import make_scripted_model
+from saturday.webui import AppState, AppServer, WebApprover
 import json
-from saturday.webui import AppState
-from saturday.projects import ProjectStore  # noqa: E402
-from saturday.webui import AppServer, AppState
+from saturday.projects import ProjectStore
 from saturday import webui
 from saturday.webui import _CFG_SKIP, _b_float_range, _b_int_range, _b_int_range_opt, _v_bool
-import saturday.webui as webui  # noqa: E402
-from saturday.agent.core import Agent  # noqa: E402
-from saturday.config import AgentConfig  # noqa: E402
-
-
-
-# --- from tests/test_webui_core.py ---
-
+from saturday.agent.core import Agent
+from saturday.config import AgentConfig
 os.environ.setdefault("SATURDAY_APPROVAL_TTL", "6")
-
-
-sys.path.insert(0, str(Path(__file__).parent))
-
-
 TOKEN = "tok"
+ASSETS = Path(__file__).parent.parent / "src" / "saturday" / "webui_assets"
 
-
-@pytest.fixture(autouse=True)
 def _hermetic(monkeypatch):
     import saturday.config as cfgmod
     import saturday.mcp_plugin as mcpmod
@@ -683,54 +665,11 @@ except Exception:
     HAS_PW = False
 
 
-@pytest.fixture(scope="module")
-def ui_server():
-    from pytest import MonkeyPatch
-
-    import tempfile
-
-    import shutil
-
-    with MonkeyPatch().context() as mp:
-        import saturday.mcp_plugin as mcpmod
-        from saturday import config as cfgmod
-
-        mp.setattr(mcpmod, "load_mcp_config", lambda *a, **k: {})
-        # hermetic: isolate from the user's real ~/.saturday/config.json AND
-        # arm a detected key so the onboarding wizard never interferes with
-        # these pre-wizard flows
-        mp.setattr(cfgmod, "CONFIG_FILE", Path(scratch_holder := tempfile.mkdtemp(prefix="df-e2e-cfg-")) / "config.json")
-        mp.setenv("DEEPSEEK_API_KEY", "sk-e2e-hermetic")
-        from saturday.projects import ProjectStore
-
-        scratch = tempfile.mkdtemp(prefix="df-e2e-")
-        app = AppState(
-            cfg_overrides={"safety_mode": "off", "workspace_root": str(Path.cwd())},
-            store_root=Path(scratch) / "sessions",
-            projects_store=ProjectStore(Path(scratch) / "projects.json"),
-        )
-        try:
-            yield from _make_server(app)
-        finally:
-            shutil.rmtree(scratch, ignore_errors=True)
-
-
-def _make_server(app):
-    turns = [
-        {"content": "**Forged** reply with `code` and:\n\n```python\nprint('hi')\n```"},
-        {"content": "**Forged** reply with `code` and:\n\n```python\nprint('hi')\n```"},
-        {"content": "**Forged** reply with `code` and:\n\n```python\nprint('hi')\n```"},
-    ]
-    fake = make_scripted_model(turns)
-    orig = app._new_agent
-    app._new_agent = lambda cfg: _with_fake(orig(cfg), fake)
-    srv = AppServer(("127.0.0.1", 0), app, token=TOKEN)
-    base = f"http://127.0.0.1:{srv.server_address[1]}"
-    t = threading.Thread(target=srv.serve_forever, daemon=True)
-    t.start()
-    yield base
-    srv.shutdown()
-    srv.server_close()
+# Note: an earlier module-scoped `ui_server` fixture (and the `_make_server(app)`
+# helper it alone called) lived here. It was byte-for-byte shadowed by the
+# `ui_server` fixture defined later in this file (same name, later definition
+# wins per Python semantics) and so never actually ran; removed as dead code
+# rather than kept as an unreachable duplicate.
 
 
 def _with_fake(agent, fake):
@@ -1350,31 +1289,6 @@ def test_approvals_remove_endpoint(monkeypatch, tmp_path):
 # --- from tests/test_competitive_ui.py ---
 
 sys.path.insert(0, str(Path(__file__).parent))
-
-
-def _server(app):
-    import threading
-
-    from saturday.webui import AppServer
-
-    http = AppServer(("127.0.0.1", 0), app, token="tok")
-    base = f"http://127.0.0.1:{http.server_address[1]}"
-    threading.Thread(target=http.serve_forever, daemon=True).start()
-    return base, "tok"
-
-
-def _req(base, path, method="GET", payload=None, token="tok"):
-    req = urllib.request.Request(
-        base + path,
-        data=json.dumps(payload).encode() if payload is not None else None,
-        method=method,
-        headers={"X-Saturday-Token": token, "Content-Type": "application/json"},
-    )
-    try:
-        resp = urllib.request.urlopen(req, timeout=15)
-        return resp.status, json.loads(resp.read().decode())
-    except urllib.error.HTTPError as exc:
-        return exc.code, json.loads(exc.read().decode())
 
 
 def test_journal_list_and_restore(tmp_path):
@@ -2613,24 +2527,6 @@ def make_app_settings(tmp_path: Path, turns=None) -> AppState:
     return app
 
 
-def req(base: str, path: str, method: str = "GET", payload: dict | None = None):
-    import json
-
-    data = json.dumps(payload).encode() if payload is not None else None
-    r = urllib.request.Request(base + path, data=data, method=method)
-    r.add_header("X-Saturday-Token", TOKEN)
-    if data:
-        r.add_header("Content-Type", "application/json")
-    try:
-        with urllib.request.urlopen(r, timeout=60) as resp:
-            return resp.status, json.loads(resp.read().decode())
-    except urllib.error.HTTPError as e:
-        try:
-            return e.code, json.loads(e.read().decode())
-        except Exception:
-            return e.code, {}
-
-
 def test_state_payload_has_settings_fields(tmp_path: Path):
     app = make_app_settings(tmp_path)
     with _ServerSettings(app) as srv:
@@ -2808,3 +2704,121 @@ def test_titlebar_markup_present():
     assert "pywebview-drag-region" in html
     assert "tbMax" in html and "tbClose" in html
     assert 'enableTitleBar' in js and "pywebviewready" in js
+
+
+# ---- merged from test_round3_wiring.py ----
+def _req_raw(base, path, method="GET", payload=None, token="tok"):
+    req = urllib.request.Request(
+        base + path,
+        data=json.dumps(payload).encode() if payload is not None else None,
+        method=method,
+        headers={"X-Saturday-Token": token, "Content-Type": "application/json"},
+    )
+    try:
+        resp = urllib.request.urlopen(req, timeout=15)
+        return resp.status, resp.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read().decode("utf-8", errors="replace")
+
+
+def test_settings_controls_exist_in_index_html():
+    html = (ASSETS / "index.html").read_text(encoding="utf-8")
+    for frag_id in ("cfgProvenance", "cfgVerifyCmd", "usageMetrics", "btnExportAll"):
+        assert f'id="{frag_id}"' in html, f"missing #{frag_id} in index.html"
+    assert 'data-sec="data"' in html and 'data-sec="about"' in html
+
+
+def test_app_js_wires_the_new_controls():
+    js = (ASSETS / "app.js").read_text(encoding="utf-8")
+    # fill path
+    assert 'info.provenance_marking' in js and '$("#cfgProvenance")' in js
+    assert 'info.verify_command' in js and '$("#cfgVerifyCmd")' in js
+    # save path sends both keys to /api/config
+    assert 'provenance_marking: $("#cfgProvenance")' in js
+    assert 'verify_command: $("#cfgVerifyCmd")' in js
+    # metrics render path consumes the v2 fields
+    assert "success_rate" in js and "avg_tokens_per_turn" in js and "stop_reasons" in js
+
+
+def test_served_assets_match_disk_and_carry_controls(tmp_path):
+    from saturday.webui import AppState
+
+    app = AppState(store_root=tmp_path / "s")
+    base, _ = _server(app)
+    status, html = _req_raw(base, "/")
+    assert status == 200 and 'id="cfgProvenance"' in html
+    status, css = _req_raw(base, "/app.css")
+    assert status == 200 and len(css) > 1000
+    status, js = _req_raw(base, "/app.js")
+    assert status == 200 and "cfgVerifyCmd" in js
+
+
+def test_metrics_endpoint_served_with_auth(tmp_path):
+    from saturday.webui import AppState
+
+    app = AppState(store_root=tmp_path / "s")
+    base, _ = _server(app)
+    status, body = _req_raw(base, "/api/metrics?days=30")
+    assert status == 200
+    data = json.loads(body)
+    assert data["window_days"] == 30
+    for key in ("turns", "total_tokens", "success_rate", "stop_reasons", "providers", "days", "models"):
+        assert key in data
+    # auth enforced
+    req = urllib.request.Request(base + "/api/metrics")
+    try:
+        urllib.request.urlopen(req, timeout=10)
+        raise AssertionError("metrics must require token")
+    except urllib.error.HTTPError as exc:
+        assert exc.code == 401
+
+
+def test_provenance_footer_reaches_webui_done_event(tmp_path, monkeypatch):
+    """visible marking -> the streamed done event's final text carries the footer."""
+
+    from saturday.session_runtime import SessionRuntime
+    from saturday.types import Trajectory
+    from saturday.webui import _run_chat
+
+    class FakeAgent:
+        def __init__(self):
+            from saturday.config import AgentConfig
+
+            self.cfg = AgentConfig(provider="deepseek", provenance_marking="visible")
+            self.session_store = _NoStore()
+
+        def run(self, task, **kw):
+            return Trajectory(task=task, system_prompt="s", final_answer="the answer", stop_reason="done")
+
+    class _NoStore:
+        def load_checkpoint(self, sid):
+            return None
+
+        def save_checkpoint(self, sid, msgs):
+            pass
+
+        def append(self, sid, rec):
+            pass
+
+        def create(self, meta):
+            return "rt-x"
+
+    rt = SessionRuntime("rt-x", FakeAgent())
+    rt.try_begin_run()
+    _run_chat.__globals__  # touch to fail loudly if symbol moved
+    _run_chat(None, rt, "hello", [])
+    events = list(rt.bus.buf)
+    done = [e for e in events if e.get("t") == "done"]
+    assert done and "the answer" in done[0]["final"] and "AI-assisted" in done[0]["final"]
+
+    # metadata mode leaves the answer untouched
+    class MetaAgent(FakeAgent):
+        def __init__(self):
+            super().__init__()
+            self.cfg.provenance_marking = "metadata"
+
+    rt2 = SessionRuntime("rt-y", MetaAgent())
+    rt2.try_begin_run()
+    _run_chat(None, rt2, "hello", [])
+    done2 = [e for e in rt2.bus.buf if e.get("t") == "done"]
+    assert done2 and done2[0]["final"] == "the answer"
