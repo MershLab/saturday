@@ -230,6 +230,7 @@ const stagePanes = {
   plan: $("#stagePlan"),
   files: $("#stageFiles"),
   runs: $("#stageRuns"),
+  memory: $("#stageMemory"),
 };
 const stage = {
   tab: "home", manual: false, entries: new Map(), imageSrcs: [],
@@ -249,6 +250,8 @@ function stageShow(tab, auto) {
   document.querySelectorAll(".stage-tab").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
   if (tab === "activity") stagePanes.activity.scrollTop = stagePanes.activity.scrollHeight;
   if (tab === "changes") stagePanes.changes.scrollTop = 0; // newest file sits on top
+  // the graph animates, so it only runs while it is the visible pane
+  if (tab === "memory") mgOpen(); else mgClose();
 }
 
 function stageBadge(name, n) {
@@ -1520,6 +1523,7 @@ async function handleEvent(e) {
       live.body.appendChild(c);
       c.querySelector(".tool-head").addEventListener("click", () => stageFocus(e.card));
       stageEntry(e.card, e.name, e.args, true);
+      mgAttend((e.args || {}).path || (e.args || {}).file_path);
       if (!isAssistant()) homeRowAdd(e.card, e.name, e.args);
       scrollDown();
       break;
@@ -2678,6 +2682,8 @@ function paletteBuild(q) {
     ["Show Preview tab", () => stageShow("preview", false)],
     ["Show Plan tab", () => stageShow("plan", false)],
     ["Show Files tab", () => { stageShow("files", false); filesEnsure(true); }],
+    ["Show Memory graph", () => stageShow("memory", false)],
+    ["Memory: reindex the workspace", () => { stageShow("memory", false); mgLoad(true); }],
   ];
   for (const p of state.projects) {
     cmds.push(["Open project: " + p.name, () => selectProject(p.id)]);
@@ -5445,6 +5451,620 @@ async function init() {
   }, 1000);
   $("#input").focus();
 }
+
+/* ------------------------------------------------------------------ *
+ * Memory graph
+ *
+ * Everything Saturday knows, drawn as one picture: files and folders from
+ * the repo index, past sessions, remembered facts, installed skills. The
+ * layout is a Barnes-Hut force simulation (no library - the app ships no
+ * dependencies) and the render is additive, so dense regions bloom into
+ * the bright hubs that make structure readable at a glance.
+ * ------------------------------------------------------------------ */
+
+const G_COLOR = {
+  file:    [120, 205, 255],
+  dir:     [255, 255, 255],
+  session: [196, 132, 255],
+  fact:    [255, 168,  84],
+  skill:   [ 96, 240, 190],
+};
+const G_KIND_LABEL = { file: "files", dir: "folders", session: "chats", fact: "facts", skill: "skills" };
+
+const mg = {
+  on: false, loaded: false, loading: false,
+  nodes: [], edges: [], deg: null,
+  x: null, y: null, vx: null, vy: null, fixed: null,
+  alpha: 0, view: { x: 0, y: 0, k: 1 },
+  hover: -1, sel: -1, drag: -1, panning: null,
+  hidden: new Set(), query: "", match: null,
+  heat: null, raf: 0, canvas: null, ctx: null, dpr: 1,
+  labels: true, err: "", idle: 0, named: new Set(), framed: false,
+};
+
+function mgRGBA(kind, a) {
+  const c = G_COLOR[kind] || G_COLOR.file;
+  return "rgba(" + c[0] + "," + c[1] + "," + c[2] + "," + a + ")";
+}
+
+async function mgLoad(refresh) {
+  if (mg.loading) return;
+  mg.loading = true;
+  mgStatus(refresh ? "reindexing the workspace…" : "reading the index…");
+  try {
+    const g = await api("/api/memgraph?sid=" + encodeURIComponent(state.sid || "") +
+                        (refresh ? "&refresh=1" : ""));
+    mgAdopt(g);
+    mg.err = "";
+  } catch (e) {
+    mg.err = String(e.message || e);
+    mgStatus("could not build the graph: " + mg.err);
+  } finally {
+    mg.loading = false;
+  }
+}
+
+function mgAdopt(g) {
+  const n = g.nodes.length;
+  mg.nodes = g.nodes;
+  mg.edges = g.edges;
+  mg.loaded = true;
+  mg.x = new Float32Array(n); mg.y = new Float32Array(n);
+  mg.vx = new Float32Array(n); mg.vy = new Float32Array(n);
+  mg.fixed = new Uint8Array(n);
+  mg.deg = new Float32Array(n);
+  mg.heat = new Float32Array(n);
+  for (const e of mg.edges) { mg.deg[e.s] += e.w; mg.deg[e.t] += e.w; }
+  // seed on a ring: a random cloud takes far longer to untangle than one
+  // that already has every node outside every other node
+  const R = 40 * Math.sqrt(n);
+  for (let i = 0; i < n; i++) {
+    const a = i * 2.399963;                       // golden angle: no clumps
+    const r = R * Math.sqrt((i + 0.5) / n);
+    mg.x[i] = r * Math.cos(a);
+    mg.y[i] = r * Math.sin(a);
+  }
+  // name only the most connected things: every label is unreadable, none is
+  // useless, and a fixed set stops names flickering as the layout settles
+  mg.named = new Set(
+    Array.from(mg.nodes.keys()).sort((a, b) => mg.deg[b] - mg.deg[a]).slice(0, 28)
+  );
+  mg.alpha = 1;
+  mg.framed = false;
+  mg.sel = -1; mg.hover = -1;
+  mgFit();
+  mgStats(g.stats || {});
+  mgTick();
+}
+
+/* --- Barnes-Hut quadtree --------------------------------------------- */
+
+function mgTree(order) {
+  // flat-array quadtree. A cell is empty (occupied=0), a leaf (body>=0) or
+  // internal (body=-1 with children). Children always get a higher index than
+  // their parent, so one downward pass computes every centre of mass.
+  const cap = order.length * 4 + 64;
+  const ch = new Int32Array(cap * 4).fill(-1);
+  const cx = new Float32Array(cap), cy = new Float32Array(cap), cm = new Float32Array(cap);
+  const body = new Int32Array(cap).fill(-1);
+  const cnt = new Float32Array(cap);
+  const occupied = new Uint8Array(cap);
+  const half = new Float32Array(cap), ox = new Float32Array(cap), oy = new Float32Array(cap);
+  let used = 1;
+
+  let minx = Infinity, miny = Infinity, maxx = -Infinity, maxy = -Infinity;
+  for (const i of order) {
+    if (mg.x[i] < minx) minx = mg.x[i];
+    if (mg.y[i] < miny) miny = mg.y[i];
+    if (mg.x[i] > maxx) maxx = mg.x[i];
+    if (mg.y[i] > maxy) maxy = mg.y[i];
+  }
+  half[0] = Math.max(maxx - minx, maxy - miny, 1) * 0.55;
+  ox[0] = (minx + maxx) / 2;
+  oy[0] = (miny + maxy) / 2;
+
+  const quad = (cell, i) => (mg.x[i] > ox[cell] ? 1 : 0) + (mg.y[i] > oy[cell] ? 2 : 0);
+
+  function makeChild(cell, q) {
+    if (used >= cap) return -1;
+    const c = used++;
+    const h = half[cell] / 2;
+    half[c] = h;
+    ox[c] = ox[cell] + (q & 1 ? h : -h);
+    oy[c] = oy[cell] + (q & 2 ? h : -h);
+    ch[cell * 4 + q] = c;
+    return c;
+  }
+
+  for (const i of order) {
+    let cell = 0, depth = 0;
+    while (true) {
+      if (!occupied[cell]) { occupied[cell] = 1; body[cell] = i; cnt[cell] = 1; break; }
+      if (body[cell] !== -1) {
+        // leaf: push the sitting body down one level, then place ours below
+        const j = body[cell];
+        if (depth > 20) { cnt[cell] += 1; break; }  // coincident points: pile up
+        body[cell] = -1;
+        const qj = quad(cell, j);
+        const cj = ch[cell * 4 + qj] !== -1 ? ch[cell * 4 + qj] : makeChild(cell, qj);
+        if (cj === -1) { body[cell] = j; cnt[cell] += 1; break; }
+        occupied[cj] = 1; body[cj] = j; cnt[cj] = 1;
+      }
+      const q = quad(cell, i);
+      const c = ch[cell * 4 + q] !== -1 ? ch[cell * 4 + q] : makeChild(cell, q);
+      if (c === -1) { cnt[cell] += 1; break; }
+      cell = c; depth++;
+    }
+  }
+
+  for (let c = used - 1; c >= 0; c--) {
+    if (!occupied[c]) continue;
+    if (body[c] !== -1) { cm[c] = cnt[c]; cx[c] = mg.x[body[c]]; cy[c] = mg.y[body[c]]; continue; }
+    let m = cnt[c], sx = 0, sy = 0;
+    for (let q = 0; q < 4; q++) {
+      const k = ch[c * 4 + q];
+      if (k === -1) continue;
+      m += cm[k]; sx += cx[k] * cm[k]; sy += cy[k] * cm[k];
+    }
+    if (m > 0) { cm[c] = m; cx[c] = sx / m; cy[c] = sy / m; }
+  }
+  return { ch, cx, cy, cm, half, body, used };
+}
+
+const MG_THETA2 = 0.81;   // theta 0.9, squared
+
+const mgStack = new Int32Array(4096);
+
+function mgRepel(t, i, strength) {
+  let fx = 0, fy = 0, sp = 0;
+  mgStack[sp++] = 0;
+  while (sp > 0) {
+    const c = mgStack[--sp];
+    const m = t.cm[c];
+    if (m === 0) continue;
+    let dx = t.cx[c] - mg.x[i], dy = t.cy[c] - mg.y[i];
+    let d2 = dx * dx + dy * dy;
+    if (d2 < 1e-6) { dx = (Math.random() - 0.5) * 0.1; dy = (Math.random() - 0.5) * 0.1; d2 = dx * dx + dy * dy + 1e-6; }
+    const w = t.half[c] * 2;
+    if (t.body[c] !== -1 || (w * w) / d2 < MG_THETA2) {
+      if (t.body[c] === i) continue;
+      const f = (strength * m) / d2;
+      fx -= dx * f; fy -= dy * f;
+      continue;
+    }
+    for (let q = 0; q < 4; q++) {
+      const k = t.ch[c * 4 + q];
+      if (k !== -1 && sp < mgStack.length) mgStack[sp++] = k;
+    }
+  }
+  return [fx, fy];
+}
+
+function mgStep() {
+  const n = mg.nodes.length;
+  if (!n) return;
+  const order = [];
+  for (let i = 0; i < n; i++) if (!mg.hidden.has(mg.nodes[i].kind)) order.push(i);
+  if (!order.length) return;
+  const t = mgTree(order);
+  const a = mg.alpha;
+
+  for (const i of order) {
+    const strength = 620 * (1 + Math.min(6, mg.deg[i] * 0.05));
+    const [fx, fy] = mgRepel(t, i, strength);
+    mg.vx[i] += fx * a * 0.02;
+    mg.vy[i] += fy * a * 0.02;
+  }
+  for (const e of mg.edges) {
+    const s = e.s, d = e.t;
+    if (mg.hidden.has(mg.nodes[s].kind) || mg.hidden.has(mg.nodes[d].kind)) continue;
+    let dx = mg.x[d] - mg.x[s], dy = mg.y[d] - mg.y[s];
+    const dist = Math.sqrt(dx * dx + dy * dy) || 1e-3;
+    const rest = 34;
+    const k = 0.0038 * Math.min(6, e.w) * a;
+    const f = (dist - rest) * k;
+    dx /= dist; dy /= dist;
+    mg.vx[s] += dx * f; mg.vy[s] += dy * f;
+    mg.vx[d] -= dx * f; mg.vy[d] -= dy * f;
+  }
+  for (const i of order) {
+    mg.vx[i] -= mg.x[i] * 0.0022 * a;      // gravity keeps it one body
+    mg.vy[i] -= mg.y[i] * 0.0022 * a;
+    if (mg.fixed[i]) { mg.vx[i] = mg.vy[i] = 0; continue; }
+    mg.vx[i] *= 0.82; mg.vy[i] *= 0.82;
+    mg.x[i] += Math.max(-40, Math.min(40, mg.vx[i]));
+    mg.y[i] += Math.max(-40, Math.min(40, mg.vy[i]));
+  }
+  mg.alpha = Math.max(0, mg.alpha - 0.0035);
+}
+
+/* --- render ----------------------------------------------------------- */
+
+function mgResize() {
+  const c = mg.canvas;
+  if (!c) return;
+  const r = c.parentElement.getBoundingClientRect();
+  mg.dpr = Math.min(2, window.devicePixelRatio || 1);
+  c.width = Math.max(1, Math.round(r.width * mg.dpr));
+  c.height = Math.max(1, Math.round(r.height * mg.dpr));
+  c.style.width = r.width + "px";
+  c.style.height = r.height + "px";
+}
+
+function mgFit() {
+  const c = mg.canvas;
+  if (!c || !mg.nodes.length) return;
+  let minx = Infinity, miny = Infinity, maxx = -Infinity, maxy = -Infinity;
+  for (let i = 0; i < mg.nodes.length; i++) {
+    if (mg.hidden.has(mg.nodes[i].kind)) continue;
+    minx = Math.min(minx, mg.x[i]); maxx = Math.max(maxx, mg.x[i]);
+    miny = Math.min(miny, mg.y[i]); maxy = Math.max(maxy, mg.y[i]);
+  }
+  if (!isFinite(minx)) return;
+  const w = c.width / mg.dpr, h = c.height / mg.dpr;
+  const k = Math.min(w / (maxx - minx + 120), h / (maxy - miny + 120));
+  mg.view.k = Math.max(0.02, Math.min(4, k));
+  mg.view.x = w / 2 - ((minx + maxx) / 2) * mg.view.k;
+  mg.view.y = h / 2 - ((miny + maxy) / 2) * mg.view.k;
+}
+
+function mgVisible(i) {
+  if (mg.hidden.has(mg.nodes[i].kind)) return false;
+  if (mg.match && !mg.match.has(i)) return false;
+  return true;
+}
+
+function mgRadius(i) {
+  const n = mg.nodes[i];
+  const base = n.kind === "dir" ? 2.6 : n.kind === "session" ? 2.4 : 1.7;
+  return base + Math.min(9, Math.sqrt(mg.deg[i]) * 0.55) + (n.weight || 1) * 0.25;
+}
+
+function mgDraw() {
+  const ctx = mg.ctx, c = mg.canvas;
+  if (!ctx) return;
+  const w = c.width, h = c.height;
+  const dark = document.documentElement.getAttribute("data-theme") !== "light";
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = dark ? "#08080b" : "#f7f5f0";
+  ctx.fillRect(0, 0, w, h);
+  if (!mg.nodes.length) return;
+
+  const k = mg.view.k * mg.dpr;
+  const ox = mg.view.x * mg.dpr, oy = mg.view.y * mg.dpr;
+  const X = (i) => mg.x[i] * k + ox;
+  const Y = (i) => mg.y[i] * k + oy;
+
+  const focus = mg.sel >= 0 ? mg.sel : mg.hover;
+  const near = new Set();
+  if (focus >= 0) {
+    near.add(focus);
+    for (const e of mg.edges) {
+      if (e.s === focus) near.add(e.t);
+      else if (e.t === focus) near.add(e.s);
+    }
+  }
+
+  ctx.globalCompositeOperation = dark ? "lighter" : "source-over";
+
+  // edges
+  ctx.lineWidth = Math.max(0.4, 0.55 * mg.dpr);
+  for (const e of mg.edges) {
+    if (!mgVisible(e.s) || !mgVisible(e.t)) continue;
+    const lit = focus >= 0 && (e.s === focus || e.t === focus);
+    if (focus >= 0 && !lit) {
+      ctx.strokeStyle = dark ? "rgba(120,160,190,0.02)" : "rgba(60,70,90,0.03)";
+    } else {
+      const kd = mg.nodes[e.t].kind === "dir" ? mg.nodes[e.s].kind : mg.nodes[e.t].kind;
+      const a = lit ? 0.7 : Math.min(0.34, 0.09 + e.w * 0.022);
+      ctx.strokeStyle = mgRGBA(kd, dark ? a : a * 1.6);
+    }
+    ctx.beginPath();
+    ctx.moveTo(X(e.s), Y(e.s));
+    ctx.lineTo(X(e.t), Y(e.t));
+    ctx.stroke();
+  }
+
+  // nodes
+  for (let i = 0; i < mg.nodes.length; i++) {
+    if (!mgVisible(i)) continue;
+    const n = mg.nodes[i];
+    const r = Math.max(0.9, mgRadius(i) * Math.sqrt(k) * 0.9);
+    const dimmed = focus >= 0 && !near.has(i);
+    const heat = mg.heat[i];
+    const px = X(i), py = Y(i);
+
+    if (!dimmed && (r > 3 || heat > 0.02)) {
+      const glow = r * (heat > 0.02 ? 7 : 4);
+      const g = ctx.createRadialGradient(px, py, 0, px, py, glow);
+      const col = heat > 0.02 ? [255, 230, 120] : (G_COLOR[n.kind] || G_COLOR.file);
+      g.addColorStop(0, "rgba(" + col[0] + "," + col[1] + "," + col[2] + "," + (dark ? 0.30 + heat * 0.5 : 0.16) + ")");
+      g.addColorStop(1, "rgba(" + col[0] + "," + col[1] + "," + col[2] + ",0)");
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(px, py, glow, 0, 6.2832); ctx.fill();
+    }
+    ctx.fillStyle = dimmed ? mgRGBA(n.kind, 0.10)
+                 : heat > 0.02 ? "rgba(255,238,170," + (0.7 + heat * 0.3) + ")"
+                 : mgRGBA(n.kind, dark ? 0.92 : 0.85);
+    ctx.beginPath(); ctx.arc(px, py, r, 0, 6.2832); ctx.fill();
+  }
+
+  // labels: only where they can be read
+  ctx.globalCompositeOperation = "source-over";
+  if (mg.labels) {
+    ctx.font = (11 * mg.dpr) + "px ui-monospace, monospace";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    const boxes = [];   // drawn label rects: a name nobody can read is noise
+    for (let i = 0; i < mg.nodes.length; i++) {
+      if (!mgVisible(i)) continue;
+      if (!mg.named.has(i) && i !== focus && !near.has(i)) continue;
+      if (focus >= 0 && !near.has(i)) continue;
+      const n = mg.nodes[i];
+      const label = n.label.length > 26 ? n.label.slice(0, 25) + "…" : n.label;
+      const py = Y(i) - mgRadius(i) * Math.sqrt(k) - 7 * mg.dpr;
+      const px = X(i);
+      const hw = ctx.measureText(label).width / 2 + 3 * mg.dpr;
+      const hh = 8 * mg.dpr;
+      if (boxes.some((b) => Math.abs(b[0] - px) < b[2] + hw && Math.abs(b[1] - py) < b[3] + hh)) continue;
+      boxes.push([px, py, hw, hh]);
+      ctx.lineWidth = 3 * mg.dpr;
+      ctx.strokeStyle = dark ? "rgba(6,6,9,0.85)" : "rgba(250,248,244,0.9)";
+      ctx.strokeText(label, px, py);
+      ctx.fillStyle = dark ? "rgba(233,228,216,0.88)" : "rgba(42,39,33,0.9)";
+      ctx.fillText(label, px, py);
+    }
+  }
+}
+
+function mgTick() {
+  cancelAnimationFrame(mg.raf);
+  const frame = () => {
+    if (!mg.on) return;
+    let busy = false;
+    for (let s = 0; s < 2 && mg.alpha > 0.002; s++) { mgStep(); busy = true; }
+    for (let i = 0; i < mg.heat.length; i++) {
+      if (mg.heat[i] > 0.005) { mg.heat[i] *= 0.985; busy = true; }
+      else if (mg.heat[i]) mg.heat[i] = 0;
+    }
+    mgDraw();
+    if (busy || mg.drag >= 0 || mg.panning) mg.idle = 0;
+    else {
+      // the ring it starts from is nothing like where it ends up, so frame it
+      // once the forces have actually resolved
+      if (!mg.framed) { mg.framed = true; mgFit(); mgDraw(); }
+      if (++mg.idle > 45) { mg.raf = 0; return; }     // settled: stop burning frames
+    }
+    mg.raf = requestAnimationFrame(frame);
+  };
+  mg.raf = requestAnimationFrame(frame);
+}
+
+function mgWake() {
+  mg.idle = 0;
+  if (!mg.raf && mg.on) mgTick();
+}
+
+/* --- picking + interaction -------------------------------------------- */
+
+function mgPick(px, py) {
+  const k = mg.view.k, ox = mg.view.x, oy = mg.view.y;
+  let best = -1, bd = 18 * 18;
+  for (let i = 0; i < mg.nodes.length; i++) {
+    if (!mgVisible(i)) continue;
+    const dx = (mg.x[i] * k + ox) - px, dy = (mg.y[i] * k + oy) - py;
+    const d = dx * dx + dy * dy;
+    const r = Math.max(6, mgRadius(i) * Math.sqrt(k * mg.dpr));
+    if (d < Math.max(bd, r * r) && d < bd) { bd = d; best = i; }
+  }
+  return best;
+}
+
+function mgWire() {
+  const c = mg.canvas;
+  let last = null;
+
+  c.addEventListener("pointerdown", (ev) => {
+    c.setPointerCapture(ev.pointerId);
+    const r = c.getBoundingClientRect();
+    const px = ev.clientX - r.left, py = ev.clientY - r.top;
+    const hit = mgPick(px, py);
+    if (hit >= 0) { mg.drag = hit; mg.fixed[hit] = 1; mg.alpha = Math.max(mg.alpha, 0.25); }
+    else mg.panning = { x: px, y: py, vx: mg.view.x, vy: mg.view.y, moved: false };
+    last = { px, py };
+    mgWake();
+  });
+
+  c.addEventListener("pointermove", (ev) => {
+    const r = c.getBoundingClientRect();
+    const px = ev.clientX - r.left, py = ev.clientY - r.top;
+    if (mg.drag >= 0) {
+      mg.x[mg.drag] = (px - mg.view.x) / mg.view.k;
+      mg.y[mg.drag] = (py - mg.view.y) / mg.view.k;
+      mg.alpha = Math.max(mg.alpha, 0.2);
+      mgWake();
+      return;
+    }
+    if (mg.panning) {
+      mg.panning.moved = true;
+      mg.view.x = mg.panning.vx + (px - mg.panning.x);
+      mg.view.y = mg.panning.vy + (py - mg.panning.y);
+      mgWake();
+      return;
+    }
+    const hit = mgPick(px, py);
+    if (hit !== mg.hover) { mg.hover = hit; mgTip(hit, px, py); mgWake(); }
+    else if (hit >= 0) mgTip(hit, px, py);
+    last = { px, py };
+  });
+
+  const release = (ev) => {
+    if (mg.drag >= 0) { mg.fixed[mg.drag] = 0; mg.drag = -1; }
+    else if (mg.panning && !mg.panning.moved && last) {
+      const hit = mgPick(last.px, last.py);
+      mg.sel = hit === mg.sel ? -1 : hit;
+      mgDetail(mg.sel);
+    }
+    mg.panning = null;
+    mgWake();
+  };
+  c.addEventListener("pointerup", release);
+  c.addEventListener("pointercancel", release);
+  c.addEventListener("pointerleave", () => { mg.hover = -1; mgTip(-1); mgWake(); });
+
+  c.addEventListener("wheel", (ev) => {
+    ev.preventDefault();
+    const r = c.getBoundingClientRect();
+    const px = ev.clientX - r.left, py = ev.clientY - r.top;
+    const f = Math.exp(-ev.deltaY * 0.0016);
+    const nk = Math.max(0.02, Math.min(8, mg.view.k * f));
+    mg.view.x = px - (px - mg.view.x) * (nk / mg.view.k);
+    mg.view.y = py - (py - mg.view.y) * (nk / mg.view.k);
+    mg.view.k = nk;
+    mgWake();
+  }, { passive: false });
+
+  c.addEventListener("dblclick", () => { mgFit(); mgWake(); });
+}
+
+function mgTip(i, px, py) {
+  const t = $("#mgTip");
+  if (!t) return;
+  if (i < 0) { t.classList.add("hidden"); return; }
+  const n = mg.nodes[i];
+  const m = n.meta || {};
+  const bits = [];
+  if (n.kind === "file") bits.push(m.path || "", (m.lines || 0) + " terms");
+  if (n.kind === "dir") bits.push(m.path || "");
+  if (n.kind === "session") bits.push(m.turns + " turns", m.files + " files touched");
+  if (n.kind === "fact") bits.push(m.text || "");
+  t.innerHTML = '<b>' + escHtml(n.label) + '</b><span>' +
+                escHtml(bits.filter(Boolean).join("  ·  ")) + '</span>';
+  t.style.left = Math.round(px + 14) + "px";
+  t.style.top = Math.round(py + 14) + "px";
+  t.classList.remove("hidden");
+}
+
+function mgDetail(i) {
+  const box = $("#mgDetail");
+  if (!box) return;
+  if (i < 0) { box.classList.add("hidden"); box.innerHTML = ""; return; }
+  const n = mg.nodes[i], m = n.meta || {};
+  const links = [];
+  for (const e of mg.edges) {
+    const o = e.s === i ? e.t : e.t === i ? e.s : -1;
+    if (o >= 0) links.push({ o, w: e.w, kind: e.kind });
+  }
+  links.sort((a, b) => b.w - a.w);
+  const rows = links.slice(0, 14).map((l) =>
+    '<button class="mg-link" data-i="' + l.o + '"><i class="mg-dot" style="background:' +
+    mgRGBA(mg.nodes[l.o].kind, 1) + '"></i>' + escHtml(mg.nodes[l.o].label) +
+    '<em>' + escHtml(l.kind) + '</em></button>').join("");
+  box.innerHTML =
+    '<header><i class="mg-dot" style="background:' + mgRGBA(n.kind, 1) + '"></i>' +
+    escHtml(n.label) + '<button class="mg-x" id="mgClose" title="close">×</button></header>' +
+    (m.path ? '<p class="mono">' + escHtml(m.path) + '</p>' : "") +
+    (m.text ? '<p>' + escHtml(m.text) + '</p>' : "") +
+    (m.symbols && m.symbols.length
+      ? '<p class="mg-syms mono">' + m.symbols.map(escHtml).join("  ") + '</p>' : "") +
+    '<div class="mg-links-h">' + links.length + ' connection' + (links.length === 1 ? "" : "s") + '</div>' +
+    '<div class="mg-links">' + rows + '</div>' +
+    (n.kind === "file" && m.path
+      ? '<button class="mg-open" id="mgOpen">open in files</button>' : "");
+  box.classList.remove("hidden");
+  box.querySelectorAll(".mg-link").forEach((b) =>
+    b.addEventListener("click", () => { mg.sel = +b.dataset.i; mgDetail(mg.sel); mgWake(); }));
+  const x = $("#mgClose");
+  if (x) x.addEventListener("click", () => { mg.sel = -1; mgDetail(-1); mgWake(); });
+  const op = $("#mgOpen");
+  if (op) op.addEventListener("click", () => { stageShow("files"); openWsFile(m.path); });
+}
+
+function mgStatus(text) {
+  const s = $("#mgStatus");
+  if (s) s.textContent = text;
+}
+
+function mgStats(stats) {
+  const kinds = stats.kinds || {};
+  const wrap = $("#mgLegend");
+  if (wrap) {
+    wrap.innerHTML = Object.keys(G_KIND_LABEL).map((k) => {
+      const n = kinds[k] || 0;
+      return '<button class="mg-chip' + (n ? "" : " empty") +
+        (mg.hidden.has(k) ? " off" : "") + '" data-kind="' + k + '">' +
+        '<i class="mg-dot" style="background:' + mgRGBA(k, 1) + '"></i>' +
+        G_KIND_LABEL[k] + '<em>' + n + '</em></button>';
+    }).join("");
+    wrap.querySelectorAll(".mg-chip").forEach((b) => b.addEventListener("click", () => {
+      const k = b.dataset.kind;
+      if (mg.hidden.has(k)) mg.hidden.delete(k); else mg.hidden.add(k);
+      b.classList.toggle("off", mg.hidden.has(k));
+      mg.alpha = Math.max(mg.alpha, 0.3);
+      mgWake();
+    }));
+  }
+  mgStatus(stats.nodes + " things, " + stats.edges + " connections");
+}
+
+function mgSearch(q) {
+  mg.query = q.trim().toLowerCase();
+  if (!mg.query) { mg.match = null; mgWake(); return; }
+  const hit = new Set();
+  for (let i = 0; i < mg.nodes.length; i++) {
+    const n = mg.nodes[i];
+    if (n.label.toLowerCase().includes(mg.query) ||
+        String((n.meta || {}).path || "").toLowerCase().includes(mg.query)) hit.add(i);
+  }
+  // keep one hop of context so a match is not a lone dot in the void
+  const grown = new Set(hit);
+  for (const e of mg.edges) {
+    if (hit.has(e.s)) grown.add(e.t);
+    if (hit.has(e.t)) grown.add(e.s);
+  }
+  mg.match = grown;
+  mgWake();
+}
+
+/* attention: light up whatever the agent is reading right now */
+function mgAttend(path) {
+  if (!mg.loaded || !path) return;
+  const want = String(path).replace(/\\/g, "/").replace(/^\.\//, "");
+  for (let i = 0; i < mg.nodes.length; i++) {
+    const p = (mg.nodes[i].meta || {}).path;
+    if (p && (p === want || want.endsWith("/" + p) || p.endsWith("/" + want))) {
+      mg.heat[i] = 1;
+      mgWake();
+      return;
+    }
+  }
+}
+
+function mgOpen() {
+  mg.on = true;
+  if (!mg.canvas) {
+    mg.canvas = $("#mgCanvas");
+    if (!mg.canvas) return;
+    mg.ctx = mg.canvas.getContext("2d");
+    mgWire();
+    new ResizeObserver(() => { mgResize(); mgWake(); }).observe(mg.canvas.parentElement);
+    const s = $("#mgSearch");
+    if (s) s.addEventListener("input", () => mgSearch(s.value));
+    const r = $("#mgRefresh");
+    if (r) r.addEventListener("click", () => mgLoad(true));
+    const f = $("#mgFit");
+    if (f) f.addEventListener("click", () => { mgFit(); mgWake(); });
+    const l = $("#mgLabels");
+    if (l) l.addEventListener("click", () => {
+      mg.labels = !mg.labels; l.classList.toggle("on", mg.labels); mgWake();
+    });
+  }
+  mgResize();
+  if (!mg.loaded) mgLoad(false);
+  else { mgWake(); }
+}
+
+function mgClose() { mg.on = false; cancelAnimationFrame(mg.raf); mg.raf = 0; }
 
 init();
 })();
