@@ -582,6 +582,7 @@ class AppState:
         from saturday.sessions import SessionStore
 
         self.cfg_overrides = cfg_overrides or {}
+        self.tunnel = None  # live remote-access tunnel, when one is running
         self._cfg_lock = threading.Lock()
         self.runtimes: dict[str, _SessionRuntime] = {}
         self.runtimes_lock = threading.Lock()
@@ -1288,6 +1289,58 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             days = 14
         self._send_json({"window_days": days, **usage_summary(limit_days=days)})
+
+    def _post_remote(self, payload: dict) -> None:
+        """Start or stop a tunnel so a phone can reach this instance."""
+        from saturday import remote as rmt
+
+        app = self.app
+        if not payload.get("start"):
+            tun = getattr(app, "tunnel", None)
+            if tun is not None:
+                tun.close()
+                app.tunnel = None
+            self._send_json({"ok": True, "running": False})
+            return
+
+        if getattr(app, "tunnel", None) is not None:
+            t = app.tunnel
+            self._send_json({"ok": True, "running": True, "url": t.url, "provider": t.provider})
+            return
+
+        provider = str(payload.get("provider") or "") or next(iter(rmt.available_providers()), "")
+        if not provider:
+            self._send_json({
+                "ok": False,
+                "error": "no tunnel provider installed",
+                "hints": rmt.INSTALL_HINTS,
+            }, status=400)
+            return
+        port = self.server.server_address[1]
+        try:
+            tun = rmt.start_tunnel(provider, port)
+        except RuntimeError as exc:
+            self._send_json({"ok": False, "error": str(exc)}, status=400)
+            return
+        self.server.allow_host(tun.host)
+        app.tunnel = tun
+        url = tun.url + "/" + (f"?k={self.server.token}" if self.server.token else "")
+        self._send_json({
+            "ok": True, "running": True, "url": url, "provider": tun.provider,
+            "warning": "TLS terminates at the provider" if provider == "cloudflared" else "",
+        })
+
+    def _get_remote(self) -> None:
+        from saturday import remote as rmt
+
+        tun = getattr(self.app, "tunnel", None)
+        self._send_json({
+            "running": tun is not None,
+            "url": (tun.url + "/" + (f"?k={self.server.token}" if self.server.token else "")) if tun else "",
+            "provider": tun.provider if tun else "",
+            "available": rmt.available_providers(),
+            "hints": rmt.INSTALL_HINTS,
+        })
 
     def _get_agents(self) -> None:
         from saturday import routing
@@ -2469,6 +2522,7 @@ _GET_ROUTES = [
     ("/api/trust", "_get_trust"),
     ("/api/metrics", "_get_metrics"),
     ("/api/agents", "_get_agents"),
+    ("/api/remote", "_get_remote"),
     ("/api/models", "_get_models"),
     ("/api/sessions", "_get_sessions"),
     ("/api/projects", "_get_projects"),
@@ -2493,6 +2547,7 @@ _POST_ROUTES = {
     "/api/approvals/remove": "_post_approvals_remove",
     "/api/approve": "_post_approve",
     "/api/agents": "_post_agents",
+    "/api/remote": "_post_remote",
     "/api/models": "_post_models",
     "/api/stop": "_post_stop",
     "/api/config": "_post_config",
