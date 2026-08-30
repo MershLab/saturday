@@ -1004,6 +1004,45 @@ def cmd_schedule(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_update(args: argparse.Namespace) -> int:
+    from saturday import update as upd
+
+    cur = upd.current_version()
+    rel = upd.latest_release()
+    if rel is None:
+        _print("update check failed (network unreachable or GitHub API error)")
+        return 1
+    latest = rel["tag"]
+    if not upd.is_newer(latest, cur):
+        _print(f"up to date (installed {cur}, latest {latest})")
+        return 0
+
+    channel = upd.detect_channel()
+    _print(f"update available: {cur} -> {latest}  (channel: {channel})")
+    if not getattr(args, "apply", False):
+        _print("run 'saturday update --apply' to update, or manually:")
+        _print(f"  {upd.manual_update_hint(channel)}")
+        return 0
+
+    try:
+        with upd.update_lock():
+            ok, detail = upd.perform_update(channel)
+    except upd.UpdateInProgress as exc:
+        _print(str(exc))
+        return 1
+    upd.record_receipt(from_version=cur, to_version=latest, channel=channel, ok=ok, detail=detail)
+    if not ok:
+        _print(f"update failed: {detail}")
+        _print(f"manual fallback: {upd.manual_update_hint(channel)}")
+        return 1
+
+    _print(f"updated {cur} -> {latest}")
+    if getattr(args, "relaunch", True) and channel in ("pip", "pipx"):
+        _print("relaunching...")
+        upd.relaunch()
+    return 0
+
+
 def cmd_verify(args: argparse.Namespace) -> int:
     """Run the project's test suite(s) like `hermes verify` (recipe detection)."""
     from saturday.verify import detect_project, run_verification
@@ -1278,6 +1317,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_rm.set_defaults(fn=cmd_schedule)
     p_watch = sched_sub.add_parser("watch", help="run due schedules until stopped (Ctrl-C)")
     p_watch.set_defaults(fn=cmd_schedule)
+
+    p_update = sub.add_parser("update", help="check for and apply updates")
+    p_update.add_argument("--apply", action="store_true", help="actually perform the update (default: check only)")
+    p_update.add_argument("--no-relaunch", dest="relaunch", action="store_false", default=True, help="don't automatically restart after a successful in-place update")
+    p_update.set_defaults(fn=cmd_update)
 
     p_verify = sub.add_parser("verify", help="run the project's test suites (pytest/npm/cargo/go/make)")
     p_verify.add_argument("path", nargs="?", default=".", help="project directory (default: current)")
