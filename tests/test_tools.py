@@ -2971,6 +2971,56 @@ def test_antigravity_uses_verified_headless_flag(monkeypatch):
     assert captured["argv"] == ["/usr/bin/agy", "-p", "hi"]
 
 
+def test_custom_agents_from_config(tmp_path, monkeypatch):
+    """Saturday is open source; a user must be able to wire any CLI without editing our registry."""
+    import saturday.config as cfgmod
+    from saturday.tools import external_agent as ea
+
+    monkeypatch.setattr(cfgmod, "CONFIG_DIR", tmp_path)
+    (tmp_path / "agents.json").write_text(json.dumps({
+        "kimi": {"binaries": ["kimi"], "args": ["--prompt", "{prompt}"], "install_hint": "curl kimi"},
+        "aider": {"args": ["--message", "{prompt}"]},
+    }))
+    agents = ea.all_agents()
+    assert "kimi" in agents and "claude-code" in agents
+    assert agents["kimi"].build_argv("/usr/bin/kimi", "hi") == ["/usr/bin/kimi", "--prompt", "hi"]
+    assert agents["aider"].binaries == ("aider",)  # defaults to the key
+
+
+def test_custom_agent_can_override_a_builtin(tmp_path, monkeypatch):
+    """Our registry went stale once (gemini); a user must be able to fix it themselves."""
+    import saturday.config as cfgmod
+    from saturday.tools import external_agent as ea
+
+    monkeypatch.setattr(cfgmod, "CONFIG_DIR", tmp_path)
+    (tmp_path / "agents.json").write_text(json.dumps({
+        "claude-code": {"binaries": ["my-claude"], "args": ["run", "{prompt}"]},
+    }))
+    spec = ea.all_agents()["claude-code"]
+    assert spec.binaries == ("my-claude",)
+    assert spec.build_argv("/x", "hi") == ["/x", "run", "hi"]
+
+
+def test_bad_agents_json_is_ignored_not_fatal(tmp_path, monkeypatch):
+    import saturday.config as cfgmod
+    from saturday.tools import external_agent as ea
+
+    monkeypatch.setattr(cfgmod, "CONFIG_DIR", tmp_path)
+    (tmp_path / "agents.json").write_text("{not json")
+    assert ea.all_agents() == ea.AGENTS
+
+
+def test_custom_agent_without_install_hint_says_so(tmp_path, monkeypatch):
+    import saturday.config as cfgmod
+    from saturday.tools import external_agent as ea
+
+    monkeypatch.setattr(cfgmod, "CONFIG_DIR", tmp_path)
+    (tmp_path / "agents.json").write_text(json.dumps({"mine": {"args": ["{prompt}"]}}))
+    monkeypatch.setattr(ea.shutil, "which", lambda n: None)
+    ok, msg = ea.ExternalAgentTool().run({"agent": "mine", "prompt": "hi"})
+    assert not ok and "not on PATH" in msg
+
+
 def test_external_agents_family_maps_to_the_tool():
     assert ToolRegistry.TOOL_FAMILIES["external_agents"] == frozenset({"external_agent"})
     assert ToolRegistry.expand_tool_names(["external_agents"]) == {"external_agent"}

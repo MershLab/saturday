@@ -11,6 +11,7 @@ stderr passed through - rather than silently misbehaving, which is why this
 registry deliberately has no stale-detection heuristic."""
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -62,10 +63,7 @@ AGENTS: dict[str, ExternalAgentSpec] = {
         install_hint="curl https://cursor.com/install -fsS | bash",
         build_argv=_cursor_argv,
     ),
-    # Google retired the standalone Gemini CLI on 2026-06-18 (free/Pro/Ultra
-    # personal tiers cut off, no grace period) and replaced it with
-    # Antigravity CLI, whose binary is `agy`. "gemini" stays as an alias so
-    # existing configs keep resolving instead of failing with "unknown agent".
+    # Gemini CLI was retired 2026-06-18; agy is its replacement
     "antigravity": ExternalAgentSpec(
         id="antigravity",
         binaries=("agy",),
@@ -75,6 +73,48 @@ AGENTS: dict[str, ExternalAgentSpec] = {
 }
 
 AGENTS["gemini"] = AGENTS["antigravity"]
+
+
+def _templated_argv(arg_template: list[str]):
+    def build(binary: str, prompt: str) -> list[str]:
+        return [binary] + [a.replace("{prompt}", prompt) for a in arg_template]
+    return build
+
+
+def load_custom_agents() -> dict[str, ExternalAgentSpec]:
+    """User-defined agents from CONFIG_DIR/agents.json; a built-in name can be overridden."""
+    from saturday.config import get_config_dir
+
+    path = get_config_dir() / "agents.json"
+    if not path.is_file():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, ExternalAgentSpec] = {}
+    for name, cfg in raw.items():
+        if not isinstance(cfg, dict):
+            continue
+        binaries = cfg.get("binaries") or [name]
+        if isinstance(binaries, str):
+            binaries = [binaries]
+        args = cfg.get("args") or ["-p", "{prompt}"]
+        if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
+            continue
+        out[str(name)] = ExternalAgentSpec(
+            id=str(name),
+            binaries=tuple(str(b) for b in binaries),
+            install_hint=str(cfg.get("install_hint") or ""),
+            build_argv=_templated_argv(args),
+        )
+    return out
+
+
+def all_agents() -> dict[str, ExternalAgentSpec]:
+    return {**AGENTS, **load_custom_agents()}
 
 
 def find_binary(spec: ExternalAgentSpec) -> str | None:
@@ -95,7 +135,7 @@ class ExternalAgentTool(Tool):
     parameters = {
         "type": "object",
         "properties": {
-            "agent": {"type": "string", "enum": list(AGENTS.keys())},
+            "agent": {"type": "string", "enum": list(AGENTS.keys())},  # replaced per-instance
             "prompt": {"type": "string", "description": "Full standalone instructions for the delegate"},
             "install": {"type": "boolean", "description": "auto-install the CLI if missing (default false - asks first otherwise)"},
             "timeout": {"type": "number", "description": "seconds before giving up (default 600)"},
@@ -106,6 +146,19 @@ class ExternalAgentTool(Tool):
     def __init__(self, installer=None) -> None:
         # injection point for tests; real default shells out for real
         self._installer = installer or self._default_install
+        self._agents = all_agents()
+        names = list(self._agents)
+        self.parameters = {**type(self).parameters}
+        self.parameters["properties"] = {
+            **type(self).parameters["properties"],
+            "agent": {"type": "string", "enum": names},
+        }
+        self.description = (
+            f"Delegate a task to a different installed CLI agent ({', '.join(names)}) "
+            "instead of Saturday's own subagents - for when a task specifically calls for a "
+            "different model/tool ecosystem. Installs the CLI automatically if install=true. "
+            "Add your own in CONFIG_DIR/agents.json."
+        )
 
     @staticmethod
     def _default_install(spec: ExternalAgentSpec) -> tuple[bool, str]:
@@ -119,9 +172,9 @@ class ExternalAgentTool(Tool):
 
     def run(self, args: dict) -> tuple[bool, str]:
         agent_id = args.get("agent")
-        spec = AGENTS.get(agent_id or "")
+        spec = self._agents.get(agent_id or "")
         if spec is None:
-            return False, f"unknown agent {agent_id!r}; choose one of {list(AGENTS.keys())}"
+            return False, f"unknown agent {agent_id!r}; choose one of {list(self._agents)}"
         prompt = (args.get("prompt") or "").strip()
         if not prompt:
             return False, "prompt is required"
@@ -130,7 +183,10 @@ class ExternalAgentTool(Tool):
         binary = find_binary(spec)
         if binary is None:
             if not args.get("install"):
-                return False, f"{agent_id} is not installed. Install it with: {spec.install_hint}  (or pass install=true)"
+                how = f" Install it with: {spec.install_hint}  (or pass install=true)" if spec.install_hint else ""
+                return False, f"{agent_id} is not installed ({'/'.join(spec.binaries)} not on PATH).{how}"
+            if not spec.install_hint:
+                return False, f"{agent_id} has no install command configured; install it manually"
             ok, detail = self._installer(spec)
             if not ok:
                 return False, f"auto-install failed: {detail}"
