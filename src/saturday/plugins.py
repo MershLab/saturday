@@ -159,7 +159,21 @@ def _core_tools(cfg) -> list[Tool]:
 
     from saturday.tools.external_agent import ExternalAgentTool
 
-    tools.append(ExternalAgentTool())
+    def _provider_runner(provider: str, model: str, prompt: str) -> tuple[bool, str]:
+        """Run a prompt through Saturday itself on a different provider/model."""
+        from saturday.agent.core import Agent
+        from saturday.config import AgentConfig
+
+        overrides = {"provider": provider, "disabled_tools": ["external_agents", "subagents"]}
+        if model:
+            overrides["model"] = model
+        if getattr(cfg, "workspace_root", None):
+            overrides["workspace_root"] = cfg.workspace_root
+        traj = Agent(cfg=AgentConfig.load(overrides), enable_subagents=False).run(prompt)
+        answer = traj.final_answer or ""
+        return (bool(answer), answer or f"[no answer; stopped: {traj.stop_reason}]")
+
+    tools.append(ExternalAgentTool(provider_runner=_provider_runner))
     return tools
 
 

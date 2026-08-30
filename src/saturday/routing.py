@@ -27,6 +27,8 @@ _DEFAULT_TIERS = {
     "cursor": SUBSCRIPTION,
     "antigravity": SUBSCRIPTION,
     "gemini": SUBSCRIPTION,
+    "opencode": SUBSCRIPTION,
+    # providers, not CLIs - inert until candidates() also considers providers
     "ollama": LOCAL,
     "vllm": LOCAL,
 }
@@ -70,9 +72,16 @@ def _connect() -> sqlite3.Connection:
     return con
 
 
-def tier_of(agent: str, overrides: dict | None = None) -> int:
+def tier_of(agent: str, overrides: dict | None = None, spec=None) -> int:
     if overrides and agent in overrides:
         return int(overrides[agent])
+    if spec is not None and getattr(spec, "tier", None) is not None:
+        return int(spec.tier)
+    # OpenRouter and friends mark no-cost models with a :free suffix
+    if spec is not None and getattr(spec, "model", "").endswith(":free"):
+        return FREE
+    if spec is not None and getattr(spec, "provider", ""):
+        return _DEFAULT_TIERS.get(spec.provider, METERED)
     return _DEFAULT_TIERS.get(agent, METERED)
 
 
@@ -153,7 +162,9 @@ def stats(agent: str, task_kind: str) -> tuple[float, int]:
 
 
 def candidates(task_kind: str = "general", tier_overrides: dict | None = None) -> list[Candidate]:
-    """Enabled + installed agents, cheapest tier first, best track record within a tier."""
+    """Enabled agents, cheapest tier first, best record within a tier.
+
+    Covers both external CLIs and provider-backed entries from agents.json."""
     from saturday.tools.external_agent import all_agents, find_binary
 
     enabled = enabled_agents()
@@ -166,8 +177,8 @@ def candidates(task_kind: str = "general", tier_overrides: dict | None = None) -
         ema, n = stats(name, task_kind)
         out.append(Candidate(
             agent=name,
-            tier=tier_of(name, tier_overrides),
-            installed=find_binary(spec) is not None,
+            tier=tier_of(name, tier_overrides, spec),
+            installed=True if spec.is_provider else find_binary(spec) is not None,
             enabled=name in enabled,
             ema_success=ema,
             n=n,
