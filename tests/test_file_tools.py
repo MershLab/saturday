@@ -1,21 +1,92 @@
-"""Tool-toggle regressions: blocklist semantics, family expansion, per-session
-/toggle override, webui config API validation + persistence, CLI flag."""
-from __future__ import annotations
+"""Merged from: tests/test_tools.py, tests/test_tool_toggles.py."""
 
+
+from __future__ import annotations
+from pathlib import Path
+from saturday.tools.files import EditFile, GlobTool, GrepTool, ListDir, ReadFile, WriteFile
+from saturday.tools.python_repl import PythonREPL
+from saturday.tools.shell import ShellTool
 import json
 import sys
 import urllib.error
 import urllib.request
-from pathlib import Path
-
-
-sys.path.insert(0, str(Path(__file__).parent))
-
 from fakes import make_scripted_model
-
 from saturday.agent.core import Agent
 from saturday.config import AgentConfig
 from saturday.tools.base import ToolRegistry
+
+
+
+# --- from tests/test_tools.py ---
+
+def test_write_read_edit(tmp_path: Path):
+    root = str(tmp_path)
+    w = WriteFile(root=root)
+    ok, out = w.run({"path": "sub/a.txt", "content": "hello world"})
+    assert ok
+    r = ReadFile(root=root)
+    ok, text = r.run({"path": "sub/a.txt"})
+    assert ok and "1: hello world" in text
+
+    e = EditFile(root=root)
+    ok, out = e.run({"path": "sub/a.txt", "old_string": "world", "new_string": "forge"})
+    assert ok
+    ok, text = r.run({"path": "sub/a.txt"})
+    assert "hello forge" in text
+
+
+def test_edit_rejects_ambiguous_match(tmp_path: Path):
+    root = str(tmp_path)
+    WriteFile(root=root).run({"path": "b.txt", "content": "x x x"})
+    ok, err = EditFile(root=root).run({"path": "b.txt", "old_string": "x", "new_string": "y"})
+    assert not ok and "3 times" in err
+
+
+def test_path_escape_blocked(tmp_path: Path):
+    r = ReadFile(root=str(tmp_path))
+    ok, err = r.run({"path": "../../etc/passwd"})
+    assert not ok and "escapes" in err
+
+
+def test_glob_and_grep(tmp_path: Path):
+    root = str(tmp_path)
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "m.py").write_text("VALUE = 42\n")
+    (tmp_path / "notes.md").write_text("the VALUE here\n")
+    g = GlobTool(root=root)
+    ok, out = g.run({"pattern": "**/*.py"})
+    assert ok and "src/m.py" in out
+    gp = GrepTool(root=root)
+    ok, out = gp.run({"pattern": r"VALUE\s*=\s*42", "include": "**/*"})
+    assert ok and "src/m.py:1" in out
+
+
+def test_listdir_and_shell(tmp_path: Path):
+    ld = ListDir(root=str(tmp_path))
+    ok, out = ld.run({})
+    assert ok
+    sh = ShellTool(root=str(tmp_path))
+    ok, out = sh.run({"command": "echo saturday"})
+    assert ok and "saturday" in out
+
+
+def test_python_repl_persistence():
+    repl = PythonREPL()
+    try:
+        ok, _ = repl.run({"code": "z = 6 * 7"})
+        assert ok
+        ok, out = repl.run({"code": "print(z)"})
+        assert ok and "42" in out
+        ok, err = repl.run({"code": "1/0"})
+        assert not ok and "ZeroDivisionError" in err
+    finally:
+        repl.close()
+
+
+
+# --- from tests/test_tool_toggles.py ---
+
+sys.path.insert(0, str(Path(__file__).parent))
 
 
 def test_family_expansion():
@@ -95,9 +166,6 @@ def test_plan_mode_and_toggles_compose():
     assert "grep" in names                # read-only survivor
 
 
-# ------------------------------------------------------- config load + api
-
-
 def test_config_load_accepts_comma_string(tmp_path, monkeypatch):
     import saturday.config as cfgmod
 
@@ -149,3 +217,46 @@ def test_apply_config_disabled_tools_validation_and_state(monkeypatch, tmp_path)
 
     status, body = _post_json(base, "/api/config", {"disabled_tools": []}, tok)
     assert status == 200 and body["disabled_tools"] == []
+
+
+def test_glob_skips_matches_outside_workspace(tmp_path):
+    from saturday.tools.files import GlobTool
+
+    (tmp_path / "outside.py").write_text("x = 1", encoding="utf-8")
+    root = tmp_path / "ws"
+    root.mkdir()
+    (root / "inner.py").write_text("x = 2", encoding="utf-8")
+
+    tool = GlobTool(root=str(root))
+    # '../*.py' from the workspace root points at the PARENT dir: every match
+    # resolves outside the workspace and must be dropped
+    ok, out = tool.run({"pattern": "../*.py"})
+    assert ok and out == "(no matches)", out
+    # the workspace itself stays fully visible
+    ok, out = tool.run({"pattern": "*.py"})
+    assert ok and out == "inner.py", out
+
+
+def test_grep_skips_matches_outside_workspace(tmp_path):
+    from saturday.tools.files import GrepTool
+
+    (tmp_path / "outside.py").write_text("SECRET_TOKEN = 'leak'", encoding="utf-8")
+    root = tmp_path / "ws"
+    root.mkdir()
+    (root / "inner.py").write_text("SECRET_TOKEN = 'fine'", encoding="utf-8")
+
+    tool = GrepTool(root=str(root))
+    ok, out = tool.run({"pattern": "SECRET_TOKEN", "include": "../*.py"})
+    assert ok and out == "(no matches)", "content from outside the workspace must not leak"
+    ok, out = tool.run({"pattern": "SECRET_TOKEN", "include": "*.py"})
+    assert ok and "inner.py" in out and "fine" in out
+
+
+def test_glob_still_finds_nested_files(tmp_path):
+    from saturday.tools.files import GlobTool
+
+    root = tmp_path / "ws"
+    (root / "src").mkdir(parents=True)
+    (root / "src" / "app.py").write_text("pass", encoding="utf-8")
+    ok, out = GlobTool(root=str(root)).run({"pattern": "**/*.py"})
+    assert ok and "src/app.py" in out
