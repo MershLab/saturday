@@ -65,7 +65,7 @@ AutoReqProv:    no
 Local-first agent desktop app: streaming chat, tools, MCP, background
 computer use. Bring your own provider key.
 %install
-cp -r "$PKGROOT/usr" "%{buildroot}/usr"
+cp -r "$(pwd)/$PKGROOT/usr" "%{buildroot}/usr"
 %files
 /usr/bin/saturday
 /usr/lib/saturday

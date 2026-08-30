@@ -53,6 +53,15 @@ def xdotool_type_chunk(text: str, timeout: float = 60.0) -> tuple[int, str, str]
     return _run(["xdotool", "type", "--delay", "15", text], timeout=timeout)
 
 
+def osascript_type_chunk(text: str, timeout: float = 60.0) -> tuple[int, str, str]:
+    """Default (non-mocked) runner for KeyboardTool's chunked type action on
+    macOS: one osascript keystroke invocation per text chunk, mirroring
+    xdotool_type_chunk's role for Linux."""
+    escaped = text.replace("\\", "\\\\").replace('"', '\\"')
+    script = f'tell application "System Events" to keystroke "{escaped}"'
+    return _run(["osascript", "-e", script], timeout=timeout)
+
+
 def _notes() -> str:
     return " (macOS/Linux backend — verify on real hardware)"
 
@@ -272,17 +281,30 @@ def keyboard_tool(self, args: dict) -> tuple[bool, str]:
         # AppleScript keystroke is TEXT and key-code based; type works with
         # unicode in most scopes, but always runs against the frontmost app.
         if action == "type":
-            text = str(args.get("text") or "")[:4000]
-            escaped = text.replace("\\", "\\\\").replace('"', '\\"')
-            script = f'tell application "System Events" to keystroke "{escaped}"'
-        else:
-            spec = str(args.get("key") or "")
-            combo = parse_combo_mac(spec)
-            if combo is None:
-                return False, f"unsupported key-combo on macOS: {spec!r}"
-            code, mods = combo
-            using = " using {" + ", ".join(mods) + "}" if mods else ""
-            script = f'tell application "System Events" to key code {code}{using}'
+            text = str(args.get("text") or "")
+            if not text:
+                return False, "action=type needs text="
+            # chunked through self._run_ps for the same reason as the Linux
+            # path: a long string embedded in one AppleScript command risks
+            # real reliability limits and gives no partial-progress error
+            # location. self._run_ps is the injection point (real
+            # osascript_type_chunk by default) so this stays mockable in
+            # tests without a real osascript/System Events round-trip.
+            sent = 0
+            for start in range(0, len(text), _TYPE_CHUNK_CHARS):
+                chunk = text[start : start + _TYPE_CHUNK_CHARS]
+                rc, _, err = self._run_ps(chunk, timeout=60.0)
+                if rc != 0:
+                    return False, f"keyboard failed at char {sent}: {(err or 'osascript not found or failed').strip()[-300:]}"
+                sent += len(chunk)
+            return True, f"typed {len(text)} chars ok"
+        spec = str(args.get("key") or "")
+        combo = parse_combo_mac(spec)
+        if combo is None:
+            return False, f"unsupported key-combo on macOS: {spec!r}"
+        code, mods = combo
+        using = " using {" + ", ".join(mods) + "}" if mods else ""
+        script = f'tell application "System Events" to key code {code}{using}'
         rc, _, err = _run(["osascript", "-e", script], timeout=20.0)
         return (True, f"{action} ok") if rc == 0 else (False, (err or "keyboard failed")[:300])
     if action == "type":
