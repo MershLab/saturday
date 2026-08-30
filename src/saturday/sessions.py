@@ -77,19 +77,39 @@ class SessionStore:
 
     _write_locks: dict[str, threading.RLock] = {}
     _write_locks_guard = threading.Lock()
+    # Per-root monotonic tie-breaker for list_sessions ordering. `created`
+    # (wall-clock) is the primary sort key; on a fast enough loop two
+    # creates can still land on the same float tick (observed on Windows
+    # CI with 30 rapid creates), so a plain in-process counter — shared
+    # across every SessionStore pointed at the same root, same as the
+    # append lock — resolves ties deterministically. It does not need to
+    # survive a restart: `created` alone already orders correctly across
+    # process lifetimes, ties only occur within one live process.
+    _seq_counters: dict[str, int] = {}
+
+    @staticmethod
+    def _root_key(root: Path) -> str:
+        try:
+            return str(root.resolve()).lower()
+        except OSError:
+            return str(root).lower()
 
     @classmethod
     def _lock_for_root(cls, root: Path) -> threading.RLock:
-        try:
-            key = str(root.resolve()).lower()
-        except OSError:
-            key = str(root).lower()
+        key = cls._root_key(root)
         with cls._write_locks_guard:
             lock = cls._write_locks.get(key)
             if lock is None:
                 lock = threading.RLock()
                 cls._write_locks[key] = lock
             return lock
+
+    def _next_seq(self) -> int:
+        key = self._root_key(self.root)
+        with self._write_locks_guard:
+            n = self._seq_counters.get(key, 0)
+            self._seq_counters[key] = n + 1
+            return n
 
     def __init__(self, root: str | Path | None = None) -> None:
         if root is None:
@@ -131,7 +151,13 @@ class SessionStore:
                 session_id = f"{trimmed}-{n}"
                 p = self._path(session_id)
                 n += 1
-            header = {"type": "meta", "id": session_id, "created": time.time(), **{k: v for k, v in meta.items() if k != "id"}}
+            header = {
+                "type": "meta",
+                "id": session_id,
+                "created": time.time(),
+                "seq": self._next_seq(),
+                **{k: v for k, v in meta.items() if k != "id"},
+            }
             p.write_text(json.dumps(header) + "\n", encoding="utf-8")
             stamp = self._metadata_stamp(p)
             if stamp is not None:
@@ -188,7 +214,10 @@ class SessionStore:
         with self._append_lock:  # head-compute + write must be one atomic step
             if not p.is_file():
                 p.write_text(
-                    json.dumps({"type": "meta", "id": session_id, "created": time.time(), "implicit": True}) + "\n",
+                    json.dumps(
+                        {"type": "meta", "id": session_id, "created": time.time(), "seq": self._next_seq(), "implicit": True}
+                    )
+                    + "\n",
                     encoding="utf-8",
                 )
             prev = self._chain_head(p)
@@ -391,25 +420,29 @@ class SessionStore:
         is never an acceptable default. Callers that want pagination can pass
         limit explicitly.
 
-        Ordered by the ``created`` header field, not filesystem mtime: mtime
-        resolution varies by OS/filesystem and can tie under rapid creation
-        (observed on Windows CI), which broke "newest first" for sessions
-        created within the same tick. ``created`` is written under this
-        store's append lock, so it is strictly ordered for a given root even
-        when mtime is not."""
-        entries: list[tuple[float, Path, dict[str, Any]]] = []
+        Ordered by the ``created``/``seq`` header fields, not filesystem
+        mtime: mtime resolution varies by OS/filesystem and can tie under
+        rapid creation (observed on Windows CI), which broke "newest first"
+        for sessions created within the same tick. ``created`` alone can
+        also tie under a fast enough loop even at sub-second float
+        precision; ``seq`` is a per-root monotonic counter written under
+        this store's append lock, so combined they are strictly ordered
+        for a given root even when the filesystem or wall clock is not."""
+        entries: list[tuple[float, int, Path, dict[str, Any]]] = []
         for p in self.root.glob("*.jsonl"):
             first = self._meta_for_path(p)
             if first is None:
                 continue
             created = first.get("created")
+            seq = first.get("seq")
             sort_key = float(created) if isinstance(created, (int, float)) else p.stat().st_mtime
-            entries.append((sort_key, p, first))
-        entries.sort(key=lambda e: e[0], reverse=True)
+            tiebreak = int(seq) if isinstance(seq, int) else -1
+            entries.append((sort_key, tiebreak, p, first))
+        entries.sort(key=lambda e: (e[0], e[1]), reverse=True)
         if limit is not None:
             entries = entries[:limit]
         out = []
-        for _, p, first in entries:
+        for _, _, p, first in entries:
             out.append(
                 {
                     "id": first.get("id", p.stem),
