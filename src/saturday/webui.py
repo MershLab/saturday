@@ -583,6 +583,8 @@ class AppState:
 
         self.cfg_overrides = cfg_overrides or {}
         self.tunnel = None  # live remote-access tunnel, when one is running
+        self.memgraph_cache: dict[str, tuple[float, dict]] = {}
+        self.memgraph_lock = threading.Lock()
         self._cfg_lock = threading.Lock()
         self.runtimes: dict[str, _SessionRuntime] = {}
         self.runtimes_lock = threading.Lock()
@@ -1906,6 +1908,33 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- file-edit journal (Cline/Roo-style per-edit restore) --------------------
 
+    def _get_memgraph(self) -> None:
+        """Nodes and edges for the memory view. Cached per workspace: the repo
+        index rebuild behind it is cheap but not free, and the view repolls."""
+        from urllib.parse import parse_qs, unquote, urlparse
+
+        qs = parse_qs(urlparse(self.path).query)
+        sid = unquote((qs.get("sid") or [""])[0])
+        ws = self.app.session_workspace(sid) or self.app.base_cfg.workspace_root
+        fresh = (qs.get("refresh") or [""])[0] in ("1", "true")
+        key = str(ws or "")
+        with self.app.memgraph_lock:
+            hit = None if fresh else self.app.memgraph_cache.get(key)
+        if hit is not None and time.time() - hit[0] < 30.0:
+            self._send_json(hit[1])
+            return
+        try:
+            from saturday.memgraph import build_graph
+
+            graph = build_graph(ws)
+        except Exception as exc:
+            self._send_json({"error": f"{type(exc).__name__}: {exc}"}, 500)
+            return
+        graph["workspace"] = str(ws or "")
+        with self.app.memgraph_lock:
+            self.app.memgraph_cache[key] = (time.time(), graph)
+        self._send_json(graph)
+
     def _get_journal(self) -> None:
         from urllib.parse import parse_qs, unquote, urlparse
 
@@ -2533,6 +2562,7 @@ _GET_ROUTES = [
     ("/api/search", "_get_search"),
     ("/api/context", "_get_context"),
     ("/api/journal", "_get_journal"),
+    ("/api/memgraph", "_get_memgraph"),
     ("/api/schedules", "_get_schedules"),
     ("/api/runs", "_get_runs"),
     ("/api/git/status", "_get_git_status"),
