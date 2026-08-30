@@ -3112,6 +3112,30 @@ def test_memgraph_survives_an_empty_workspace(tmp_path, monkeypatch):
     assert g["stats"]["nodes"] == 0 and g["edges"] == []
 
 
+def test_memgraph_caps_total_nodes_and_keeps_edges_valid(tmp_path, monkeypatch):
+    """The cap bounds the WHOLE graph, not just its files - folders used to
+    ride on top of it - and every surviving edge must still point at a node."""
+    cfg = tmp_path / "cfg"
+    cfg.mkdir()
+    monkeypatch.setattr("saturday.config.get_config_dir", lambda: cfg)
+    ws = tmp_path / "ws"
+    n = 40  # one file per folder, so folders alone would blow a files-only cap
+    for i in range(n):
+        (ws / f"d{i}").mkdir(parents=True)
+        (ws / f"d{i}" / "m.py").write_text(
+            f"def sym_{i}():\n    return sym_{(i + 1) % n}()\n", encoding="utf-8")
+
+    from saturday.memgraph import build_graph
+
+    assert build_graph(ws)["stats"]["nodes"] == 2 * n  # uncapped: files + folders
+
+    g = build_graph(ws, limit=20)
+    assert len(g["nodes"]) == 20 and g["stats"]["nodes"] == 20
+    assert g["edges"], "trimming must not throw away every edge"
+    for e in g["edges"]:
+        assert 0 <= e["s"] < 20 and 0 <= e["t"] < 20
+
+
 def test_memgraph_endpoint_serves_and_caches(tmp_path, monkeypatch):
     cfg = tmp_path / "cfg"
     cfg.mkdir()

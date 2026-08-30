@@ -1920,7 +1920,7 @@ class Handler(BaseHTTPRequestHandler):
         key = str(ws or "")
         with self.app.memgraph_lock:
             hit = None if fresh else self.app.memgraph_cache.get(key)
-        if hit is not None and time.time() - hit[0] < 30.0:
+        if hit is not None and time.time() - hit[0] < 300.0:
             self._send_json(hit[1])
             return
         try:

@@ -60,9 +60,31 @@ class _Builder:
         else:
             e["w"] += weight
 
-    def result(self) -> dict:
+    def result(self, max_nodes: int = MAX_NODES) -> dict:
         edges = sorted(self.edges.values(), key=lambda e: -e["w"])[:MAX_EDGES]
+        if len(self.nodes) > max_nodes:
+            edges = self._trim(max_nodes, edges)
         return {"nodes": self.nodes, "edges": edges}
+
+    def _trim(self, keep_n: int, edges: list[dict]) -> list[dict]:
+        """Keep the most connected nodes and renumber the edges onto them.
+
+        Degree, not weight: an isolated node is the one nobody misses, and a
+        graph nobody can read is worse than a smaller one that they can."""
+        degree = [0.0] * len(self.nodes)
+        for e in edges:
+            degree[e["s"]] += e["w"]
+            degree[e["t"]] += e["w"]
+        keep = sorted(range(len(self.nodes)), key=lambda i: -degree[i])[:keep_n]
+        remap = {old: new for new, old in enumerate(sorted(keep))}
+        self.nodes = [self.nodes[i] for i in sorted(keep)]
+        self.index = {n["id"]: i for i, n in enumerate(self.nodes)}
+        out = []
+        for e in edges:
+            s, t = remap.get(e["s"]), remap.get(e["t"])
+            if s is not None and t is not None:
+                out.append({"s": s, "t": t, "kind": e["kind"], "w": e["w"]})
+        return out
 
 
 def _dir_of(rel: str) -> str:
@@ -254,7 +276,9 @@ def build_graph(workspace_root: str | Path | None = None,
         try:
             from saturday.tools.repo_index import build_index
 
-            _add_code_layer(b, build_index(workspace_root), limit)
+            # files only: folders, chats, facts and skills come out of the
+            # same budget, and result() trims whatever still overflows
+            _add_code_layer(b, build_index(workspace_root), int(limit * 0.75))
         except Exception:
             pass  # an unreadable workspace must not empty the whole graph
 
@@ -271,7 +295,7 @@ def build_graph(workspace_root: str | Path | None = None,
     except Exception:
         pass
 
-    out = b.result()
+    out = b.result(limit)
     counts: dict[str, int] = {}
     for n in out["nodes"]:
         counts[n["kind"]] = counts.get(n["kind"], 0) + 1
