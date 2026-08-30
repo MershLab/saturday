@@ -33,7 +33,7 @@ Section: utils
 Priority: optional
 Architecture: $(dpkg --print-architecture 2>/dev/null || echo amd64)
 Installed-Size: $(du -sk "$PKGROOT/usr" | cut -f1)
-Maintainer: Saturday Labs <saturday@localhost>
+Maintainer: MershLab <saturday@localhost>
 Description: The auditable minimal agentic AI harness
  Local-first agent desktop app: streaming chat, 25+ tools, MCP,
  background computer use, sessions with checkpoints. Bring your own
@@ -60,7 +60,6 @@ Version:        $VERSION
 Release:        1%{?dist}
 Summary:        The auditable minimal agentic AI harness
 License:        MIT
-BuildArch:      x86_64
 AutoReqProv:    no
 %description
 Local-first agent desktop app: streaming chat, tools, MCP, background
