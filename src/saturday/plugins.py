@@ -156,6 +156,10 @@ def _core_tools(cfg) -> list[Tool]:
             tools.extend(make_lsp_tools(lsp_cfg, lambda: getattr(cfg, "workspace_root", None) or "."))
         except Exception:
             pass
+
+    from saturday.tools.external_agent import ExternalAgentTool
+
+    tools.append(ExternalAgentTool())
     return tools
 
 

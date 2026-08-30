@@ -154,11 +154,11 @@ Turn tools off globally or per session — by name or family:
 saturday run --disable web,computer_use "summarize notes/"   # no network, no desktop
 ```
 
-Families: `web` (search+fetch) · `browser` · `computer_use` (pointer/keyboard/ui/screen) · `shell` · `python` · `file_writes` · `subagents` · `memory`. In the app: Settings → Safety & approvals → Tool toggles. Per-session: `/toggle <name|family>` in chat; `/tools` shows what's active. Disabled tools are hidden from the model entirely — not just blocked after the fact.
+Families: `web` (search+fetch) · `browser` · `computer_use` (pointer/keyboard/ui/screen) · `shell` · `python` · `file_writes` · `subagents` · `memory` · `external_agents`. In the app: Settings → Safety & approvals → Tool toggles. Per-session: `/toggle <name|family>` in chat; `/tools` shows what's active. Disabled tools are hidden from the model entirely — not just blocked after the fact.
 
 ## Tools
 
-`shell` (+background jobs) · `read_file` · `write_file` · `edit_file` · `list_dir` · `glob` · `grep` · `python` (persistent REPL) · `web_fetch` · `todo` · `create/get/update_goal` · `job_list/output/kill` · `task` (subagents)
+`shell` (+background jobs) · `read_file` · `write_file` · `edit_file` · `list_dir` · `glob` · `grep` · `python` (persistent REPL) · `web_fetch` · `todo` · `create/get/update_goal` · `job_list/output/kill` · `task` (subagents) · `external_agent` (delegate to an installed claude-code/codex/cursor/gemini CLI)
 
 Workspace paths are sandboxed against escaping the root. Extend via plugins:
 
