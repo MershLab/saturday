@@ -308,6 +308,10 @@ class AgentConfig:
     # Hard spend policy: abort the run when cumulative tokens exceed this
     # (0 = off). Mirrors Omnigent-style spend enforcement.
     max_run_tokens: int = 0
+    # Wall-clock cap for a single run (0 = off) - the one resource limit
+    # that's genuinely cross-platform: real memory/CPU limits need OS
+    # primitives that don't exist on every platform, this doesn't.
+    max_wall_seconds: int = 0
     # Persist "always allow" decisions across sessions (CONFIG_DIR/approvals.json)
     persist_approvals: bool = True
     # Language servers for LSP tools, e.g. {"python": ["pylsp"]}

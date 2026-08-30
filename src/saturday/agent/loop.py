@@ -124,6 +124,7 @@ class AgentLoop:
         keep_reasoning_in_history: bool = False,
         summarizer: Callable[[str], str] | None = None,
         max_run_tokens: int = 0,
+        max_wall_seconds: int = 0,
         tool_call_timeout: float | None = None,
         injection_guard: bool = True,
     ) -> None:
@@ -142,6 +143,8 @@ class AgentLoop:
         self.injection_guard = bool(injection_guard)
         # hard spend policy: stop_reason="budget" when cumulative tokens cross
         self.max_run_tokens = int(max_run_tokens or 0)
+        # wall-clock cap: stop_reason="wall_clock" when elapsed time crosses
+        self.max_wall_seconds = int(max_wall_seconds or 0)
         # per-tool-call watchdog (None => wait forever); a hung tool must not
         # wedge the whole run since parallel results are gathered synchronously
         self.tool_call_timeout = float(tool_call_timeout) if tool_call_timeout else None
@@ -205,9 +208,23 @@ class AgentLoop:
 
         stall_key: tuple | None = None
         stall_count = 0
+        run_started_at = time.monotonic()
         for step_index in range(self.max_steps):
             if self.hooks.on_step_start:
                 self.hooks.on_step_start(step_index)
+
+            if self.max_wall_seconds and time.monotonic() - run_started_at >= self.max_wall_seconds:
+                last_text = next(
+                    (s.assistant.content for s in reversed(traj.steps) if s.assistant.content),
+                    None,
+                )
+                traj.final_answer = (
+                    f"[budget stop] wall-clock limit {self.max_wall_seconds}s reached before the "
+                    "goal completed." + (f" Last output: {last_text}" if last_text else "")
+                )
+                traj.stop_reason = "wall_clock"
+                self._emit_checkpoint(history)
+                return traj
 
             est_prompt_tokens = estimate_tokens(system_prompt) + sum(
                 estimate_message_tokens(m) for m in history

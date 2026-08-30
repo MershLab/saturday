@@ -573,6 +573,7 @@ class Agent:
             hooks=hooks,
             keep_reasoning_in_history=getattr(self.cfg, "keep_reasoning_in_history", False),
             max_run_tokens=int(getattr(self.cfg, "max_run_tokens", 0) or 0),
+            max_wall_seconds=int(getattr(self.cfg, "max_wall_seconds", 0) or 0),
             # optional per-tool-call watchdog (None => wait forever)
             tool_call_timeout=getattr(self.cfg, "tool_timeout", None),
             injection_guard=bool(getattr(self.cfg, "injection_guard", True)),

@@ -27,6 +27,10 @@ def _print(*args: str) -> None:
     print(*args, flush=True)
 
 
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
 def _preflight_check(args: argparse.Namespace) -> str | None:
     """The subset of doctor's checks that matter before an unattended run
     starts: a background process failing minutes later over a missing key
@@ -68,6 +72,24 @@ def _spawn_detached(args: argparse.Namespace) -> int:
     creationflags = 0
     if os.name == "nt":
         creationflags = getattr(subprocess, "DETACHED_PROCESS", 0x8) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200)
+
+    # real OS-enforced memory cap, POSIX only - no stdlib equivalent exists
+    # on Windows without a real dependency (job objects need pywin32/ctypes
+    # plumbing well beyond what preexec_fn gives here for free).
+    max_memory_mb = getattr(args, "max_memory_mb", None)
+    preexec_fn = None
+    if max_memory_mb and not _is_windows():
+        limit_bytes = int(max_memory_mb) * 1024 * 1024
+
+        def _apply_memory_limit() -> None:
+            import resource
+
+            resource.setrlimit(resource.RLIMIT_AS, (limit_bytes, limit_bytes))
+
+        preexec_fn = _apply_memory_limit
+    elif max_memory_mb and _is_windows():
+        _print("[detach] --max-memory-mb ignored on Windows (no stdlib resource-limit primitive)")
+
     with open(log_path, "ab") as log_fh:
         proc = subprocess.Popen(
             argv,
@@ -75,6 +97,7 @@ def _spawn_detached(args: argparse.Namespace) -> int:
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
             creationflags=creationflags,
+            preexec_fn=preexec_fn,
             close_fds=True,
         )
     _print(f"[detached] pid={proc.pid} session={session_id}")
@@ -1098,6 +1121,7 @@ def _overrides(args: argparse.Namespace, ci: bool = False) -> dict:
         "persona_mode": "assistant" if getattr(args, "assistant", False) else None,
         "plan_mode": True if getattr(args, "plan", False) else None,
         "max_run_tokens": getattr(args, "max_run_tokens", None),
+        "max_wall_seconds": getattr(args, "max_wall_seconds", None),
         "disabled_tools": getattr(args, "disabled_tools", None),
         "safety_mode": "autonomous" if getattr(args, "yolo", False) else None,
     }
@@ -1128,6 +1152,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--plan", action="store_true", help="plan mode: read-only tools only; agent outputs an implementation plan instead of executing")
     p_run.add_argument("--disable", dest="disabled_tools", help="comma-separated tools/families to turn off (e.g. web,computer_use; families: web, browser, computer_use, shell, python, file_writes, subagents, memory)")
     p_run.add_argument("--max-run-tokens", type=int, dest="max_run_tokens", help="abort the run once cumulative tokens exceed this (hard spend policy)")
+    p_run.add_argument("--max-wall-seconds", type=int, dest="max_wall_seconds", help="abort the run once elapsed wall-clock time exceeds this (unattended runaway guard)")
+    p_run.add_argument("--max-memory-mb", type=int, dest="max_memory_mb", help="hard memory cap for a --detach run (POSIX only; ignored elsewhere)")
     p_run.add_argument("--detach", action="store_true", help="run in a detached background process; returns immediately (log under .saturday/bg/)")
     p_run.add_argument("--background", action="store_true", help="background-only desktop mode: blocks pointer/keyboard/focus, forces non-intrusive UI Automation (pairs well with --detach)")
     p_run.add_argument("--image", action="append", default=None, dest="images", metavar="PATH", help="attach image (repeatable; vision models)")
