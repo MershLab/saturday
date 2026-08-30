@@ -1,15 +1,14 @@
 """Delegate a task to another installed CLI agent (Claude Code, Codex,
-Cursor, Gemini CLI) instead of Saturday's own subagent system - useful when
+Cursor, Antigravity) instead of Saturday's own subagent system - useful when
 a task genuinely calls for a different model/tool ecosystem, not as a
 replacement for `task` (Saturday's own subagents stay the default delegate).
 
-Invocation flags below are verified for Claude Code (this tool's own CLI,
-so exact) and best-effort for the other three - external tools change
-their CLI surface between versions; ONE_SHOT_FLAG mirrors the closest
-current documented behavior at time of writing but isn't guaranteed to
-match every installed version. Wrong for a given install shows up as a
-real, catchable failure (bad flag, non-zero exit) rather than silently
-misbehaving - never worth building a stale-detection heuristic around."""
+Invocation flags are verified against each tool's own published docs at time
+of writing, but external CLIs change their surface between versions (Google
+retired the entire Gemini CLI mid-2026, which is why `agy` is here instead).
+A wrong flag surfaces as a real, catchable failure - bad flag, non-zero exit,
+stderr passed through - rather than silently misbehaving, which is why this
+registry deliberately has no stale-detection heuristic."""
 from __future__ import annotations
 
 import shutil
@@ -40,7 +39,7 @@ def _cursor_argv(binary: str, prompt: str) -> list[str]:
     return [binary, "-p", prompt]
 
 
-def _gemini_argv(binary: str, prompt: str) -> list[str]:
+def _antigravity_argv(binary: str, prompt: str) -> list[str]:
     return [binary, "-p", prompt]
 
 
@@ -63,13 +62,19 @@ AGENTS: dict[str, ExternalAgentSpec] = {
         install_hint="curl https://cursor.com/install -fsS | bash",
         build_argv=_cursor_argv,
     ),
-    "gemini": ExternalAgentSpec(
-        id="gemini",
-        binaries=("gemini",),
-        install_hint="npm install -g @google/gemini-cli",
-        build_argv=_gemini_argv,
+    # Google retired the standalone Gemini CLI on 2026-06-18 (free/Pro/Ultra
+    # personal tiers cut off, no grace period) and replaced it with
+    # Antigravity CLI, whose binary is `agy`. "gemini" stays as an alias so
+    # existing configs keep resolving instead of failing with "unknown agent".
+    "antigravity": ExternalAgentSpec(
+        id="antigravity",
+        binaries=("agy",),
+        install_hint="curl -fsSL https://antigravity.google/cli/install.sh | bash",
+        build_argv=_antigravity_argv,
     ),
 }
+
+AGENTS["gemini"] = AGENTS["antigravity"]
 
 
 def find_binary(spec: ExternalAgentSpec) -> str | None:
@@ -83,7 +88,7 @@ def find_binary(spec: ExternalAgentSpec) -> str | None:
 class ExternalAgentTool(Tool):
     name = "external_agent"
     description = (
-        "Delegate a task to a different installed CLI agent (claude-code, codex, cursor, gemini) "
+        "Delegate a task to a different installed CLI agent (claude-code, codex, cursor, antigravity) "
         "instead of Saturday's own subagents - for when a task specifically calls for a different "
         "model/tool ecosystem. Installs the CLI automatically if it's missing and install=true."
     )
