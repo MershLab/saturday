@@ -3063,3 +3063,74 @@ def test_remote_start_without_provider_explains(tmp_path, monkeypatch):
     with _Server(app) as srv:
         status, data = _req(srv.base, "/api/remote", "POST", {"start": True})
         assert status == 400 and "cloudflared" in data["hints"]
+
+
+def test_memgraph_builds_layers_and_links_them(tmp_path, monkeypatch):
+    """The graph must span layers: code files, the sessions that touched them,
+    and the facts that mention them - a code-only graph is not a memory."""
+    cfg = tmp_path / "cfg"
+    (cfg / "sessions").mkdir(parents=True)
+    monkeypatch.setattr("saturday.config.get_config_dir", lambda: cfg)
+
+    ws = tmp_path / "ws"
+    (ws / "pkg").mkdir(parents=True)
+    (ws / "pkg" / "core.py").write_text(
+        "class Widget:\n    def spin(self):\n        return 1\n", encoding="utf-8")
+    (ws / "pkg" / "use.py").write_text(
+        "from pkg.core import Widget\nWidget().spin()\n", encoding="utf-8")
+
+    (cfg / "sessions" / "s1.jsonl").write_text(json.dumps({
+        "type": "messages",
+        "messages": [{"role": "user", "content": "please look at pkg/core.py"}],
+    }) + "\n", encoding="utf-8")
+    (cfg / "MEMORY.md").write_text("- pkg/core.py owns the Widget lifecycle\n", encoding="utf-8")
+
+    from saturday.memgraph import build_graph
+
+    g = build_graph(ws)
+    kinds = g["stats"]["kinds"]
+    assert kinds.get("file", 0) >= 2 and kinds.get("dir", 0) >= 1
+    assert kinds.get("session") == 1 and kinds.get("fact") == 1
+
+    idx = {n["id"]: i for i, n in enumerate(g["nodes"])}
+    core = idx["file:pkg/core.py"]
+    pairs = {(e["s"], e["t"]) for e in g["edges"]} | {(e["t"], e["s"]) for e in g["edges"]}
+    # use.py references a symbol core.py defines
+    assert (idx["file:pkg/use.py"], core) in pairs
+    # the session that named the file, and the fact about it, both attach to it
+    assert (idx["session:s1"], core) in pairs
+    assert any((i, core) in pairs for k, i in idx.items() if k.startswith("fact:"))
+
+
+def test_memgraph_survives_an_empty_workspace(tmp_path, monkeypatch):
+    cfg = tmp_path / "cfg"
+    cfg.mkdir()
+    monkeypatch.setattr("saturday.config.get_config_dir", lambda: cfg)
+    from saturday.memgraph import build_graph
+
+    g = build_graph(tmp_path / "nope")
+    assert g["stats"]["nodes"] == 0 and g["edges"] == []
+
+
+def test_memgraph_endpoint_serves_and_caches(tmp_path, monkeypatch):
+    cfg = tmp_path / "cfg"
+    cfg.mkdir()
+    monkeypatch.setattr("saturday.config.get_config_dir", lambda: cfg)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "a.py").write_text("def go():\n    return 2\n", encoding="utf-8")
+
+    app = AppState(store_root=tmp_path / "s", cfg_overrides={"workspace_root": str(ws)})
+    base, _ = _server(app)
+
+    status, data = _req(base, "/api/memgraph")
+    assert status == 200, data
+    assert data["stats"]["nodes"] >= 1
+    assert data["workspace"] == str(ws)
+
+    # a second file appears but the cached answer stands until ?refresh=1
+    (ws / "b.py").write_text("from a import go\ngo()\n", encoding="utf-8")
+    _, cached = _req(base, "/api/memgraph")
+    assert cached["stats"]["nodes"] == data["stats"]["nodes"]
+    _, fresh = _req(base, "/api/memgraph?refresh=1")
+    assert fresh["stats"]["nodes"] > data["stats"]["nodes"]
