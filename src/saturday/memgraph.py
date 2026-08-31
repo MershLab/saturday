@@ -234,21 +234,54 @@ def _add_chat_layer(b: _Builder, store_root: Path, limit: int) -> None:
 
 
 def _add_fact_layer(b: _Builder, memory_file: Path) -> None:
+    """Facts come from the memory index, not from re-splitting the file.
+
+    The index already knows each note's salience and the relates_to /
+    contradicts links between them; parsing the lines again here would show a
+    poorer version of the same thing in the one view meant to explain it."""
     if not memory_file.is_file():
         return
     try:
         raw = memory_file.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return
+
+    notes: list[dict] = []
+    edges: list[tuple[int, int, str]] = []
+    try:
+        from saturday.memindex import MemoryIndex
+
+        idx = MemoryIndex()
+        try:
+            idx.reindex(raw, scope="global")
+            graph = idx.graph(scope="global")
+        finally:
+            idx.close()
+        notes = graph["nodes"]
+        edges = [(e["from"], e["to"], e["relation"]) for e in graph["edges"]]
+    except Exception:
+        # the index is optional scaffolding over a plain file; if it cannot be
+        # built the notes themselves must still appear
+        from saturday.memindex import parse_notes
+
+        try:
+            notes = [{"id": i, "slug": n["slug"], "text": n["text"], "salience": 0.5}
+                     for i, n in enumerate(parse_notes(raw))]
+        except Exception:
+            return
+
     kept = {n["meta"]["path"] for n in b.nodes if n["kind"] == "file"}
-    for n, line in enumerate(raw.splitlines()):
-        text = line.strip().lstrip("-*# ").strip()
-        if len(text) < 8:
-            continue
+    by_node_id: dict[int, int] = {}
+    for note in notes:
+        text = note["text"]
+        salience = float(note.get("salience") or 0.5)
         fid = b.node(
-            f"fact:{n}", kind="fact", label=text[:60], group="facts",
-            weight=1.6, meta={"text": text},
+            f"fact:{note['slug']}", kind="fact", label=text[:60], group="facts",
+            # a surprising note pulls harder than one restating what is known
+            weight=1.0 + 1.6 * salience,
+            meta={"text": text, "slug": note["slug"], "salience": round(salience, 3)},
         )
+        by_node_id[note["id"]] = fid
         for rel in _paths_in(text, kept):
             tid = b.index.get(f"file:{rel}")
             if tid is not None:
@@ -258,6 +291,12 @@ def _add_fact_layer(b: _Builder, memory_file: Path) -> None:
             owner = b.index.get(f"file:{word}")
             if owner is not None:
                 b.edge(fid, owner, "about", 1.0)
+
+    for src, dst, relation in edges:
+        a, c = by_node_id.get(src), by_node_id.get(dst)
+        if a is not None and c is not None:
+            # a contradiction is the most informative link in the whole graph
+            b.edge(a, c, relation, 4.0 if relation == "contradicts" else 2.0)
 
 
 def _add_skill_layer(b: _Builder, skills_dir: Path) -> None:

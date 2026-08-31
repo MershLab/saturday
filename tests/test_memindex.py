@@ -144,3 +144,48 @@ def test_scopes_do_not_collide(tmp_path):
     assert len(idx.graph()["nodes"]) == 2
     assert len(idx.graph(scope="global")["nodes"]) == 1
     idx.close()
+
+
+def test_memory_graph_fact_layer_uses_the_index_not_raw_lines(tmp_path, monkeypatch):
+    """The one view meant to explain memory must show what the index knows -
+    salience and contradictions - not a poorer re-parse of the same file."""
+    cfg = tmp_path / "cfg"
+    cfg.mkdir()
+    monkeypatch.setattr("saturday.config.CONFIG_DIR", cfg)
+    monkeypatch.setattr("saturday.config.get_config_dir", lambda: cfg)
+    (cfg / "MEMORY.md").write_text(
+        "- The deploy pipeline used helm charts for everything\n"
+        "- We no longer use helm for the deploy pipeline; argocd replaced it\n"
+        "- Nightly backups land in S3 under prod/db\n", encoding="utf-8")
+
+    from saturday.memgraph import build_graph
+
+    g = build_graph(None)
+    facts = [n for n in g["nodes"] if n["kind"] == "fact"]
+    assert len(facts) == 3
+    assert all("salience" in n["meta"] and "slug" in n["meta"] for n in facts)
+    kinds = {e["kind"] for e in g["edges"]}
+    assert "contradicts" in kinds, "a correction must reach the picture as a contradiction"
+
+
+def test_memory_graph_still_lists_facts_if_the_index_fails(tmp_path, monkeypatch):
+    """The index is scaffolding over a plain file; losing it must not blank
+    the notes themselves."""
+    cfg = tmp_path / "cfg"
+    cfg.mkdir()
+    monkeypatch.setattr("saturday.config.CONFIG_DIR", cfg)
+    monkeypatch.setattr("saturday.config.get_config_dir", lambda: cfg)
+    (cfg / "MEMORY.md").write_text("- a note that must still show up\n", encoding="utf-8")
+
+    import saturday.memindex as mi
+
+    class Boom:
+        def __init__(self, *a, **k):
+            raise RuntimeError("index unavailable")
+
+    monkeypatch.setattr(mi, "MemoryIndex", Boom)
+    from saturday.memgraph import build_graph
+
+    g = build_graph(None)
+    assert [n["label"] for n in g["nodes"] if n["kind"] == "fact"] == \
+        ["a note that must still show up"]
