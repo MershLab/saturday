@@ -3434,6 +3434,7 @@ function openSettings() {
   loadMcp(false);
   loadCodemem();
   loadSkills();
+  loadBrowse();
   settingsShow("general");
   providerHint();
   loadSchedules();
@@ -4418,33 +4419,157 @@ async function skillAction(body, btn) {
   } finally { if (btn) btn.disabled = false; }
 }
 
-async function searchSkills() {
-  const box = $("#skillResults");
-  const q = $("#skillQuery").value.trim();
-  box.replaceChildren(el("div", "field-hint", "searching\u2026"));
+/* ------------------------------------------------------------------ *
+ * Skill browser
+ *
+ * The shape package managers settled on: one list, a filter that narrows
+ * it live, and a detail pane for whichever row is under the cursor. The
+ * detail pane is the part that matters - deciding whether to install
+ * something needs its licence, its age and how many people rely on it,
+ * and a one-line search result cannot carry that.
+ * ------------------------------------------------------------------ */
+
+const browse = { rows: [], all: [], cursor: 0, picked: new Set(), note: "" };
+
+async function loadBrowse() {
+  const rows = $("#skillRows");
+  const btn = $("#skillSearch");
+  btn.disabled = true;
+  rows.replaceChildren(el("div", "field-hint", "reading the catalogue…"));
   let d;
-  try { d = await api("/api/skills?q=" + encodeURIComponent(q)); }
-  catch (e) { box.replaceChildren(el("div", "skill-bad", e.message)); return; }
-  box.replaceChildren();
-  if (d.error) { box.appendChild(el("div", "skill-bad", d.error)); return; }
-  if (!d.results.length) {
-    box.appendChild(el("div", "field-hint", "nothing tagged " + (d.topic || "") + " matches that"));
+  try {
+    d = await api("/api/skills?browse=1&q="
+                  + encodeURIComponent($("#skillQuery").value.trim()));
+  }
+  catch (e) {
+    rows.replaceChildren(el("div", "skill-bad", e.message));
+    btn.disabled = false;
     return;
   }
-  for (const r of d.results) {
-    const row = el("div", "skill-item");
-    const head = el("div", "skill-head");
-    head.appendChild(el("span", "skill-name", r.full_name));
-    head.appendChild(el("span", "skill-stars mono", "\u2605 " + r.stars));
-    const add = el("button", "mini-btn", "install");
-    add.addEventListener("click", () => skillAction({ action: "install", url: r.url }, add));
-    head.appendChild(add);
-    row.appendChild(head);
-    if (r.description) row.appendChild(el("div", "skill-desc", r.description));
-    box.appendChild(row);
+  btn.disabled = false;
+  if (d.error) { rows.replaceChildren(el("div", "skill-bad", d.error)); return; }
+  browse.all = d.results || [];
+  browse.note = d.note || "";
+  browse.cursor = 0;
+  browse.picked.clear();
+  browseRender(d.total || browse.all.length);
+}
+
+function browseRender(total) {
+  const rows = $("#skillRows");
+  rows.replaceChildren();
+  const shown = browse.all;
+  $("#skillCount").textContent = shown.length
+    ? shown.length + "/" + (total || shown.length) + "  (" + browse.picked.size + ")"
+    : "";
+  $("#skillResults").textContent = shown.length ? browse.note : "";
+  if (!shown.length) {
+    rows.appendChild(el("div", "field-hint", "nothing published under that tag matches"));
+    $("#skillDetail").replaceChildren();
+    return;
   }
-  // the caveat travels with the results, not buried in a doc nobody opens
-  box.appendChild(el("div", "skill-caveat", d.note || ""));
+  shown.forEach((r, i) => {
+    const row = el("div", "skill-row" + (i === browse.cursor ? " on" : ""));
+    row.appendChild(el("span", "skill-pick", browse.picked.has(i) ? "✓" : ""));
+    row.appendChild(el("span", "skill-rname", r.full_name));
+    if (r.installed) row.appendChild(el("span", "skill-have", "installed"));
+    row.appendChild(el("span", "skill-rstars mono", "★ " + r.stars));
+    row.addEventListener("click", () => { browse.cursor = i; browseRender(total); });
+    row.addEventListener("dblclick", () => browseInstall([i]));
+    rows.appendChild(row);
+  });
+  const active = rows.children[browse.cursor];
+  if (active && active.scrollIntoView) active.scrollIntoView({ block: "nearest" });
+  browseDetail(shown[browse.cursor]);
+  $("#skillInstallSel").disabled = browse.picked.size === 0;
+  $("#skillInstallSel").textContent = browse.picked.size
+    ? "install " + browse.picked.size + " selected" : "install selected";
+}
+
+function browseDetail(r) {
+  const box = $("#skillDetail");
+  box.replaceChildren();
+  if (!r) return;
+  const put = (k, v, cls) => {
+    if (v === "" || v == null) return;
+    const row = el("div", "sd-row");
+    row.appendChild(el("span", "sd-k", k));
+    row.appendChild(el("span", "sd-v" + (cls ? " " + cls : ""), String(v)));
+    box.appendChild(row);
+  };
+  put("Name", r.name);
+  put("Owner", r.owner);
+  put("Description", r.description || "(none given)");
+  put("Licence", r.license || "none declared", r.license ? "" : "sd-warn");
+  put("Language", r.language);
+  put("Topics", (r.topics || []).join("  "));
+  put("Stars", r.stars + "   forks " + r.forks + "   open issues " + r.issues);
+  put("Size", r.size_kb ? (r.size_kb / 1024).toFixed(1) + " MB" : "");
+  put("Created", r.created);
+  // age is the signal people actually use to judge a package, so it is spelled
+  // out rather than left as a date to subtract in your head
+  put("Last push", r.updated + browseAge(r.updated));
+  put("Home", r.homepage);
+  put("Source", r.html_url);
+  if (r.archived) put("Status", "ARCHIVED by its author", "sd-warn");
+  if (r.installed) put("Status", "already installed", "sd-ok");
+}
+
+function browseAge(iso) {
+  if (!iso) return "";
+  const days = Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
+  if (isNaN(days)) return "";
+  if (days <= 1) return "   (today)";
+  if (days < 60) return "   (" + days + " days ago)";
+  const months = Math.round(days / 30);
+  return months < 24 ? "   (" + months + " months ago)"
+                     : "   (" + (days / 365).toFixed(1) + " years ago)";
+}
+
+async function browseInstall(indices) {
+  const picks = indices.map((i) => browse.all[i]).filter(Boolean);
+  if (!picks.length) return;
+  const already = picks.filter((p) => p.installed).map((p) => p.name);
+  if (already.length === picks.length) { toast("Already installed", "info"); return; }
+  const btn = $("#skillInstallSel");
+  btn.disabled = true;
+  for (const p of picks) {
+    if (p.installed) continue;
+    try {
+      await api("/api/skills", { method: "POST",
+        body: JSON.stringify({ action: "install", url: p.url }) });
+      p.installed = true;
+      toast("Installed " + p.name, "ok");
+    } catch (e) {
+      toast(p.name + ": " + e.message, "error");
+    }
+  }
+  browse.picked.clear();
+  btn.disabled = false;
+  browseRender();
+  loadSkills();
+}
+
+function browseKeys(e) {
+  if (!browse.all.length) return;
+  const n = browse.all.length;
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    browse.cursor = (browse.cursor + (e.key === "ArrowDown" ? 1 : n - 1)) % n;
+    browseRender();
+    return;
+  }
+  if (e.key === " " || e.key === "Tab") {
+    e.preventDefault();
+    if (browse.picked.has(browse.cursor)) browse.picked.delete(browse.cursor);
+    else browse.picked.add(browse.cursor);
+    browseRender();
+    return;
+  }
+  if (e.key === "Enter") {
+    e.preventDefault();
+    browseInstall(browse.picked.size ? [...browse.picked] : [browse.cursor]);
+  }
 }
 
 async function loadCodemem() {
@@ -6150,9 +6275,13 @@ function bindEvents() {
     skillAction({ action: "install", url }, $("#skillInstall"));
     $("#skillUrl").value = "";
   });
-  $("#skillSearch").addEventListener("click", () => searchSkills());
+  $("#skillSearch").addEventListener("click", () => loadBrowse());
+  $("#skillBrowse").addEventListener("keydown", browseKeys);
+  $("#skillInstallSel").addEventListener("click", () =>
+    browseInstall(browse.picked.size ? [...browse.picked] : [browse.cursor]));
   $("#skillQuery").addEventListener("keydown", (e) => {
-    if (e.key === "Enter") { e.preventDefault(); searchSkills(); }
+    if (e.key === "Enter") { e.preventDefault(); loadBrowse(); }
+    if (["ArrowDown", "ArrowUp"].includes(e.key)) { browseKeys(e); return; }
     e.stopPropagation();
   });
   $("#skillUrl").addEventListener("keydown", (e) => e.stopPropagation());

@@ -2315,10 +2315,13 @@ class Handler(BaseHTTPRequestHandler):
 
         qs = parse_qs(urlparse(self.path).query)
         query = unquote((qs.get("q") or [""])[0])
+        # browse is its own mode, not "search with no words": an empty filter
+        # means show the whole catalogue, which is what makes it a catalogue
+        browsing = (qs.get("browse") or [""])[0] in ("1", "true") or bool(query)
         try:
-            if query:
-                out = skillhub.search(query, limit=int((qs.get("limit") or ["10"])[0] or 10))
-                self._send_json(out)
+            if browsing:
+                self._send_json(skillhub.search(
+                    query, limit=int((qs.get("limit") or ["60"])[0] or 60)))
                 return
             self._send_json({"installed": skillhub.list_installed()})
         except Exception as exc:

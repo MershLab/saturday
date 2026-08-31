@@ -161,12 +161,40 @@ def remove(name: str) -> bool:
     return True
 
 
-def search(query: str, limit: int = 10, timeout: float = 12.0) -> dict[str, Any]:
+def _row(item: dict) -> dict[str, Any]:
+    """One browse row. Everything a detail pane needs, in one request - the
+    list endpoint already returns it, so fetching per-repo detail would be
+    strictly more calls for strictly the same data."""
+    lic = item.get("license") or {}
+    return {
+        "name": item.get("name") or "",
+        "full_name": item.get("full_name") or "",
+        "owner": (item.get("owner") or {}).get("login") or "",
+        "description": (item.get("description") or "")[:400],
+        "stars": int(item.get("stargazers_count") or 0),
+        "forks": int(item.get("forks_count") or 0),
+        "issues": int(item.get("open_issues_count") or 0),
+        "size_kb": int(item.get("size") or 0),
+        "language": item.get("language") or "",
+        "license": (lic.get("spdx_id") or "") if lic.get("spdx_id") != "NOASSERTION" else "unrecognised",
+        "topics": [t for t in (item.get("topics") or []) if t != TOPIC][:8],
+        "updated": (item.get("pushed_at") or "")[:10],
+        "created": (item.get("created_at") or "")[:10],
+        "homepage": item.get("homepage") or "",
+        "html_url": item.get("html_url") or "",
+        "archived": bool(item.get("archived")),
+        "url": item.get("clone_url") or item.get("html_url") or "",
+    }
+
+
+def search(query: str, limit: int = 60, timeout: float = 12.0) -> dict[str, Any]:
     """GitHub repositories tagged with the skill topic.
 
     Zero maintenance by design: no index Saturday has to run, authors self-tag.
     The results carry no trust signal beyond stars, which is why the caller is
     expected to repeat the lead-not-endorsement line to the user."""
+    # an empty query browses everything tagged, which is what makes this a
+    # catalogue rather than only a search box
     q = f"topic:{TOPIC} {query}".strip()
     url = f"{SEARCH_URL}?q={urllib.parse.quote(q)}&sort=stars&order=desc&per_page={int(limit)}"
     req = urllib.request.Request(url, headers={
@@ -182,13 +210,13 @@ def search(query: str, limit: int = 10, timeout: float = 12.0) -> dict[str, Any]
         return {"results": [], "error": f"search failed: HTTP {exc.code}"}
     except Exception as exc:
         return {"results": [], "error": f"search unavailable: {type(exc).__name__}"}
-    results = [{
-        "name": item.get("name") or "",
-        "full_name": item.get("full_name") or "",
-        "description": (item.get("description") or "")[:200],
-        "stars": int(item.get("stargazers_count") or 0),
-        "url": item.get("clone_url") or item.get("html_url") or "",
-        "updated": item.get("pushed_at") or "",
-    } for item in (data.get("items") or [])]
-    return {"results": results, "topic": TOPIC,
+    installed = {s["name"] for s in list_installed()}
+    results = []
+    for item in (data.get("items") or []):
+        row = _row(item)
+        # mark what is already here, so the browser does not offer to install
+        # something twice and can show it differently
+        row["installed"] = derive_name(row["url"] or row["full_name"]) in installed
+        results.append(row)
+    return {"results": results, "topic": TOPIC, "total": int(data.get("total_count") or 0),
             "note": "a search result is a lead, not an endorsement"}
