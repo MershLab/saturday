@@ -2279,6 +2279,33 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._send_json({"error": f"{type(exc).__name__}: {exc}"}, 500)
 
+    def _post_memory_consolidate(self, payload: dict) -> None:
+        """Report stale and redundant notes; archive only when asked.
+
+        Archiving mutates the index, so it never happens on a GET - a page
+        load must not quietly change what the agent can recall."""
+        from saturday.memindex import MemoryIndex
+        from saturday.tools.memory import memory_path
+
+        sid = str(payload.get("sid") or "")
+        apply_it = bool(payload.get("apply"))
+        ws = self.app.session_workspace(sid) or self.app.base_cfg.workspace_root
+        idx = MemoryIndex()
+        try:
+            sources = [("global", memory_path())]
+            if ws:
+                proj = Path(ws) / ".saturday" / "MEMORY.md"
+                if proj.is_file():
+                    sources.append((f"project:{Path(ws).resolve()}", proj))
+            for scope, path in sources:
+                text = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
+                idx.reindex(text, scope=scope)
+            self._send_json(idx.consolidate(dry_run=not apply_it, workspace=ws))
+        except Exception as exc:
+            self._send_json({"error": f"{type(exc).__name__}: {exc}"}, 500)
+        finally:
+            idx.close()
+
     def _get_journal(self) -> None:
         from urllib.parse import parse_qs, unquote, urlparse
 
@@ -2940,6 +2967,7 @@ _POST_ROUTES = {
     "/api/chat": "_handle_chat",
     "/api/onboard": "_post_onboard",
     "/api/journal/restore": "_post_journal_restore",
+    "/api/memory/consolidate": "_post_memory_consolidate",
     "/api/schedules": "_post_schedules",
     "/api/archive": "_post_archive",
     "/api/commands": "_post_commands",
