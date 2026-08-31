@@ -2288,7 +2288,14 @@ function renderSessions() {
   projs.sort((a, b) => (projPinned(b.id) ? 1 : 0) - (projPinned(a.id) ? 1 : 0));
   if (q) projs = projs.filter((p) => p.name.toLowerCase().includes(q));
   for (const p of projs) projWrap.appendChild(projRow(p));
-  if (!state.projects.length) projWrap.appendChild(el("div", "proj-none", "no projects yet"));
+  if (!state.projects.length) {
+    // an empty list should offer the way out of being empty, not just say so
+    const cta = el("button", "proj-empty-cta");
+    cta.innerHTML = '<svg viewBox="0 0 24 24"><path d="M4 5h5.6l2 2H20a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/></svg>';
+    cta.appendChild(el("span", "", "Open a folder"));
+    cta.addEventListener("click", () => folderOpen());
+    projWrap.appendChild(cta);
+  }
   list.appendChild(projWrap);
 
   /* sessions: scoped to the selected project, else only unprojected ones */
@@ -2713,6 +2720,7 @@ function paletteBuild(raw) {
   palItems = [];
   const cmds = [
     ["New chat", () => newChat()],
+    ["Open folder\u2026", () => folderOpen()],
     ["New project\u2026", () => openProjModal(null)],
     ["Toggle sidebar", () => toggleSidebar()],
     ["Toggle theme", () => toggleTheme()],
@@ -3845,6 +3853,85 @@ function copyDiagnostics() {
     "platform: " + navigator.platform + "  ua: " + navigator.userAgent.slice(0, 80),
   ].join("\n");
   navigator.clipboard.writeText(text).then(() => toast("Diagnostics copied", "ok"));
+}
+
+/* ---------------------------------------------------------------- folder picker */
+
+const folderState = { path: "", busy: false };
+
+async function folderOpen(start) {
+  $("#folderModal").classList.remove("hidden");
+  await folderGo(start || folderState.path || "");
+}
+function folderClose() { $("#folderModal").classList.add("hidden"); }
+
+async function folderGo(path) {
+  const list = $("#folderList");
+  list.replaceChildren(el("div", "folder-empty", "reading\u2026"));
+  let d;
+  try { d = await api("/api/browse?path=" + encodeURIComponent(path || "")); }
+  catch (e) {
+    list.replaceChildren(el("div", "folder-empty", "could not read that folder: " + e.message));
+    return;
+  }
+  folderState.path = d.path;
+  $("#folderHere").textContent = d.path;
+  $("#folderHere").title = d.path;
+  $("#folderUp").disabled = !d.parent;
+
+  const crumbs = $("#folderCrumbs");
+  crumbs.replaceChildren();
+  d.crumbs.forEach((c, i) => {
+    // the root crumb IS a slash, so a separator after it reads as "//"
+    if (i && d.crumbs[i - 1].name !== "/") crumbs.appendChild(el("span", "folder-sep", "/"));
+    const b = el("button", "folder-crumb", c.name);
+    b.addEventListener("click", () => folderGo(c.path));
+    crumbs.appendChild(b);
+  });
+
+  list.replaceChildren();
+  if (d.denied) {
+    list.appendChild(el("div", "folder-empty", "no permission to read this folder"));
+    return;
+  }
+  if (!d.dirs.length) {
+    list.appendChild(el("div", "folder-empty", "no folders in here \u2014 open it with the button below"));
+    return;
+  }
+  for (const dir of d.dirs) {
+    const row = el("button", "folder-row");
+    row.innerHTML = '<svg viewBox="0 0 24 24"><path d="M4 5h5.6l2 2H20a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/></svg>';
+    row.appendChild(el("span", "", dir.name));
+    // a git repo is almost always the folder someone means, so say so
+    if (dir.repo) row.appendChild(el("span", "repo-tag", "repo"));
+    row.addEventListener("click", () => folderGo(dir.path));
+    list.appendChild(row);
+  }
+}
+
+async function folderUse() {
+  const path = folderState.path;
+  if (!path || folderState.busy) return;
+  folderState.busy = true;
+  try {
+    // reuse an existing project for this folder rather than making a second one
+    const known = state.projects.find((p) => p.workspace === path);
+    if (known) { folderClose(); selectProject(known.id); return; }
+    const name = path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || path;
+    const out = await api("/api/projects", {
+      method: "POST",
+      body: JSON.stringify({ name, workspace: path }),
+    });
+    state.projects = out.projects || state.projects;
+    folderClose();
+    renderSessions();
+    selectProject(out.project.id);
+    toast("Opened " + name, "ok");
+  } catch (e) {
+    toast("Could not open that folder: " + e.message, "error");
+  } finally {
+    folderState.busy = false;
+  }
 }
 
 /* ---------------------------------------------------------------- onboarding */
@@ -5304,6 +5391,13 @@ function bindEvents() {
       e.target.blur();
     }
   });
+  $("#openFolderBtn").addEventListener("click", () => folderOpen());
+  $("#folderClose").addEventListener("click", () => folderClose());
+  $("#folderOpen").addEventListener("click", () => folderUse());
+  $("#folderUp").addEventListener("click", () => {
+    const up = folderState.path.replace(/[\\/]+$/, "").replace(/[\\/][^\\/]+$/, "");
+    folderGo(up || "/");
+  });
   $("#paletteInput").addEventListener("input", (e) => {
     const raw = e.target.value;
     paletteBuild(raw);
@@ -5360,6 +5454,7 @@ function bindEvents() {
       chordPrefix = null;
       if (mod && key === "s") { e.preventDefault(); shortcutsOpen(); return; }
       if (mod && key === "h") { panel("activity"); return; }   // Show Output, Linux
+      if (mod && key === "o") { e.preventDefault(); folderOpen(); return; }  // Open Folder
     }
     if (mod && !e.shiftKey && !e.altKey && key === "k") {
       e.preventDefault();
@@ -5396,6 +5491,7 @@ function bindEvents() {
       if (!$("#cmpModal").classList.contains("hidden")) { closeCompare(); return; }
       if (!$("#shortcutsModal").classList.contains("hidden")) { shortcutsClose(); return; }
       if (!$("#settingsModal").classList.contains("hidden")) { closeSettings(); return; }
+      if (!$("#folderModal").classList.contains("hidden")) { folderClose(); return; }
       if (!$("#projModal").classList.contains("hidden")) { closeProjModal(); return; }
       if (!$("#ctxModal").classList.contains("hidden")) { ctxClose(); return; }
       if (!$("#askModal").classList.contains("hidden")) { askClose(false); return; }

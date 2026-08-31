@@ -1935,6 +1935,60 @@ class Handler(BaseHTTPRequestHandler):
             self.app.memgraph_cache[key] = (time.time(), graph)
         self._send_json(graph)
 
+    def _get_browse(self) -> None:
+        """Directory listing for the folder picker.
+
+        Deliberately outside the workspace sandbox: its whole job is choosing
+        which folder becomes the workspace. It returns directory NAMES only,
+        never file contents, and the app is already bound to localhost behind
+        a token - the same surface that has always accepted a typed path."""
+        from urllib.parse import parse_qs, unquote, urlparse
+
+        qs = parse_qs(urlparse(self.path).query)
+        raw = unquote((qs.get("path") or [""])[0])
+        home = Path.home()
+        try:
+            here = Path(raw).expanduser().resolve() if raw else home
+        except (OSError, RuntimeError):
+            here = home
+        if not here.is_dir():
+            here = home
+
+        dirs = []
+        denied = False
+        try:
+            for child in sorted(here.iterdir(), key=lambda c: c.name.lower()):
+                if child.name.startswith("."):
+                    continue
+                try:
+                    if not child.is_dir():
+                        continue
+                    # a .git marker is how you spot the folder you actually want
+                    # in a home directory full of folders you do not
+                    repo = (child / ".git").exists()
+                except OSError:
+                    continue
+                dirs.append({"name": child.name, "path": str(child), "repo": repo})
+                if len(dirs) >= 500:
+                    break
+        except PermissionError:
+            denied = True
+        except OSError as exc:
+            self._send_json({"error": f"{type(exc).__name__}: {exc}"}, 500)
+            return
+
+        crumbs = [{"name": p.name or str(p), "path": str(p)} for p in reversed(here.parents)]
+        crumbs.append({"name": here.name or str(here), "path": str(here)})
+        self._send_json({
+            "path": str(here),
+            "parent": str(here.parent) if here.parent != here else "",
+            "crumbs": crumbs,
+            "dirs": dirs,
+            "denied": denied,
+            "home": str(home),
+            "is_repo": (here / ".git").exists(),
+        })
+
     def _get_journal(self) -> None:
         from urllib.parse import parse_qs, unquote, urlparse
 
@@ -2563,6 +2617,7 @@ _GET_ROUTES = [
     ("/api/context", "_get_context"),
     ("/api/journal", "_get_journal"),
     ("/api/memgraph", "_get_memgraph"),
+    ("/api/browse", "_get_browse"),
     ("/api/schedules", "_get_schedules"),
     ("/api/runs", "_get_runs"),
     ("/api/git/status", "_get_git_status"),
