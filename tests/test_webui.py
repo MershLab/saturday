@@ -3307,3 +3307,71 @@ def test_mcp_never_changes_process_cwd(tmp_path, monkeypatch):
     before = os.getcwd()
     _req(base, "/api/mcp")
     assert os.getcwd() == before
+
+
+def _chained_session(store, task, tamper=False):
+    sid = store.create({"task": task})
+    store.append(sid, {"type": "messages", "messages": [{"role": "user", "content": "hello"}]})
+    store.append(sid, {"type": "messages", "messages": [{"role": "assistant", "content": "hi"}]})
+    if tamper:
+        p = Path(store.root) / f"{sid}.jsonl"
+        lines = p.read_text(encoding="utf-8").splitlines()
+        i = next(n for n, ln in enumerate(lines) if '"hello"' in ln)
+        rec = json.loads(lines[i])
+        rec["messages"][0]["content"] = "hello, but edited afterwards"
+        lines[i] = json.dumps(rec)
+        p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return sid
+
+
+def test_audit_endpoint_detects_an_edited_record(tmp_path):
+    """The tamper-evidence claim, checked from the UI's own endpoint: editing
+    a stored record must break that session's chain and leave others intact."""
+    from saturday.sessions import SessionStore
+
+    store = SessionStore(root=tmp_path / "s")
+    good = _chained_session(store, "clean run")
+    bad = _chained_session(store, "edited run", tamper=True)
+
+    app = AppState(store_root=tmp_path / "s")
+    base, _ = _server(app)
+    status, data = _req(base, "/api/audit")
+    assert status == 200, data
+    assert data["checked"] == 2 and data["tampered"] == 1
+    by = {s["id"]: s for s in data["sessions"]}
+    assert by[good]["ok"] is True and by[good]["broken_at"] is None
+    assert by[bad]["ok"] is False and by[bad]["broken_at"] == 0
+
+
+def test_audit_single_session_and_unknown_id(tmp_path):
+    from saturday.sessions import SessionStore
+
+    store = SessionStore(root=tmp_path / "s")
+    sid = _chained_session(store, "one")
+    app = AppState(store_root=tmp_path / "s")
+    base, _ = _server(app)
+
+    status, data = _req(base, "/api/audit?sid=" + sid)
+    assert status == 200 and data["sessions"][0]["ok"] is True
+    status, data = _req(base, "/api/audit?sid=no-such-session")
+    assert status == 404 and "error" in data
+
+
+def test_audit_export_serves_a_downloadable_bundle(tmp_path):
+    from saturday.sessions import SessionStore
+
+    store = SessionStore(root=tmp_path / "s")
+    sid = _chained_session(store, "bundle me", tamper=True)
+    app = AppState(store_root=tmp_path / "s")
+    base, _ = _server(app)
+
+    req = urllib.request.Request(base + "/api/audit?export=1&sid=" + sid,
+                                 headers={"X-Saturday-Token": "tok"})
+    resp = urllib.request.urlopen(req, timeout=15)
+    assert resp.status == 200
+    assert f'filename="saturday-audit-{sid}.json"' in resp.headers.get("Content-Disposition", "")
+    bundle = json.loads(resp.read().decode())
+    # the bundle must carry the failure, not quietly present a clean record
+    assert bundle["session_id"] == sid
+    assert bundle["chain"]["ok"] is False
+    assert len(bundle["records"]) == 2

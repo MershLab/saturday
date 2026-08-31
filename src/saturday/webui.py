@@ -2089,6 +2089,67 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     pass
 
+    def _get_audit(self) -> None:
+        """Chain verification for stored sessions.
+
+        Saturday's claim is that history is tamper evident; that claim was
+        only checkable from `saturday audit`. Verifying rereads whole
+        transcripts, so it is button triggered, never part of page load."""
+        from urllib.parse import parse_qs, unquote, urlparse
+
+        qs = parse_qs(urlparse(self.path).query)
+        sid = unquote((qs.get("sid") or [""])[0])
+        want_bundle = (qs.get("export") or [""])[0] in ("1", "true")
+        store = self.app.store
+
+        if sid:
+            if want_bundle:
+                bundle = store.audit_export(sid)
+                if bundle is None:
+                    self._send_json({"error": "unknown session"}, 404)
+                    return
+                raw = json.dumps(bundle, ensure_ascii=False, indent=2).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Disposition",
+                                 f'attachment; filename="saturday-audit-{sid}.json"')
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+                return
+            status = store.audit_verify(sid)
+            if status is None:
+                self._send_json({"error": "unknown session"}, 404)
+                return
+            self._send_json({"sessions": [dict(status, id=sid)], "checked": 1, "tampered": 0 if status["ok"] else 1})
+            return
+
+        rows = []
+        tampered = 0
+        try:
+            listing = store.list_sessions()
+        except Exception as exc:
+            self._send_json({"error": f"{type(exc).__name__}: {exc}"}, 500)
+            return
+        for r in listing[:400]:
+            try:
+                status = store.audit_verify(r["id"]) or {}
+            except Exception as exc:
+                status = {"ok": None, "error": f"{type(exc).__name__}: {exc}"}
+            if status.get("ok") is False:
+                tampered += 1
+            rows.append({
+                "id": r["id"],
+                "task": r.get("task") or "",
+                "ok": status.get("ok"),
+                "records": status.get("records", 0),
+                "hashed": status.get("hashed", 0),
+                "legacy": status.get("legacy", 0),
+                "broken_at": status.get("broken_at"),
+            })
+        self._send_json({"sessions": rows, "checked": len(rows), "tampered": tampered,
+                         "truncated": len(listing) > 400})
+
     def _get_journal(self) -> None:
         from urllib.parse import parse_qs, unquote, urlparse
 
@@ -2719,6 +2780,7 @@ _GET_ROUTES = [
     ("/api/memgraph", "_get_memgraph"),
     ("/api/browse", "_get_browse"),
     ("/api/mcp", "_get_mcp"),
+    ("/api/audit", "_get_audit"),
     ("/api/schedules", "_get_schedules"),
     ("/api/runs", "_get_runs"),
     ("/api/git/status", "_get_git_status"),

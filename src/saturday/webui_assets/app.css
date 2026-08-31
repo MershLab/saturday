@@ -2451,3 +2451,26 @@ body.mode-assistant #composerModes { display: none; }
 }
 .proj-empty-cta:hover { border-color: var(--accent-line); color: var(--accent); }
 .proj-empty-cta svg { width: 14px; height: 14px; flex: 0 0 14px; fill: currentColor; }
+
+/* ---------------- session integrity ---------------- */
+
+.audit-summary { display: flex; flex-direction: column; gap: 4px; }
+.audit-head {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12.5px; padding: 7px 10px; border-radius: 7px;
+  border: 1px solid var(--line2); background: var(--bg1);
+}
+.audit-head.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
+.audit-head.bad { color: var(--err); border-color: color-mix(in srgb, var(--err) 45%, transparent); }
+.audit-badge { font-size: 13px; line-height: 1; }
+.audit-list { display: flex; flex-direction: column; gap: 3px; margin-top: 6px; }
+.audit-row {
+  display: flex; align-items: center; gap: 9px;
+  font-size: 12px; padding: 5px 8px; border-radius: 6px; background: var(--bg1);
+}
+.audit-dot { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 6px; background: var(--dim); }
+.audit-dot.bad { background: var(--err); }
+.audit-dot.unknown { background: var(--warn); }
+.audit-txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.audit-meta { margin-left: auto; font-size: 10.5px; color: var(--dim); flex: 0 0 auto; }
+.audit-bad { color: var(--err); font-size: 12px; }
