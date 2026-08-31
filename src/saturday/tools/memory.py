@@ -18,14 +18,19 @@ class MemoryTool:
 
     name = "memory"
     description = (
-        "Read or write your persistent memory file (survives across sessions). "
-        "action='read' returns it; action='write' replaces it; action='append' adds a line."
+        "Read, search or write your persistent memory (survives across sessions). "
+        "action='search' with query= is the one to reach for: it ranks notes by "
+        "relevance, how recently they were touched and how much they add, follows "
+        "links between them, and flags notes that contradict each other. "
+        "action='read' returns the whole file; 'write' replaces it; 'append' adds a line."
     )
     parameters = {
         "type": "object",
         "properties": {
-            "action": {"type": "string", "enum": ["read", "write", "append"]},
+            "action": {"type": "string", "enum": ["read", "search", "write", "append"]},
             "text": {"type": "string", "description": "for write/append"},
+            "query": {"type": "string", "description": "for search"},
+            "k": {"type": "integer", "description": "for search: how many notes (default 6)"},
         },
         "required": ["action"],
     }
@@ -44,10 +49,63 @@ class MemoryTool:
         except OSError:
             return ""
 
+
+    def _search(self, args: dict, path: Path) -> tuple[bool, str]:
+        """Rank the curated notes instead of returning the whole file.
+
+        Reading everything works while memory is small and stops working
+        exactly when it starts being valuable. The index behind this already
+        scores relevance, recency and novelty, and knows which notes
+        contradict each other."""
+        query = str(args.get("query") or "").strip()
+        if not query:
+            return False, "memory search needs query="
+        try:
+            k = max(1, min(20, int(args.get("k") or 6)))
+        except (TypeError, ValueError):
+            k = 6
+        try:
+            from saturday.memindex import MemoryIndex
+
+            idx = MemoryIndex()
+            try:
+                for scope, src in self._sources(path):
+                    text = src.read_text(encoding="utf-8", errors="replace") if src.is_file() else ""
+                    idx.reindex(text, scope=scope)
+                hits = idx.search(query, k=k)
+                clashes = {e["from"] for e in idx.graph()["edges"] if e["relation"] == "contradicts"}
+                clashes |= {e["to"] for e in idx.graph()["edges"] if e["relation"] == "contradicts"}
+            finally:
+                idx.close()
+        except Exception as exc:  # memory must never break the loop
+            return False, f"memory search unavailable: {type(exc).__name__}: {exc}"
+        if not hits:
+            return True, "nothing in memory matches that"
+        lines = []
+        for h in hits:
+            flags = []
+            if not h["matched"]:
+                flags.append("via a link")
+            if h["id"] in clashes:
+                # a note another note disagrees with is worth saying out loud
+                flags.append("DISPUTED by another note")
+            suffix = f"  ({', '.join(flags)})" if flags else ""
+            lines.append(f"- {h['text']}{suffix}")
+        return True, "\n".join(lines)
+
+    def _sources(self, path: Path):
+        """(scope, file) pairs this tool indexes, matching what read merges."""
+        out = [("global", memory_path())]
+        if self.scope_path:
+            out.append((f"project:{Path(self.scope_path).resolve().parent.parent}", path))
+        return out
+
     def run(self, args: dict) -> tuple[bool, str]:
         path = Path(self.scope_path) if self.scope_path else memory_path()
         action = args.get("action", "read")
         text = args.get("text", "")
+        if action == "search":
+            return self._search(args, path)
         if action == "read":
             sections = []
             if self.scope_path:

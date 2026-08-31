@@ -25,7 +25,11 @@ MEMORY, CODE, SKILL, CHAT = "memory", "code", "skill", "chat"
 
 _sinks: list[Callable[[dict], None]] = []
 _lock = threading.Lock()
-_step = threading.local()
+# Per-thread run context. It has to be per thread because several sessions run
+# at once; it has to be COPYABLE because tool calls execute on a pool, and a
+# context that stops at the loop thread means every tool reports step 0 and
+# belongs to no session.
+_ctx = threading.local()
 
 
 def add_sink(fn: Callable[[dict], None]) -> Callable[[dict], None]:
@@ -41,15 +45,36 @@ def remove_sink(fn: Callable[[dict], None]) -> None:
 
 
 def set_step(step: int) -> None:
-    """Tag subsequent events with the loop step they belong to.
+    """Tag subsequent events with the loop step they belong to."""
+    _ctx.step = int(step)
 
-    Thread local because several sessions run at once and a step number from
-    one would otherwise label another's events."""
-    _step.value = int(step)
+
+def set_run(run_id: str) -> None:
+    """Name the run these events belong to, so a watcher can filter to its own.
+
+    Thread identity cannot do this job: tools execute on a worker pool, so the
+    thread raising an event is not the thread that began the run."""
+    _ctx.run = str(run_id or "")
 
 
 def current_step() -> int:
-    return int(getattr(_step, "value", 0) or 0)
+    return int(getattr(_ctx, "step", 0) or 0)
+
+
+def current_run() -> str:
+    return str(getattr(_ctx, "run", "") or "")
+
+
+def snapshot() -> tuple[str, int]:
+    return current_run(), current_step()
+
+
+def restore(ctx: tuple[str, int]) -> None:
+    """Install a captured context on this thread. Used to carry it into the
+    tool pool, which otherwise starts blank."""
+    run, step = ctx
+    _ctx.run = run
+    _ctx.step = step
 
 
 def emit(region: str, node: str, kind: str = USED, score: float = 0.0,
@@ -58,7 +83,7 @@ def emit(region: str, node: str, kind: str = USED, score: float = 0.0,
         return
     event = {"region": region, "node": str(node), "kind": kind,
              "score": round(float(score or 0.0), 4), "label": label or str(node),
-             "step": current_step(), **extra}
+             "step": current_step(), "run": current_run(), **extra}
     with _lock:
         sinks = list(_sinks)
     for fn in sinks:

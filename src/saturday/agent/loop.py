@@ -500,9 +500,21 @@ class AgentLoop:
             # would block until a HUNG tool actually finishes and make the
             # watchdog bound nothing. wait=False abandons the worker instead
             # (it leaks until process exit; the run itself proceeds).
+            # tools run on a pool, and the pool starts with no run context, so
+            # every event a tool raised reported step 0 and no session at all
+            try:
+                from saturday import attention as _attn
+
+                _ctx = _attn.snapshot()
+
+                def _execute(call_id, name, arguments):
+                    _attn.restore(_ctx)
+                    return self.registry.execute(call_id, name, arguments)
+            except Exception:
+                _execute = self.registry.execute
             pool = ThreadPoolExecutor(max_workers=min(self.max_parallel_tools, len(runnable)))
             try:
-                futures = {pool.submit(self.registry.execute, c.id, c.name, c.arguments): i for i, c in runnable}
+                futures = {pool.submit(_execute, c.id, c.name, c.arguments): i for i, c in runnable}
                 # one shared deadline so N queued results can't multiply the
                 # worst-case wall time by N
                 timeout = self.tool_call_timeout
