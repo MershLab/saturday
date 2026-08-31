@@ -2500,3 +2500,20 @@ body.mode-assistant #composerModes { display: none; }
 .doctor-row.fail .doctor-detail { color: var(--err); }
 .doctor-row.warn .doctor-detail { color: var(--warn); }
 .doctor-hint { font-size: 11px; color: var(--dim); padding: 0 8px 5px 109px; line-height: 1.45; }
+
+/* ---------------- update check ---------------- */
+
+.upd-out { display: flex; flex-direction: column; gap: 6px; margin-top: 7px; }
+.upd-line { font-size: 12.5px; }
+.upd-line.ok { color: var(--dim); }
+.upd-line.warn { color: var(--warn); }
+.upd-line.new { color: var(--accent); }
+.upd-cmd {
+  display: flex; align-items: center; gap: 8px;
+  background: var(--bg0); border: 1px solid var(--line2);
+  border-radius: 7px; padding: 6px 8px;
+}
+.upd-cmd code { flex-grow: 1; font-size: 11.5px; color: var(--text); word-break: break-all; }
+.upd-hint { font-size: 11px; color: var(--dim); line-height: 1.45; }
+.upd-link { font-size: 11.5px; color: var(--accent); text-decoration: none; }
+.upd-link:hover { text-decoration: underline; }
