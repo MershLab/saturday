@@ -3870,6 +3870,38 @@ function copyDiagnostics() {
   navigator.clipboard.writeText(text).then(() => toast("Diagnostics copied", "ok"));
 }
 
+/* ---------------------------------------------------------------- doctor */
+
+async function loadDoctor() {
+  const btn = $("#doctorRun"), out = $("#doctorOut");
+  btn.disabled = true;
+  btn.textContent = "checking\u2026";
+  out.replaceChildren(el("div", "field-hint", "probing the provider endpoint\u2026"));
+  let d;
+  try { d = await api("/api/doctor"); }
+  catch (e) {
+    out.replaceChildren(el("div", "doctor-row fail", "could not run checks: " + e.message));
+    btn.disabled = false; btn.textContent = "run checks";
+    return;
+  }
+  btn.disabled = false; btn.textContent = "run checks";
+
+  out.replaceChildren();
+  const head = el("div", "doctor-head " + (d.failures ? "fail" : "ok"),
+    d.failures ? d.failures + " problem" + (d.failures === 1 ? "" : "s") + " found"
+               : "all checks passed");
+  out.appendChild(head);
+  for (const c of d.checks) {
+    const row = el("div", "doctor-row " + c.status);
+    row.appendChild(el("span", "doctor-dot " + c.status));
+    row.appendChild(el("span", "doctor-label mono", c.label));
+    row.appendChild(el("span", "doctor-detail", c.detail));
+    out.appendChild(row);
+    // a failure that does not say what to do next is only half a diagnostic
+    if (c.hint) out.appendChild(el("div", "doctor-hint", c.hint));
+  }
+}
+
 /* ----------------------------------------------------------------- audit */
 
 async function loadAudit() {
@@ -5521,6 +5553,7 @@ function bindEvents() {
   });
   $("#mcpTest").addEventListener("click", () => loadMcp(true));
   $("#auditRun").addEventListener("click", () => loadAudit());
+  $("#doctorRun").addEventListener("click", () => loadDoctor());
   $("#openFolderBtn").addEventListener("click", () => folderOpen());
   $("#folderClose").addEventListener("click", () => folderClose());
   $("#folderOpen").addEventListener("click", () => folderUse());

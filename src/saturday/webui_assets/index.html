@@ -624,6 +624,15 @@
 
         <div class="set-pane" data-sec="about">
           <div class="field">
+            <div class="path-row">
+              <span class="field-label">Preflight checks</span>
+              <button id="doctorRun" class="mini-btn">run checks</button>
+            </div>
+            <div id="doctorOut" class="doctor-out"></div>
+            <span class="field-hint">Config, API key, endpoint reachability, workspace and local files
+            &mdash; the same checks <code>saturday doctor</code> runs.</span>
+          </div>
+          <div class="field">
             <span class="field-label">Version</span>
             <span class="field-static" id="aboutVersion"></span>
           </div>

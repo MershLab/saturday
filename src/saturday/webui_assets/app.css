@@ -2481,3 +2481,22 @@ body.mode-assistant #composerModes { display: none; }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 #cfgToolOther .toggle { align-items: flex-start; flex-wrap: wrap; }
+
+/* ---------------- preflight checks ---------------- */
+
+.doctor-out { display: flex; flex-direction: column; gap: 2px; }
+.doctor-head {
+  font-size: 12.5px; padding: 7px 10px; border-radius: 7px; margin-bottom: 5px;
+  border: 1px solid var(--line2); background: var(--bg1);
+}
+.doctor-head.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
+.doctor-head.fail { color: var(--err); border-color: color-mix(in srgb, var(--err) 45%, transparent); }
+.doctor-row { display: flex; align-items: baseline; gap: 9px; font-size: 12px; padding: 3px 8px; }
+.doctor-dot { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 6px; background: var(--ok); }
+.doctor-dot.warn { background: var(--warn); }
+.doctor-dot.fail { background: var(--err); }
+.doctor-label { flex: 0 0 92px; color: var(--dim); font-size: 11px; }
+.doctor-detail { word-break: break-word; line-height: 1.45; }
+.doctor-row.fail .doctor-detail { color: var(--err); }
+.doctor-row.warn .doctor-detail { color: var(--warn); }
+.doctor-hint { font-size: 11px; color: var(--dim); padding: 0 8px 5px 109px; line-height: 1.45; }
