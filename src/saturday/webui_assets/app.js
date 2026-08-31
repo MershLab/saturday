@@ -3424,17 +3424,7 @@ function openSettings() {
   $("#aboutVersion").textContent = "Saturday v" + info.version;
   $("#aboutProvider").textContent = (info.provider || "") + " / " + (info.model || "");
   renderUsage(info.usage || { turns: 0, total_tokens: 0, days: [], models: [] });
-  const mcp = $("#cfgMcp");
-  mcp.replaceChildren();
-  const names = info.mcp_servers || [];
-  if (!names.length) mcp.appendChild(el("span", "field-hint", "No MCP servers configured (.saturday/mcp.json)"));
-  for (const n of names) {
-    const bad = (info.warnings || []).some((w) => w.includes(n));
-    const row = el("div", "mcp-row");
-    row.appendChild(el("span", "mcp-dot" + (bad ? " bad" : "")));
-    row.appendChild(el("span", "", n));
-    mcp.appendChild(row);
-  }
+  loadMcp(false);
   settingsShow("general");
   providerHint();
   loadSchedules();
@@ -3853,6 +3843,67 @@ function copyDiagnostics() {
     "platform: " + navigator.platform + "  ua: " + navigator.userAgent.slice(0, 80),
   ].join("\n");
   navigator.clipboard.writeText(text).then(() => toast("Diagnostics copied", "ok"));
+}
+
+/* ------------------------------------------------------------------- MCP */
+
+async function loadMcp(probe) {
+  const box = $("#cfgMcp");
+  const warn = $("#mcpWarn");
+  const btn = $("#mcpTest");
+  box.replaceChildren(el("span", "field-hint", probe ? "starting each server\u2026" : "reading config\u2026"));
+  if (btn) { btn.disabled = true; btn.textContent = probe ? "testing\u2026" : "test all"; }
+  let d;
+  try {
+    d = await api("/api/mcp?sid=" + encodeURIComponent(state.sid || "") + (probe ? "&probe=1" : ""));
+  } catch (e) {
+    box.replaceChildren(el("span", "field-hint", "could not read MCP config: " + e.message));
+    if (btn) { btn.disabled = false; btn.textContent = "test all"; }
+    return;
+  }
+  if (btn) { btn.disabled = false; btn.textContent = "test all"; }
+
+  warn.replaceChildren();
+  warn.classList.toggle("hidden", !(d.warnings || []).length);
+  for (const w of d.warnings || []) warn.appendChild(el("div", "", w));
+
+  box.replaceChildren();
+  if (!d.servers.length) {
+    box.appendChild(el("span", "field-hint",
+      "None configured yet. Add .saturday/mcp.json in this folder with " +
+      '{"servers": {"name": {"command": "npx", "args": ["-y", "some-mcp-server"]}}}'));
+    return;
+  }
+  for (const srv of d.servers) {
+    const row = el("div", "mcp-item");
+    const head = el("div", "mcp-head");
+    // dot meanings: grey untested, green serving, red failed, amber blocked
+    head.appendChild(el("span", "mcp-dot " + srv.status));
+    head.appendChild(el("span", "mcp-name", srv.alias));
+    head.appendChild(el("span", "mcp-tag", srv.source));
+    head.appendChild(el("span", "mcp-tag", srv.transport));
+    if (srv.status === "ok") {
+      head.appendChild(el("span", "mcp-count",
+        srv.tools.length + " tool" + (srv.tools.length === 1 ? "" : "s")));
+    }
+    row.appendChild(head);
+    row.appendChild(el("div", "mcp-cmd mono", srv.command));
+    if (srv.error) row.appendChild(el("div", "mcp-err", srv.error));
+    if (srv.server_name) {
+      row.appendChild(el("div", "mcp-cmd", srv.server_name + " " + (srv.server_version || "")));
+    }
+    if (srv.tools && srv.tools.length) {
+      const tools = el("div", "mcp-tools");
+      for (const t of srv.tools) {
+        const ti = el("div", "mcp-tool");
+        ti.appendChild(el("span", "mcp-tool-name mono", t.name));
+        if (t.description) ti.appendChild(el("span", "mcp-tool-desc", t.description));
+        tools.appendChild(ti);
+      }
+      row.appendChild(tools);
+    }
+    box.appendChild(row);
+  }
 }
 
 /* ---------------------------------------------------------------- folder picker */
@@ -5391,6 +5442,7 @@ function bindEvents() {
       e.target.blur();
     }
   });
+  $("#mcpTest").addEventListener("click", () => loadMcp(true));
   $("#openFolderBtn").addEventListener("click", () => folderOpen());
   $("#folderClose").addEventListener("click", () => folderClose());
   $("#folderOpen").addEventListener("click", () => folderUse());

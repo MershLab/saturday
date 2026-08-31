@@ -57,6 +57,17 @@ def _interactive() -> bool:
         return False
 
 
+def is_trusted(root: Path | str) -> bool:
+    """Has this project already been approved? A read-only check.
+
+    ensure_trusted() prompts and records; callers that only need to REPORT
+    the current state (the web UI listing project config) must not prompt,
+    and must not record a decision as a side effect of rendering a page."""
+    if os.environ.get(TRUST_ENV, "").strip().lower() in ("1", "true", "yes", "on"):
+        return True
+    return _key(Path(root)) in set(_read_store().get("approved") or [])
+
+
 def ensure_trusted(root: Path | str, what: str, detail: list[str] | None = None) -> bool:
     """True when the project may load its local config files.
 
