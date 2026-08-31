@@ -1989,6 +1989,106 @@ class Handler(BaseHTTPRequestHandler):
             "is_repo": (here / ".git").exists(),
         })
 
+    def _get_mcp(self) -> None:
+        """Configured MCP servers, and optionally what each one actually serves.
+
+        Listing is cheap and safe. Probing SPAWNS every configured server, so
+        it is opt-in behind ?probe=1 and never runs on page load - the same
+        split `saturday mcp` makes between reading config and connecting."""
+        from urllib.parse import parse_qs, unquote, urlparse
+
+        qs = parse_qs(urlparse(self.path).query)
+        probe = (qs.get("probe") or [""])[0] in ("1", "true")
+        only = unquote((qs.get("server") or [""])[0])
+        sid = unquote((qs.get("sid") or [""])[0])
+        ws = self.app.session_workspace(sid) or self.app.base_cfg.workspace_root
+
+        warnings: list[str] = []
+        servers: dict[str, dict] = {}
+        project_aliases: set[str] = set()
+        # NB: never chdir here - the handler is threaded and cwd is process
+        # global, so a second request (or the agent) would see it move. Read
+        # the workspace's file by path instead.
+        trusted = False
+        if ws:
+            # separate concerns: an unreadable trust store must not blank the
+            # server list, and an unreadable mcp.json must not imply trust
+            try:
+                from saturday.utils.trust import is_trusted
+
+                trusted = is_trusted(ws)
+            except Exception as exc:
+                warnings.append(f"trust state unreadable: {type(exc).__name__}: {exc}")
+            try:
+                cfg_path = Path(ws) / ".saturday" / "mcp.json"
+                if cfg_path.is_file():
+                    from saturday.mcp_plugin import load_mcp_config
+
+                    project = load_mcp_config(cfg_path, warnings=warnings)
+                    project_aliases = set(project)
+                    servers.update(project)
+                    if not trusted and project:
+                        warnings.append(
+                            "this project is not trusted yet, so its MCP servers are listed "
+                            "but will not be started"
+                        )
+            except Exception as exc:
+                warnings.append(f"{type(exc).__name__}: {exc}")
+        servers.update(self.app.base_cfg.mcp_servers or {})
+
+        out = []
+        for alias, spec in sorted(servers.items()):
+            if only and alias != only:
+                continue
+            command = spec.get("command") or ""
+            argv = [str(a) for a in (spec.get("args") or [])]
+            from_project = alias in project_aliases
+            row = {
+                "alias": alias,
+                "source": "project" if from_project else "global",
+                "transport": "http" if spec.get("url") else "stdio",
+                "command": (command + " " + " ".join(argv)).strip() or str(spec.get("url") or ""),
+                "status": "unknown",
+                "tools": [],
+            }
+            if probe:
+                if from_project and not trusted:
+                    row.update({"status": "blocked",
+                                "error": "project not trusted; trust it to start its servers"})
+                else:
+                    row.update(self._probe_mcp(spec))
+            out.append(row)
+        self._send_json({"servers": out, "warnings": warnings, "probed": probe,
+                         "workspace": str(ws or ""), "trusted": trusted})
+
+    @staticmethod
+    def _probe_mcp(spec: dict) -> dict:
+        from saturday.mcp_client import McpHttpClient, McpStdioClient
+
+        client = None
+        try:
+            if spec.get("url"):
+                client = McpHttpClient(str(spec["url"]), headers=spec.get("headers"), call_timeout=12.0)
+            else:
+                argv = [str(spec["command"])] + [str(a) for a in (spec.get("args") or [])]
+                client = McpStdioClient(command=argv, env=spec.get("env"), call_timeout=12.0)
+            info = client.start()
+            tools = client.list_tools()
+            return {
+                "status": "ok",
+                "server_name": str(info.get("name") or ""),
+                "server_version": str(info.get("version") or ""),
+                "tools": [{"name": t.name, "description": (t.description or "")[:200]} for t in tools],
+            }
+        except Exception as exc:
+            return {"status": "failed", "error": f"{type(exc).__name__}: {exc}"[:400], "tools": []}
+        finally:
+            if client is not None:
+                try:
+                    client.close()
+                except Exception:
+                    pass
+
     def _get_journal(self) -> None:
         from urllib.parse import parse_qs, unquote, urlparse
 
@@ -2618,6 +2718,7 @@ _GET_ROUTES = [
     ("/api/journal", "_get_journal"),
     ("/api/memgraph", "_get_memgraph"),
     ("/api/browse", "_get_browse"),
+    ("/api/mcp", "_get_mcp"),
     ("/api/schedules", "_get_schedules"),
     ("/api/runs", "_get_runs"),
     ("/api/git/status", "_get_git_status"),

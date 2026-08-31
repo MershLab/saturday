@@ -3209,3 +3209,101 @@ def test_open_folder_creates_a_project_in_one_call(tmp_path, monkeypatch):
     assert status == 200, data
     assert data["project"]["name"] == "acme-frontend"
     assert data["project"]["workspace"] == str(ws)
+
+
+# Two module-level autouse `_hermetic` fixtures in this file (a merge of eight
+# older test files) stub load_mcp_config to {} for EVERY test here, including
+# the ones below. Capture the genuine function at import time - before any
+# fixture can run - so the MCP endpoint tests can exercise the real loader.
+import saturday.mcp_plugin as _mcpmod
+
+_REAL_LOAD_MCP_CONFIG = _mcpmod.load_mcp_config
+
+
+def _real_mcp_loader(monkeypatch):
+    monkeypatch.setattr(_mcpmod, "load_mcp_config", _REAL_LOAD_MCP_CONFIG)
+
+
+def _mcp_ws(tmp_path, servers):
+    ws = tmp_path / "ws"
+    (ws / ".saturday").mkdir(parents=True)
+    (ws / ".saturday" / "mcp.json").write_text(json.dumps({"servers": servers}), encoding="utf-8")
+    return ws
+
+
+def test_mcp_lists_without_starting_anything(tmp_path, monkeypatch):
+    """Listing must never spawn a server: opening Settings should not launch
+    every MCP process the project names."""
+    monkeypatch.setattr("saturday.config.get_config_dir", lambda: tmp_path / "cfg")
+    _real_mcp_loader(monkeypatch)
+    ws = _mcp_ws(tmp_path, {"a": {"command": "echo", "args": ["hi"]},
+                            "b": {"url": "http://example.invalid/mcp"}})
+    spawned = []
+    monkeypatch.setattr("saturday.webui.Handler._probe_mcp",
+                        staticmethod(lambda spec: spawned.append(spec) or {"status": "ok"}))
+    app = AppState(store_root=tmp_path / "s", cfg_overrides={"workspace_root": str(ws)})
+    base, _ = _server(app)
+
+    status, data = _req(base, "/api/mcp")
+    assert status == 200, data
+    assert data["probed"] is False and spawned == []
+    by = {s["alias"]: s for s in data["servers"]}
+    assert by["a"]["transport"] == "stdio" and by["a"]["command"] == "echo hi"
+    assert by["b"]["transport"] == "http" and by["a"]["source"] == "project"
+    assert all(s["status"] == "unknown" for s in data["servers"])
+
+
+def test_mcp_refuses_to_start_an_untrusted_project(tmp_path, monkeypatch):
+    """A project's mcp.json names commands Saturday would execute, so probing
+    it before the project is trusted would be a real execution hole."""
+    monkeypatch.setattr("saturday.config.get_config_dir", lambda: tmp_path / "cfg")
+    _real_mcp_loader(monkeypatch)
+    ws = _mcp_ws(tmp_path, {"a": {"command": "echo"}})
+    monkeypatch.setattr("saturday.utils.trust.is_trusted", lambda root: False)
+    spawned = []
+    monkeypatch.setattr("saturday.webui.Handler._probe_mcp",
+                        staticmethod(lambda spec: spawned.append(spec) or {"status": "ok"}))
+    app = AppState(store_root=tmp_path / "s", cfg_overrides={"workspace_root": str(ws)})
+    base, _ = _server(app)
+
+    status, data = _req(base, "/api/mcp?probe=1")
+    assert status == 200, data
+    assert spawned == [], "an untrusted project must not have its servers started"
+    assert data["servers"][0]["status"] == "blocked"
+    assert any("not trusted" in w for w in data["warnings"])
+
+
+def test_mcp_probe_reports_tools_and_failures(tmp_path, monkeypatch):
+    """The whole point of the panel: what does this server actually provide."""
+    monkeypatch.setattr("saturday.config.get_config_dir", lambda: tmp_path / "cfg")
+    _real_mcp_loader(monkeypatch)
+    fixture = str(Path(__file__).parent / "fixtures" / "mock_mcp_server.py")
+    ws = _mcp_ws(tmp_path, {
+        "good": {"command": sys.executable, "args": [fixture]},
+        "bad": {"command": "saturday-no-such-binary-xyz"},
+    })
+    monkeypatch.setattr("saturday.utils.trust.is_trusted", lambda root: True)
+    app = AppState(store_root=tmp_path / "s", cfg_overrides={"workspace_root": str(ws)})
+    base, _ = _server(app)
+
+    status, data = _req(base, "/api/mcp?probe=1")
+    assert status == 200, data
+    by = {s["alias"]: s for s in data["servers"]}
+    assert by["good"]["status"] == "ok"
+    assert by["good"]["server_name"] == "mock-mcp"
+    assert {t["name"] for t in by["good"]["tools"]} == {"echo", "add"}
+    assert by["bad"]["status"] == "failed" and by["bad"]["error"]
+    # one bad server must not hide the good one
+    assert by["good"]["tools"], "a failing sibling must not blank the working server"
+
+
+def test_mcp_never_changes_process_cwd(tmp_path, monkeypatch):
+    """The handler is threaded; chdir would leak into the agent and other requests."""
+    monkeypatch.setattr("saturday.config.get_config_dir", lambda: tmp_path / "cfg")
+    _real_mcp_loader(monkeypatch)
+    ws = _mcp_ws(tmp_path, {"a": {"command": "echo"}})
+    app = AppState(store_root=tmp_path / "s", cfg_overrides={"workspace_root": str(ws)})
+    base, _ = _server(app)
+    before = os.getcwd()
+    _req(base, "/api/mcp")
+    assert os.getcwd() == before

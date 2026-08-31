@@ -601,9 +601,14 @@
 
         <div class="set-pane" data-sec="mcp">
           <div class="field">
-            <span class="field-label">MCP servers</span>
+            <div class="path-row">
+              <span class="field-label">MCP servers</span>
+              <button id="mcpTest" class="mini-btn">test all</button>
+            </div>
+            <div id="mcpWarn" class="mcp-warn hidden"></div>
             <div id="cfgMcp" class="mcp-list"></div>
-            <span class="field-hint">Configured in .saturday/mcp.json</span>
+            <span class="field-hint">From this project&rsquo;s <code>.saturday/mcp.json</code> and your global config.
+            Testing starts each server and asks what tools it provides.</span>
           </div>
         </div>
 
