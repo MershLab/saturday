@@ -304,12 +304,13 @@ def run(pipeline: dict[str, Any], task: str, *, agent_runner: Callable[..., str]
             query = str(resolved.get(TASK) or task)
             produced = {CONTEXT: (memory_lookup(query) if memory_lookup else "")}
         elif kind == "router":
-            # the router decides, it does not do: the task passes through with
-            # the chosen agent recorded for the agent node downstream
-            produced = {TASK: resolved.get(TASK, task)}
-            widgets = dict(widgets, chosen=_pick_agent(widgets))
+            # decides, does not do - but the decision has to REACH the agent, or
+            # the node is decorative. It is recorded against this node id and
+            # picked up by whichever agent node this one feeds.
+            produced = {TASK: resolved.get(TASK, task), "agent": _pick_agent(widgets)}
         elif kind == "agent":
             prompt = _compose_prompt(resolved, task)
+            widgets = dict(widgets, agent=_effective_agent(widgets, incoming[nid], outputs))
             answer = agent_runner(prompt, widgets) if agent_runner else ""
             produced = {RESULT: answer, TRANSCRIPT: answer, ARTIFACT: None}
         elif kind == "aggregator":
@@ -333,6 +334,23 @@ def run(pipeline: dict[str, Any], task: str, *, agent_runner: Callable[..., str]
     emit("pipeline_done", steps=len(steps))
     return {"pipeline": name, "steps": steps,
             "output": next((f for f in finals if f), None)}
+
+
+def _effective_agent(widgets: dict, incoming_edges: list[dict], outputs: dict) -> str:
+    """Which agent this node actually runs on.
+
+    Precedence: what the node itself declares, then an upstream router's
+    choice, then the router asked directly. "auto" left unresolved would make
+    both the router node and the auto default inert, which is what they were."""
+    declared = widgets.get("agent")
+    if declared and declared != "auto":
+        return str(declared)
+    for edge in incoming_edges:
+        upstream = outputs.get(str(edge["from"]), {})
+        chosen = upstream.get("agent")
+        if chosen and chosen != "auto":
+            return str(chosen)
+    return _pick_agent(widgets)
 
 
 def _pick_agent(widgets: dict) -> str:
@@ -426,3 +444,42 @@ def from_template(template_id: str, name: str) -> dict[str, Any]:
     return {"version": VERSION, "name": name,
             "nodes": json.loads(json.dumps(tpl["nodes"])),
             "edges": json.loads(json.dumps(tpl["edges"]))}
+
+def make_runner(cfg_overrides: dict | None = None):
+    """The default way an agent node executes.
+
+    Honours the agent the node resolved to: a named external CLI is delegated
+    to, anything else runs on Saturday itself. Without this the router's
+    decision and the auto default were both computed and then ignored.
+
+    run() still takes an injected runner, so the engine stays testable without
+    spending a call; this is the production default, in one place so the CLI
+    and the web app cannot drift into two behaviours."""
+    overrides_base = dict(cfg_overrides or {})
+
+    def runner(prompt: str, widgets: dict) -> str:
+        from saturday.config import AgentConfig
+
+        agent_id = str(widgets.get("agent") or "").strip()
+        if agent_id and agent_id != "auto":
+            try:
+                from saturday.tools.external_agent import ExternalAgentTool, all_agents
+
+                if agent_id in all_agents():
+                    ok, out = ExternalAgentTool().run({"agent": agent_id, "prompt": prompt})
+                    if ok:
+                        return out
+                    # a delegate that is missing or failing must not sink the
+                    # run: fall through to Saturday rather than returning error
+                    # text as if it were the answer
+            except Exception:
+                pass
+        from saturday.agent.core import Agent
+
+        overrides = dict(overrides_base)
+        if widgets.get("model"):
+            overrides["model"] = widgets["model"]
+        traj = Agent(cfg=AgentConfig.load(overrides), enable_subagents=False).run(prompt)
+        return traj.final_answer or f"[no answer; stopped: {traj.stop_reason}]"
+
+    return runner

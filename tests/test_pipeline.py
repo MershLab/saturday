@@ -191,3 +191,88 @@ def test_research_template_forwards_a_transcript_deliberately():
     previous one saw, not just what it concluded."""
     pipe = P.from_template("research-and-write", "r")
     assert any(e["out"] == P.TRANSCRIPT for e in pipe["edges"])
+
+
+def test_the_router_decision_reaches_the_agent_it_feeds(tmp_path, monkeypatch):
+    """The router node was decorative: it computed a choice into a local that
+    nothing downstream ever read, so 'auto' was inert everywhere."""
+    monkeypatch.setattr("saturday.config.get_config_dir", lambda: tmp_path)
+    monkeypatch.setattr("saturday.routing.pick", lambda *a, **k: "claude-code")
+
+    pipe = {"version": 1, "name": "routed", "nodes": [
+        {"id": "n1", "type": "input", "widgets": {}},
+        {"id": "r1", "type": "router", "widgets": {"task_kind": "code"}},
+        {"id": "a1", "type": "agent", "widgets": {"name": "W", "agent": "auto"}},
+        {"id": "o1", "type": "output", "widgets": {}}],
+        "edges": [{"from": "n1", "out": "task", "to": "r1", "in": "task"},
+                  {"from": "r1", "out": "task", "to": "a1", "in": "task"},
+                  {"from": "a1", "out": "result", "to": "o1", "in": "result"}]}
+    seen = []
+    P.run(pipe, "t", agent_runner=lambda p, w: seen.append(w.get("agent")) or "x",
+          use_cache=False)
+    assert seen == ["claude-code"]
+
+
+def test_a_node_that_names_an_agent_overrides_the_router(tmp_path, monkeypatch):
+    monkeypatch.setattr("saturday.config.get_config_dir", lambda: tmp_path)
+    monkeypatch.setattr("saturday.routing.pick", lambda *a, **k: "claude-code")
+    pipe = {"version": 1, "name": "routed2", "nodes": [
+        {"id": "n1", "type": "input", "widgets": {}},
+        {"id": "r1", "type": "router", "widgets": {}},
+        {"id": "a1", "type": "agent", "widgets": {"agent": "codex"}},
+        {"id": "o1", "type": "output", "widgets": {}}],
+        "edges": [{"from": "n1", "out": "task", "to": "r1", "in": "task"},
+                  {"from": "r1", "out": "task", "to": "a1", "in": "task"},
+                  {"from": "a1", "out": "result", "to": "o1", "in": "result"}]}
+    seen = []
+    P.run(pipe, "t", agent_runner=lambda p, w: seen.append(w.get("agent")) or "x",
+          use_cache=False)
+    assert seen == ["codex"]
+
+
+def test_auto_resolves_even_without_a_router(tmp_path, monkeypatch):
+    monkeypatch.setattr("saturday.config.get_config_dir", lambda: tmp_path)
+    monkeypatch.setattr("saturday.routing.pick", lambda *a, **k: "cursor")
+    pipe = _linear()
+    pipe["nodes"][1]["widgets"] = {"agent": "auto"}
+    seen = []
+    P.run(pipe, "t", agent_runner=lambda p, w: seen.append(w.get("agent")) or "x",
+          use_cache=False)
+    assert seen == ["cursor"]
+
+
+def test_the_default_runner_delegates_to_a_named_external_agent(monkeypatch):
+    """Resolving the agent is pointless if the runner then ignores it."""
+    called = {}
+
+    class FakeTool:
+        def run(self, args):
+            called.update(args)
+            return True, "the delegate answered"
+
+    monkeypatch.setattr("saturday.tools.external_agent.ExternalAgentTool", FakeTool)
+    monkeypatch.setattr("saturday.tools.external_agent.all_agents",
+                        lambda: {"codex": object()})
+    runner = P.make_runner({})
+    assert runner("do it", {"agent": "codex"}) == "the delegate answered"
+    assert called["agent"] == "codex" and called["prompt"] == "do it"
+
+
+def test_a_failing_delegate_falls_through_rather_than_answering_with_an_error(monkeypatch):
+    class FakeTool:
+        def run(self, args):
+            return False, "codex is not installed"
+
+    class FakeAgent:
+        def __init__(self, *a, **k):
+            pass
+
+        def run(self, prompt):
+            from types import SimpleNamespace
+            return SimpleNamespace(final_answer="saturday did it", stop_reason="done")
+
+    monkeypatch.setattr("saturday.tools.external_agent.ExternalAgentTool", FakeTool)
+    monkeypatch.setattr("saturday.tools.external_agent.all_agents",
+                        lambda: {"codex": object()})
+    monkeypatch.setattr("saturday.agent.core.Agent", FakeAgent)
+    assert P.make_runner({})("do it", {"agent": "codex"}) == "saturday did it"
