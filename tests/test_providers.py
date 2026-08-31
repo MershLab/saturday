@@ -1198,3 +1198,64 @@ def test_context_overflow_raises_through_immediately(monkeypatch):
         raise AssertionError("should have raised")
     except LLMContextOverflow:
         pass
+
+
+def _fake_kernel32(open_result, wait_result, last_error=0):
+    """Stand in for kernel32 so the Windows branch is testable off Windows."""
+    import ctypes
+
+    class K32:
+        def __init__(self):
+            self.closed = []
+            for name in ("OpenProcess", "WaitForSingleObject", "CloseHandle"):
+                fn = getattr(self, name)
+                fn.argtypes = None
+                fn.restype = None
+
+        class _Fn:
+            def __init__(self, impl):
+                self.impl = impl
+                self.argtypes = None
+                self.restype = None
+
+            def __call__(self, *a):
+                return self.impl(*a)
+
+    k = type("K32", (), {})()
+    k.closed = []
+    k.OpenProcess = K32._Fn(lambda *a: open_result)
+    k.WaitForSingleObject = K32._Fn(lambda h, ms: wait_result)
+    k.CloseHandle = K32._Fn(lambda h: k.closed.append(h) or True)
+    return k
+
+
+@pytest.mark.parametrize(
+    "open_result, wait_result, last_error, expected, why",
+    [
+        (0x1234, 0x000, 0, False, "signalled: the process has terminated"),
+        (0x1234, 0x102, 0, True, "wait timed out: still running"),
+        (0x1234, 0xFFFFFFFF, 0, True, "wait failed: prefer alive over resuming a live run"),
+        (0, 0, 5, True, "access denied: exists, owned by someone else"),
+        (0, 0, 87, False, "invalid parameter: no such process"),
+    ],
+)
+def test_windows_liveness_asks_whether_the_process_ended_not_whether_it_opens(
+    monkeypatch, open_result, wait_result, last_error, expected, why
+):
+    """The Windows bug that broke CI for days, pinned so it cannot come back.
+
+    A process OBJECT outlives the process while any handle is held, and
+    subprocess.Popen holds one, so OpenProcess succeeded on an already-reaped
+    child and every caller read it as alive. Nothing on Linux could catch it."""
+    import ctypes
+
+    from saturday import sessions
+
+    fake = _fake_kernel32(open_result, wait_result)
+    monkeypatch.setattr(sessions.os, "name", "nt")
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *a, **k: fake, raising=False)
+    monkeypatch.setattr(ctypes, "get_last_error", lambda: last_error, raising=False)
+
+    assert sessions._pid_alive(4321) is expected, why
+    if open_result:
+        assert fake.closed == [open_result], "the handle must always be closed"

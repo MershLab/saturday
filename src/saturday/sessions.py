@@ -590,17 +590,55 @@ class EphemeralSessionStore(SessionStore):
 
 
 def _pid_alive(pid: int) -> bool:
-    """Cross-platform "is this pid still running", no extra dependency."""
+    """Cross-platform "is this pid still running", no extra dependency.
+
+    Windows needs more than "can I open it". A process OBJECT outlives the
+    process itself for as long as anyone holds a handle, and subprocess.Popen
+    holds one until it is garbage collected - so OpenProcess succeeds on a
+    child that has already exited and been waited on, and every caller
+    concluded it was alive. That is why a crashed run was never reported as
+    orphaned there, and why a stale update lock was never reclaimed.
+
+    WaitForSingleObject asks the right question: a process object is signalled
+    exactly when the process has terminated. GetExitCodeProcess would also
+    work but carries the STILL_ACTIVE ambiguity - a process exiting with code
+    259 is indistinguishable from a running one."""
     if pid <= 0:
         return False
     if os.name == "nt":
         import ctypes
+        from ctypes import wintypes
 
+        SYNCHRONIZE = 0x00100000
         PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-        handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        ERROR_ACCESS_DENIED = 5
+        WAIT_OBJECT_0, WAIT_TIMEOUT = 0x0, 0x102
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        # declare the signatures: the default restype is a 32-bit int, which
+        # silently truncates a 64-bit HANDLE
+        k32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        k32.OpenProcess.restype = wintypes.HANDLE
+        k32.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+        k32.WaitForSingleObject.restype = wintypes.DWORD
+        k32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        k32.CloseHandle.restype = wintypes.BOOL
+
+        handle = k32.OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
         if not handle:
-            return False
-        ctypes.windll.kernel32.CloseHandle(handle)
+            # denied means it exists and belongs to someone else, which is the
+            # same answer POSIX gives for EPERM; anything else means gone
+            return ctypes.get_last_error() == ERROR_ACCESS_DENIED
+        try:
+            state = k32.WaitForSingleObject(handle, 0)
+        finally:
+            k32.CloseHandle(handle)
+        if state == WAIT_OBJECT_0:
+            return False       # signalled: it has terminated
+        if state == WAIT_TIMEOUT:
+            return True        # still running
+        # the wait itself failed: prefer reporting alive, since wrongly
+        # declaring a running process dead invites resuming a live session
         return True
     try:
         os.kill(pid, 0)
