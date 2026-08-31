@@ -40,9 +40,15 @@ class Tool(ABC):
 
 
 def _truncate(text: str, limit: int = 20_000) -> str:
+    """Fit text to a limit, keeping the ends and the failures.
+
+    Named for what it replaced; it compresses rather than slicing, because the
+    tail of an oversized tool output is usually the part worth reading."""
     if len(text) <= limit:
         return text
-    return text[:limit] + f"\n... [truncated {len(text) - limit} chars]"
+    from saturday.compress import compress
+
+    return compress(text, limit)
 
 
 class ToolRegistry:
