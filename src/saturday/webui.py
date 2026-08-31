@@ -2222,6 +2222,44 @@ class Handler(BaseHTTPRequestHandler):
             "url": rel.get("url") or "",
         })
 
+    def _get_memory(self) -> None:
+        """Search the memory index, or return its graph.
+
+        MEMORY.md is the truth and this index is derived from it, so every
+        request reindexes first - the file may have been edited by hand or by
+        the agent since the last call, and a stale answer is worse than a
+        slightly slower one."""
+        from urllib.parse import parse_qs, unquote, urlparse
+
+        from saturday.memindex import MemoryIndex
+        from saturday.tools.memory import memory_path
+
+        qs = parse_qs(urlparse(self.path).query)
+        query = unquote((qs.get("q") or [""])[0])
+        sid = unquote((qs.get("sid") or [""])[0])
+        want_graph = (qs.get("graph") or [""])[0] in ("1", "true")
+        ws = self.app.session_workspace(sid) or self.app.base_cfg.workspace_root
+
+        idx = MemoryIndex()
+        try:
+            sources = [("global", memory_path())]
+            if ws:
+                proj = Path(ws) / ".saturday" / "MEMORY.md"
+                if proj.is_file():
+                    sources.append((f"project:{Path(ws).resolve()}", proj))
+            for scope, path in sources:
+                text = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
+                idx.reindex(text, scope=scope)
+            if want_graph or not query:
+                self._send_json(idx.graph())
+                return
+            self._send_json({"query": query,
+                             "results": idx.search(query, k=int((qs.get("k") or ["8"])[0] or 8))})
+        except Exception as exc:
+            self._send_json({"error": f"{type(exc).__name__}: {exc}"}, 500)
+        finally:
+            idx.close()
+
     def _get_journal(self) -> None:
         from urllib.parse import parse_qs, unquote, urlparse
 
@@ -2856,6 +2894,7 @@ _GET_ROUTES = [
     ("/api/tools", "_get_tools"),
     ("/api/doctor", "_get_doctor"),
     ("/api/update", "_get_update"),
+    ("/api/memory", "_get_memory"),
     ("/api/schedules", "_get_schedules"),
     ("/api/runs", "_get_runs"),
     ("/api/git/status", "_get_git_status"),

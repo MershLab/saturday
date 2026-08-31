@@ -3494,3 +3494,47 @@ def test_update_endpoint_never_applies_anything(tmp_path, monkeypatch):
     status, data = _req(base, "/api/update")
     assert status == 200 and data["newer"] is True
     assert called == [], "checking for an update must never install one"
+
+
+def test_memory_endpoint_searches_and_returns_the_graph(tmp_path, monkeypatch):
+    cfg = tmp_path / "cfg"
+    cfg.mkdir()
+    # memory_path() reads CONFIG_DIR directly, so patching get_config_dir alone
+    # points the index and the file at two different places
+    monkeypatch.setattr("saturday.config.CONFIG_DIR", cfg)
+    monkeypatch.setattr("saturday.config.get_config_dir", lambda: cfg)
+    (cfg / "MEMORY.md").write_text(
+        "- Postgres connection pool is set to 20\n"
+        "- We raised the postgres connection pool from 20 to 50\n"
+        "- Frontend bundling uses vite\n", encoding="utf-8")
+
+    app = AppState(store_root=tmp_path / "s", cfg_overrides={"workspace_root": str(tmp_path)})
+    base, _ = _server(app)
+
+    status, data = _req(base, "/api/memory?q=postgres+pool")
+    assert status == 200, data
+    assert data["results"], "the note must be findable"
+    assert all(0.0 <= r["score"] <= 1.0 for r in data["results"])
+    assert "vite" not in " ".join(r["text"] for r in data["results"])
+
+    status, graph = _req(base, "/api/memory?graph=1")
+    assert status == 200 and len(graph["nodes"]) == 3
+    assert all({"id", "slug", "text", "salience"} <= set(n) for n in graph["nodes"])
+
+
+def test_memory_endpoint_picks_up_an_edited_file(tmp_path, monkeypatch):
+    """MEMORY.md is the truth; the index is derived, so a hand edit must show."""
+    cfg = tmp_path / "cfg"
+    cfg.mkdir()
+    monkeypatch.setattr("saturday.config.CONFIG_DIR", cfg)
+    monkeypatch.setattr("saturday.config.get_config_dir", lambda: cfg)
+    (cfg / "MEMORY.md").write_text("- the original note about caching\n", encoding="utf-8")
+    app = AppState(store_root=tmp_path / "s", cfg_overrides={"workspace_root": str(tmp_path)})
+    base, _ = _server(app)
+
+    _, first = _req(base, "/api/memory?graph=1")
+    assert len(first["nodes"]) == 1
+    (cfg / "MEMORY.md").write_text(
+        "- the original note about caching\n- a second note about queues\n", encoding="utf-8")
+    _, second = _req(base, "/api/memory?graph=1")
+    assert len(second["nodes"]) == 2
