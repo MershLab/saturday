@@ -3770,3 +3770,53 @@ def test_a_pipeline_run_names_its_run_on_its_own_thread(tmp_path, monkeypatch):
             break
     assert runs, "the agent node must have run"
     assert runs[0] == sid, f"events must be attributed to {sid}, got {runs[0]!r}"
+
+
+def test_doctor_and_the_tools_list_report_the_same_count(tmp_path, monkeypatch):
+    """They disagreed: doctor counted core primitives only and said 18 while
+    the agent actually had 36, omitting memory, skills, goals, todo,
+    delegation and the whole desktop suite."""
+    monkeypatch.setattr("saturday.config.get_config_dir", lambda: tmp_path)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    app = AppState(store_root=tmp_path / "s", cfg_overrides={"workspace_root": str(ws)})
+    base, _ = _server(app)
+
+    _, doc = _req(base, "/api/doctor?offline=1")
+    _, tools = _req(base, "/api/tools")
+    detail = next(c["detail"] for c in doc["checks"] if c["id"] == "tools")
+    assert detail.split()[0] == str(len(tools["tools"])), (detail, len(tools["tools"]))
+    names = {t["name"] for t in tools["tools"]}
+    for expected in ("memory", "shell", "read_file", "skill_load", "todo"):
+        assert expected in names, expected
+
+
+def test_every_new_endpoint_answers_on_a_real_workspace(tmp_path, monkeypatch):
+    """A smoke pass over everything added this session: well-formed empties are
+    not the same as working, so each one is asked for something real."""
+    monkeypatch.setattr("saturday.config.CONFIG_DIR", tmp_path)
+    monkeypatch.setattr("saturday.config.get_config_dir", lambda: tmp_path)
+    ws = tmp_path / "ws"
+    (ws / "pkg").mkdir(parents=True)
+    (ws / "pkg" / "live.py").write_text("def verify():\n    return 1\n", encoding="utf-8")
+    (tmp_path / "MEMORY.md").write_text(
+        "- verification lives in pkg/live.py\n"
+        "- the loader used to be in pkg/gone.py\n", encoding="utf-8")
+
+    app = AppState(store_root=tmp_path / "s", cfg_overrides={"workspace_root": str(ws)})
+    base, _ = _server(app)
+
+    status, graph = _req(base, "/api/memgraph")
+    assert status == 200 and graph["stats"]["nodes"] >= 2
+    assert any(n["kind"] == "fact" for n in graph["nodes"])
+
+    status, con = _req(base, "/api/memory/consolidate", "POST", {})
+    assert status == 200
+    assert [s["code_entity"] for s in con["stale"]] == ["pkg/gone.py"], con["stale"]
+
+    for path in ("/api/memory?q=verification", "/api/mcp", "/api/codemem",
+                 "/api/skills", "/api/pipelines", "/api/audit",
+                 "/api/doctor?offline=1", "/api/tools", "/api/browse"):
+        status, body = _req(base, path)
+        assert status == 200, (path, body)
+        assert "error" not in body, (path, body)
