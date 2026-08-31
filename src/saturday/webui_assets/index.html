@@ -35,6 +35,9 @@
     </div>
     <div class="proj-head">
       <span class="proj-head-label">projects</span>
+      <button id="openFolderBtn" class="icon-btn sm" title="Open folder &mdash; Ctrl+K Ctrl+O" aria-label="Open folder">
+        <svg viewBox="0 0 24 24"><path d="M4 5h5.6l2 2H20a1 1 0 0 1 1 1v2h-2V9h-8.2l-2-2H5v10h2v2H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/><path d="M16 12h2v3h3v2h-3v3h-2v-3h-3v-2h3z"/></svg>
+      </button>
       <button id="newProjBtn" class="icon-btn sm" title="New project" aria-label="New project">
         <svg viewBox="0 0 24 24"><path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z"/></svg>
       </button>
@@ -199,9 +202,10 @@
                 <div class="home-cell"><div class="home-label">Session</div><div class="home-value mono" id="homeSession">&mdash;</div></div>
               </div>
               <div class="home-keys">
+                <span><kbd>Ctrl</kbd> <kbd>P</kbd> go to file</span>
+                <span><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>P</kbd> palette</span>
+                <span><kbd>Ctrl</kbd> <kbd>K</kbd> <kbd>Ctrl</kbd> <kbd>O</kbd> open folder</span>
                 <span><kbd>Ctrl</kbd> <kbd>N</kbd> new chat</span>
-                <span><kbd>Ctrl</kbd> <kbd>B</kbd> sidebar</span>
-                <span><kbd>Ctrl</kbd> <kbd>K</kbd> palette</span>
                 <span><kbd>/</kbd> commands</span>
                 <span><kbd>Y</kbd>/<kbd>A</kbd>/<kbd>N</kbd> approvals</span>
               </div>
@@ -699,6 +703,7 @@
       <span><kbd>Ctrl</kbd> <kbd>F</kbd></span><span>Find in chat</span>
       <span><kbd>Ctrl</kbd> <kbd>N</kbd></span><span>New chat</span>
       <span><kbd>Ctrl</kbd> <kbd>,</kbd></span><span>Settings</span>
+      <span><kbd>Ctrl</kbd> <kbd>K</kbd> <kbd>Ctrl</kbd> <kbd>O</kbd></span><span>Open folder</span>
       <span><kbd>Ctrl</kbd> <kbd>K</kbd> <kbd>Ctrl</kbd> <kbd>S</kbd></span><span>This overlay</span>
       <span class="sc-head">Saturday&rsquo;s own</span><span class="sc-head"></span>
       <span><kbd>Ctrl</kbd> <kbd>M</kbd></span><span>Model menu</span>
@@ -709,6 +714,28 @@
       <span><kbd>/</kbd></span><span>Slash commands</span>
       <span><kbd>Y</kbd> / <kbd>A</kbd> / <kbd>N</kbd></span><span>Answer pending approval</span>
       <span><kbd>Esc</kbd></span><span>Close overlays</span>
+    </div>
+  </div>
+</div>
+
+<div id="folderModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="folderTitleH">
+  <div class="modal-card folder-card">
+    <div class="modal-head">
+      <h2 id="folderTitleH">Open a folder</h2>
+      <button id="folderClose" class="icon-btn" aria-label="Close">
+        <svg viewBox="0 0 24 24"><path d="M6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12 19 6.4 17.6 5 12 10.6z"/></svg>
+      </button>
+    </div>
+    <div class="modal-body folder-body">
+      <p class="about-blurb">Pick the folder you want to work in. Saturday keeps its chats and its
+      memory of that folder together, and the agent stays inside it.</p>
+      <div id="folderCrumbs" class="folder-crumbs"></div>
+      <div id="folderList" class="folder-list"></div>
+    </div>
+    <div class="modal-foot">
+      <span id="folderHere" class="folder-here mono"></span>
+      <button id="folderUp" class="mini-btn">up</button>
+      <button id="folderOpen" class="primary-btn">Open this folder</button>
     </div>
   </div>
 </div>

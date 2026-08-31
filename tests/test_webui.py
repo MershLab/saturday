@@ -3158,3 +3158,54 @@ def test_memgraph_endpoint_serves_and_caches(tmp_path, monkeypatch):
     assert cached["stats"]["nodes"] == data["stats"]["nodes"]
     _, fresh = _req(base, "/api/memgraph?refresh=1")
     assert fresh["stats"]["nodes"] > data["stats"]["nodes"]
+
+
+def test_browse_lists_directories_and_flags_repos(tmp_path, monkeypatch):
+    """The folder picker's listing: directories only, git repos marked, and
+    crumbs that walk back up. It is deliberately outside the ws sandbox."""
+    monkeypatch.setattr("saturday.config.get_config_dir", lambda: tmp_path / "cfg")
+    home = tmp_path / "home"
+    (home / "proj" / ".git").mkdir(parents=True)
+    (home / "plain").mkdir()
+    (home / ".hidden").mkdir()
+    (home / "a-file.txt").write_text("x", encoding="utf-8")
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+
+    app = AppState(store_root=tmp_path / "s")
+    base, _ = _server(app)
+
+    status, data = _req(base, "/api/browse")
+    assert status == 200, data
+    assert data["path"] == str(home)
+    names = {d["name"]: d for d in data["dirs"]}
+    assert set(names) == {"proj", "plain"}          # no files, no dotfolders
+    assert names["proj"]["repo"] is True and names["plain"]["repo"] is False
+
+    status, sub = _req(base, "/api/browse?path=" + str(home / "proj"))
+    assert status == 200 and sub["is_repo"] is True
+    assert sub["parent"] == str(home)
+    assert [c["name"] for c in sub["crumbs"]][-2:] == [home.name, "proj"]
+
+
+def test_browse_falls_back_home_for_a_bad_path(tmp_path, monkeypatch):
+    monkeypatch.setattr("saturday.config.get_config_dir", lambda: tmp_path / "cfg")
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+    app = AppState(store_root=tmp_path / "s")
+    base, _ = _server(app)
+    status, data = _req(base, "/api/browse?path=" + str(tmp_path / "does-not-exist"))
+    assert status == 200 and data["path"] == str(home)
+
+
+def test_open_folder_creates_a_project_in_one_call(tmp_path, monkeypatch):
+    """What the picker's Open button does: name it after the folder, no form."""
+    monkeypatch.setattr("saturday.config.get_config_dir", lambda: tmp_path / "cfg")
+    ws = tmp_path / "acme-frontend"
+    ws.mkdir()
+    app = AppState(store_root=tmp_path / "s", projects_store=ProjectStore(path=tmp_path / "p.json"))
+    base, _ = _server(app)
+    status, data = _req(base, "/api/projects", "POST", {"name": ws.name, "workspace": str(ws)})
+    assert status == 200, data
+    assert data["project"]["name"] == "acme-frontend"
+    assert data["project"]["workspace"] == str(ws)
