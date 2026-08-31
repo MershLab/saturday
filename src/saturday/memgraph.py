@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from pathlib import Path
 
 # a term shared by half the repo says nothing about either file; a term in two
@@ -211,11 +212,20 @@ def _add_chat_layer(b: _Builder, store_root: Path, limit: int) -> None:
                 touched |= _paths_in(content, kept)
         if not turns:
             continue
+        # a chat's pull on the graph is its size AND its freshness: an old
+        # session should not dominate the picture forever on turn count alone
+        try:
+            from saturday.memscore import recency
+
+            fresh = recency(path.stat().st_mtime, time.time())
+        except Exception:
+            fresh = 0.0
         sid = b.node(
             f"session:{path.stem}", kind="session",
             label=first_user or path.stem[:24], group="chat",
-            weight=1.0 + min(6.0, turns / 8.0),
-            meta={"session": path.stem, "turns": turns, "files": len(touched)},
+            weight=1.0 + min(6.0, turns / 8.0) + 2.0 * fresh,
+            meta={"session": path.stem, "turns": turns, "files": len(touched),
+                  "recency": round(fresh, 3)},
         )
         for rel in touched:
             fid = b.index.get(f"file:{rel}")

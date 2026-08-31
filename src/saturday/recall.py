@@ -113,10 +113,17 @@ class RecallIndex:
                 """
                 CREATE TABLE IF NOT EXISTS recall_meta(k TEXT PRIMARY KEY, v TEXT);
                 CREATE TABLE IF NOT EXISTS recall_rows(
-                    id INTEGER PRIMARY KEY, session TEXT, ts REAL, role TEXT, text TEXT
+                    id INTEGER PRIMARY KEY, session TEXT, ts REAL, role TEXT, text TEXT,
+                    salience REAL DEFAULT 0
                 );
                 """
             )
+            try:
+                # an index built before salience existed keeps working; the
+                # column is added in place and filled on the next rebuild
+                self._conn.execute("ALTER TABLE recall_rows ADD COLUMN salience REAL DEFAULT 0")
+            except sqlite3.OperationalError:
+                pass  # already there
             try:
                 self._conn.execute(
                     "CREATE VIRTUAL TABLE IF NOT EXISTS recall_fts "
@@ -172,7 +179,15 @@ class RecallIndex:
         conn.execute("DELETE FROM recall_rows")
         if self._has_fts5:
             conn.execute("DELETE FROM recall_fts")
-        conn.executemany("INSERT INTO recall_rows(session, ts, role, text) VALUES(?,?,?,?)", rows)
+        # salience is measured ONCE, here, against everything indexed before it -
+        # never at query time, where it would cost the same work on every search
+        from saturday.memscore import SalienceIndex
+
+        sal = SalienceIndex()
+        conn.executemany(
+            "INSERT INTO recall_rows(session, ts, role, text, salience) VALUES(?,?,?,?,?)",
+            [(s_, t_, r_, x_, sal.add(x_)) for (s_, t_, r_, x_) in rows],
+        )
         if self._has_fts5:
             with_ft = rows
             conn.executemany(
@@ -198,16 +213,17 @@ class RecallIndex:
             if self._has_fts5:
                 tokens = _clean_fts(q)
                 if tokens:
-                    return [
-                        {"session": r[0], "ts": r[1], "role": r[2], "text": r[3]}
-                        for r in conn.execute(
-                            "SELECT r.session, r.ts, r.role, r.text "
-                            "FROM recall_fts f JOIN recall_rows r ON r.id = f.id "
-                            "WHERE recall_fts MATCH ? "
-                            "ORDER BY bm25(recall_fts) LIMIT ?",
-                            (tokens, k),
-                        ).fetchall()
-                    ]
+                    # over-fetch, then re-rank: text match alone answers "what
+                    # mentions this" when the question is "what should I
+                    # remember about this"
+                    raw = conn.execute(
+                        "SELECT r.session, r.ts, r.role, r.text, r.salience "
+                        "FROM recall_fts f JOIN recall_rows r ON r.id = f.id "
+                        "WHERE recall_fts MATCH ? "
+                        "ORDER BY bm25(recall_fts) LIMIT ?",
+                        (tokens, max(k, k * 5)),
+                    ).fetchall()
+                    return self._rank(raw, k)
             like = f"%{q}%"
             return [
                 {"session": r[0], "ts": r[1], "role": r[2], "text": r[3]}
@@ -229,6 +245,23 @@ class RecallIndex:
                 ).fetchall()
             ]
 
+    @staticmethod
+    def _rank(raw: list, k: int) -> list[dict]:
+        """Re-rank BM25 hits by recency, relevance and salience together."""
+        from saturday.memscore import combine, normalize_relevance, recency
+
+        if not raw:
+            return []
+        now = time.time()
+        rel = normalize_relevance([0.0] * len(raw))  # BM25 order, positionally normalized
+        out = []
+        for (session, ts, role, text, salience), relevance in zip(raw, rel):
+            score = combine(recency(float(ts or 0.0), now), relevance, float(salience or 0.0))
+            out.append({"session": session, "ts": ts, "role": role, "text": text,
+                        "score": round(score, 4)})
+        out.sort(key=lambda r: -r["score"])
+        return out[:k]
+
     def close(self) -> None:
         if self._conn is not None:
             try:
@@ -248,5 +281,6 @@ def format_recall(results: list[dict], limit_text: int = 200) -> str:
         body = (r["text"] or "").replace("\n", " ").strip()
         if len(body) > limit_text:
             body = body[:limit_text] + "..."
-        lines.append(f"{i}. [{when} | session {r['session']} | {r['role']}] {body}")
+        score = f" | score {r['score']:.2f}" if r.get("score") is not None else ""
+        lines.append(f"{i}. [{when} | session {r['session']} | {r['role']}{score}] {body}")
     return "\n".join(lines)
