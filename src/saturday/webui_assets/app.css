@@ -2637,3 +2637,31 @@ body.mode-assistant #composerModes { display: none; }
   padding: 4px 11px; font-size: 11px; color: var(--accent);
 }
 .mg-away.hidden { display: none; }
+
+/* ---------------- skills + memory check ---------------- */
+
+.skill-list, .skill-results { display: flex; flex-direction: column; gap: 6px; }
+.skill-results { margin-top: 8px; }
+.skill-item { border: 1px solid var(--line); border-radius: 7px; padding: 8px 10px; background: var(--bg1); }
+.skill-head { display: flex; align-items: center; gap: 8px; }
+.skill-name { font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.skill-stars { font-size: 10.5px; color: var(--dim); }
+.skill-head .mini-btn { margin-left: 0; }
+.skill-head .mini-btn:first-of-type { margin-left: auto; }
+.skill-desc { font-size: 11.5px; color: var(--dim); margin-top: 4px; line-height: 1.45; }
+.skill-bad { font-size: 11.5px; color: var(--err); }
+.skill-caveat { font-size: 11px; color: var(--warn); margin-top: 8px; line-height: 1.45; }
+.skill-add { display: flex; gap: 7px; }
+.skill-add input {
+  flex-grow: 1; background: var(--bg0); color: var(--text);
+  border: 1px solid var(--line2); border-radius: 6px;
+  padding: 5px 9px; font: inherit; font-size: 12px; outline: none;
+}
+.skill-add input:focus { border-color: var(--accent-line); }
+.codemem-row { margin-bottom: 8px; }
+.codemem-line { display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--dim); }
+.codemem-line code { font-size: 10.5px; color: var(--accent); }
+.mg-tidy { left: 12px; right: auto; width: 340px; }
+.mg-tidy-row { display: flex; flex-direction: column; gap: 2px; padding: 5px 0; border-bottom: 1px solid var(--line); }
+.mg-tidy-row code { font-size: 10.5px; color: var(--err); }
+.mg-tidy-row span { font-size: 11.5px; color: var(--dim); line-height: 1.4; }
