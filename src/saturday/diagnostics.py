@@ -97,9 +97,15 @@ def run_checks(cfg, offline: bool = False) -> list[dict[str, Any]]:
                           "the agent cannot edit files here; pick another folder"))
 
     try:
-        from saturday.tools import default_registry
+        # Build it the way the agent does, rather than counting something
+        # adjacent. default_registry() alone left out memory, skills, goals,
+        # todo, delegation and the whole desktop suite - about half the real
+        # total, and precisely the half a user wants confirmed - and counting
+        # the plugins by hand still missed subagents. One construction path
+        # means doctor and the tools list cannot report different numbers.
+        from saturday.agent.core import Agent
 
-        n = len(default_registry(cfg).names())
+        n = len(Agent(cfg=cfg)._build_registry().names())
         out.append(_check("tools", "tools", OK, f"{n} registered"))
     except Exception as exc:
         out.append(_check("tools", "tools", FAIL, f"FAILED to build registry - {exc}"))
