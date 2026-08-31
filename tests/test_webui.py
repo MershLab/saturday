@@ -3712,3 +3712,19 @@ def test_pipeline_new_from_template_saves_a_valid_graph(tmp_path, monkeypatch):
     status, data = _req(base, "/api/pipelines", "POST",
                         {"action": "new", "name": "x", "template": "ghost"})
     assert status == 400
+
+
+def test_every_backend_surface_is_reachable_from_the_frontend():
+    """Standing rule: a feature that only exists in the CLI or only behind an
+    endpoint is an unfinished ship. This is the check that keeps it honest."""
+    js = (ASSETS / "app.js").read_text(encoding="utf-8")
+    html = (ASSETS / "index.html").read_text(encoding="utf-8")
+    for route in ("/api/skills", "/api/memory", "/api/memory/consolidate",
+                  "/api/codemem", "/api/pipelines", "/api/audit", "/api/doctor",
+                  "/api/update", "/api/mcp", "/api/memgraph", "/api/browse"):
+        assert route in js, f"{route} has no frontend caller"
+    # and the controls that reach them exist in the markup
+    for node_id in ("skillList", "skillInstall", "skillSearch", "codememRow",
+                    "mgTidy", "auditRun", "doctorRun", "updCheck", "mcpTest",
+                    "pipeList", "openFolderBtn"):
+        assert f'id="{node_id}"' in html, node_id

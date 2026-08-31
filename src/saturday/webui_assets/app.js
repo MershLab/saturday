@@ -3432,6 +3432,8 @@ function openSettings() {
   $("#aboutProvider").textContent = (info.provider || "") + " / " + (info.model || "");
   renderUsage(info.usage || { turns: 0, total_tokens: 0, days: [], models: [] });
   loadMcp(false);
+  loadCodemem();
+  loadSkills();
   settingsShow("general");
   providerHint();
   loadSchedules();
@@ -4364,6 +4366,100 @@ async function loadUpdate() {
     a2.textContent = "release notes";
     out.appendChild(a2);
   }
+}
+
+/* ---------------------------------------------------------------- skills */
+
+async function loadSkills() {
+  const box = $("#skillList");
+  box.replaceChildren(el("div", "field-hint", "reading\u2026"));
+  let d;
+  try { d = await api("/api/skills"); }
+  catch (e) { box.replaceChildren(el("div", "skill-bad", e.message)); return; }
+  box.replaceChildren();
+  if (!d.installed.length) {
+    box.appendChild(el("div", "field-hint", "None yet. Search below, or paste a git URL."));
+    return;
+  }
+  for (const sk of d.installed) {
+    const row = el("div", "skill-item");
+    const head = el("div", "skill-head");
+    head.appendChild(el("span", "skill-name", sk.name));
+    head.appendChild(el("span", "mcp-tag", sk.git ? "git" : "local"));
+    const up = el("button", "mini-btn", "update");
+    up.disabled = !sk.git;
+    up.title = sk.git ? "git pull" : "written here, nothing to pull";
+    up.addEventListener("click", () => skillAction({ action: "update", name: sk.name }, up));
+    const rm = el("button", "mini-btn", "remove");
+    rm.addEventListener("click", async () => {
+      if (!(await uiConfirm({ title: "Remove " + sk.name + "?",
+                              msg: "The folder is deleted. Anything you wrote in it goes too.",
+                              ok: "Remove", danger: true }))) return;
+      skillAction({ action: "remove", name: sk.name }, rm);
+    });
+    head.appendChild(up);
+    head.appendChild(rm);
+    row.appendChild(head);
+    if (sk.description) row.appendChild(el("div", "skill-desc", sk.description));
+    box.appendChild(row);
+  }
+}
+
+async function skillAction(body, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    const out = await api("/api/skills", { method: "POST", body: JSON.stringify(body) });
+    if (out.results) {
+      for (const r of out.results) toast(r.name + ": " + r.detail, r.ok ? "ok" : "error");
+    }
+    await loadSkills();
+  } catch (e) {
+    toast(e.message, "error");
+  } finally { if (btn) btn.disabled = false; }
+}
+
+async function searchSkills() {
+  const box = $("#skillResults");
+  const q = $("#skillQuery").value.trim();
+  box.replaceChildren(el("div", "field-hint", "searching\u2026"));
+  let d;
+  try { d = await api("/api/skills?q=" + encodeURIComponent(q)); }
+  catch (e) { box.replaceChildren(el("div", "skill-bad", e.message)); return; }
+  box.replaceChildren();
+  if (d.error) { box.appendChild(el("div", "skill-bad", d.error)); return; }
+  if (!d.results.length) {
+    box.appendChild(el("div", "field-hint", "nothing tagged " + (d.topic || "") + " matches that"));
+    return;
+  }
+  for (const r of d.results) {
+    const row = el("div", "skill-item");
+    const head = el("div", "skill-head");
+    head.appendChild(el("span", "skill-name", r.full_name));
+    head.appendChild(el("span", "skill-stars mono", "\u2605 " + r.stars));
+    const add = el("button", "mini-btn", "install");
+    add.addEventListener("click", () => skillAction({ action: "install", url: r.url }, add));
+    head.appendChild(add);
+    row.appendChild(head);
+    if (r.description) row.appendChild(el("div", "skill-desc", r.description));
+    box.appendChild(row);
+  }
+  // the caveat travels with the results, not buried in a doc nobody opens
+  box.appendChild(el("div", "skill-caveat", d.note || ""));
+}
+
+async function loadCodemem() {
+  const row = $("#codememRow");
+  if (!row) return;
+  let d;
+  try { d = await api("/api/codemem"); } catch { row.replaceChildren(); return; }
+  row.replaceChildren();
+  const line = el("div", "codemem-line");
+  line.appendChild(el("span", "mcp-dot " + (d.available ? "ok" : "unknown")));
+  line.appendChild(el("span", "", "code retrieval: " + d.retrieval));
+  if (!d.available && d.supported) {
+    line.appendChild(el("code", "mono", "saturday codemem install"));
+  }
+  row.appendChild(line);
 }
 
 /* ---------------------------------------------------------------- doctor */
@@ -6048,6 +6144,18 @@ function bindEvents() {
     }
   });
   $("#mcpTest").addEventListener("click", () => loadMcp(true));
+  $("#skillInstall").addEventListener("click", () => {
+    const url = $("#skillUrl").value.trim();
+    if (!url) return;
+    skillAction({ action: "install", url }, $("#skillInstall"));
+    $("#skillUrl").value = "";
+  });
+  $("#skillSearch").addEventListener("click", () => searchSkills());
+  $("#skillQuery").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); searchSkills(); }
+    e.stopPropagation();
+  });
+  $("#skillUrl").addEventListener("keydown", (e) => e.stopPropagation());
   $("#auditRun").addEventListener("click", () => loadAudit());
   $("#doctorRun").addEventListener("click", () => loadDoctor());
   $("#updCheck").addEventListener("click", () => loadUpdate());
@@ -6926,6 +7034,69 @@ function mgStats(stats) {
     + (clashes ? "  \u00b7  " + clashes + " in red disagree" : ""));
 }
 
+async function mgConsolidate() {
+  const btn = $("#mgTidy"), box = $("#mgTidyOut");
+  btn.disabled = true;
+  const was = btn.textContent;
+  btn.textContent = "checking\u2026";
+  let d;
+  try {
+    d = await api("/api/memory/consolidate", { method: "POST",
+      body: JSON.stringify({ sid: state.sid || "" }) });
+  } catch (e) {
+    toast("Could not check: " + e.message, "error");
+    btn.disabled = false; btn.textContent = was;
+    return;
+  }
+  btn.disabled = false; btn.textContent = was;
+
+  box.replaceChildren();
+  const head = el("header", "");
+  head.appendChild(document.createTextNode("Memory check"));
+  const x = el("button", "mg-x", "\u00d7");
+  x.addEventListener("click", () => box.classList.add("hidden"));
+  head.appendChild(x);
+  box.appendChild(head);
+  box.appendChild(el("p", "", d.scanned + " notes checked."));
+  // stale is a verified fact here: the code it describes is gone, which is a
+  // different claim from "nobody touched this in a while"
+  if (d.stale.length) {
+    box.appendChild(el("div", "mg-links-h", d.stale.length + " about code that is gone"));
+    for (const s2 of d.stale) {
+      const row = el("div", "mg-tidy-row");
+      row.appendChild(el("code", "mono", s2.code_entity));
+      row.appendChild(el("span", "", s2.text));
+      box.appendChild(row);
+    }
+  } else {
+    box.appendChild(el("p", "", "Nothing refers to code that has since gone."));
+  }
+  if (d.contradictions) {
+    box.appendChild(el("p", "", d.contradictions
+      + " link(s) mark notes that disagree \u2014 they are the red edges."));
+  }
+  if (d.archived.length) {
+    box.appendChild(el("div", "mg-links-h", d.archived.length + " would be archived"));
+  }
+  box.classList.remove("hidden");
+}
+
+async function mgSearchMemory(q) {
+  // the box filters the picture locally AND asks the index, because a note can
+  // match on meaning through a link without sharing the words
+  if (!q || q.length < 2) return;
+  try {
+    const d = await api("/api/memory?q=" + encodeURIComponent(q)
+                        + "&sid=" + encodeURIComponent(state.sid || ""));
+    const hits = new Set();
+    for (const r of d.results || []) {
+      const i = mgFindNode("memory", r.slug);
+      if (i >= 0) { hits.add(i); mgApplyAttn(i, r.matched ? "used" : "adjacent", r.score); }
+    }
+    if (hits.size) mgWake();
+  } catch {}
+}
+
 function mgSearch(q) {
   mg.query = q.trim().toLowerCase();
   if (!mg.query) { mg.match = null; mgWake(); return; }
@@ -7075,9 +7246,11 @@ function mgOpen() {
     mgWire();
     new ResizeObserver(() => { mgResize(); mgWake(); }).observe(mg.canvas.parentElement);
     const s = $("#mgSearch");
-    if (s) s.addEventListener("input", () => mgSearch(s.value));
+    if (s) s.addEventListener("input", () => { mgSearch(s.value); mgSearchMemory(s.value.trim()); });
     const r = $("#mgRefresh");
     if (r) r.addEventListener("click", () => mgLoad(true));
+    const td = $("#mgTidy");
+    if (td) td.addEventListener("click", () => mgConsolidate());
     const f = $("#mgFit");
     if (f) f.addEventListener("click", () => { mgFit(); mgWake(); });
     const l = $("#mgLabels");

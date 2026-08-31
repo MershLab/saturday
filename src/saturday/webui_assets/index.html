@@ -224,6 +224,7 @@
               <div class="mg-actions">
                 <button id="mgLabels" class="mg-btn on" title="show names">names</button>
                 <button id="mgFit" class="mg-btn" title="fit to view (or double-click)">fit</button>
+                <button id="mgTidy" class="mg-btn" title="find notes about code that is gone">check memory</button>
                 <button id="mgRefresh" class="mg-btn" title="reindex the workspace">reindex</button>
               </div>
             </div>
@@ -231,6 +232,7 @@
               <canvas id="mgCanvas"></canvas>
               <div id="mgTip" class="mg-tip hidden"></div>
               <aside id="mgDetail" class="mg-detail hidden"></aside>
+              <aside id="mgTidyOut" class="mg-detail mg-tidy hidden"></aside>
               <div id="mgSteps" class="mg-steps hidden">
                 <button id="mgFollow" class="mg-btn" title="recentre on wherever attention moves">follow</button>
                 <input id="mgStepRange" type="range" min="0" max="0" value="0" step="1">
@@ -286,6 +288,7 @@
         <button data-sec="data">Data &amp; storage</button>
         <button data-sec="hooks">Hooks</button>
         <button data-sec="mcp">MCP servers</button>
+        <button data-sec="skills">Skills</button>
         <button data-sec="about">About</button>
       </nav>
       <div class="set-panes">
@@ -642,8 +645,35 @@
             </div>
             <div id="mcpWarn" class="mcp-warn hidden"></div>
             <div id="cfgMcp" class="mcp-list"></div>
+            <div id="codememRow" class="codemem-row"></div>
             <span class="field-hint">From this project&rsquo;s <code>.saturday/mcp.json</code> and your global config.
             Testing starts each server and asks what tools it provides.</span>
+          </div>
+        </div>
+
+        <div class="set-pane" data-sec="skills">
+          <div class="field">
+            <span class="field-label">Installed</span>
+            <div id="skillList" class="skill-list"></div>
+            <span class="field-hint">A skill is a folder with a <code>SKILL.md</code>. Its text is put in
+            front of the model, so install ones you would be willing to read.</span>
+          </div>
+          <div class="field">
+            <span class="field-label">Add one</span>
+            <div class="skill-add">
+              <input id="skillUrl" type="text" class="mono" spellcheck="false"
+                     placeholder="git URL, or a folder on this machine">
+              <button id="skillInstall" class="mini-btn">install</button>
+            </div>
+          </div>
+          <div class="field">
+            <span class="field-label">Find one</span>
+            <div class="skill-add">
+              <input id="skillQuery" type="search" spellcheck="false"
+                     placeholder="what should it know how to do?">
+              <button id="skillSearch" class="mini-btn">search</button>
+            </div>
+            <div id="skillResults" class="skill-results"></div>
           </div>
         </div>
 
