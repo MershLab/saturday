@@ -3375,3 +3375,20 @@ def test_audit_export_serves_a_downloadable_bundle(tmp_path):
     assert bundle["session_id"] == sid
     assert bundle["chain"]["ok"] is False
     assert len(bundle["records"]) == 2
+
+
+def test_tools_endpoint_describes_every_tool_and_its_state(tmp_path):
+    """`saturday tools` was the only place that said what a tool does; the
+    settings checklist knew names only."""
+    app = AppState(store_root=tmp_path / "s", cfg_overrides={"disabled_tools": ["browser"]})
+    base, _ = _server(app)
+    status, data = _req(base, "/api/tools")
+    assert status == 200, data
+    by = {t["name"]: t for t in data["tools"]}
+    assert len(by) > 10
+    assert all(t["description"] for t in data["tools"]), "every tool must say what it does"
+    assert by["browser"]["enabled"] is False
+    assert by["shell"]["enabled"] is True
+    # a disabled family expands to its members, matching the toggle semantics
+    assert "browser" in data["disabled"]
+    assert data["tools"] == sorted(data["tools"], key=lambda t: t["name"])

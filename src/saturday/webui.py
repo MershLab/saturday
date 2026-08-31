@@ -2150,6 +2150,27 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json({"sessions": rows, "checked": len(rows), "tampered": tampered,
                          "truncated": len(listing) > 400})
 
+    def _get_tools(self) -> None:
+        """Every tool the agent can call, with what it does.
+
+        The settings checklist has always known the NAMES; `saturday tools` was
+        the only place that said what any of them actually do."""
+        from saturday.tools.base import ToolRegistry
+
+        disabled = set(ToolRegistry.expand_tool_names(
+            getattr(self.app.base_cfg, "disabled_tools", []) or []))
+        try:
+            specs = self.app.make_agent()._build_registry().specs()
+        except Exception as exc:
+            self._send_json({"error": f"{type(exc).__name__}: {exc}"}, 500)
+            return
+        out = [{
+            "name": sp["name"],
+            "description": (sp.get("description") or "").strip(),
+            "enabled": sp["name"] not in disabled,
+        } for sp in sorted(specs, key=lambda x: x["name"])]
+        self._send_json({"tools": out, "disabled": sorted(disabled)})
+
     def _get_journal(self) -> None:
         from urllib.parse import parse_qs, unquote, urlparse
 
@@ -2781,6 +2802,7 @@ _GET_ROUTES = [
     ("/api/browse", "_get_browse"),
     ("/api/mcp", "_get_mcp"),
     ("/api/audit", "_get_audit"),
+    ("/api/tools", "_get_tools"),
     ("/api/schedules", "_get_schedules"),
     ("/api/runs", "_get_runs"),
     ("/api/git/status", "_get_git_status"),
