@@ -2363,3 +2363,10 @@ body.mode-assistant #composerModes { display: none; }
   padding: 6px; cursor: pointer;
 }
 .mg-open:hover { background: var(--accent-line); color: var(--bg0); }
+
+.shortcuts-grid .sc-head {
+  font-family: var(--mono); font-size: 10px; color: var(--dim);
+  text-transform: uppercase; letter-spacing: .06em;
+  padding-top: 10px; border-bottom: 1px solid var(--line); padding-bottom: 4px;
+}
+.shortcuts-grid .sc-head:first-child { padding-top: 0; }

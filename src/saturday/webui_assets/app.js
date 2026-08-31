@@ -2623,14 +2623,53 @@ function rememberModel(model) {
 
 let palItems = [];
 let palSel = 0;
+let chordPrefix = null;   // a pressed Ctrl+K waiting for its second key
+let chordTimer = null;
 
-function paletteOpen() {
+function paletteOpen(commandMode) {
   $("#paletteOverlay").classList.remove("hidden");
   const inp = $("#paletteInput");
-  inp.value = "";
-  paletteBuild("");
+  // VS Code has one overlay in two modes: Ctrl+P finds files, and a leading
+  // ">" turns it into the command palette. Ctrl+Shift+P is that with the ">"
+  // already typed, so both keys land here and the input decides.
+  palFileMode = !commandMode;
+  inp.value = commandMode ? "> " : "";
+  inp.placeholder = commandMode
+    ? "Run a command, or delete the > to find a file\u2026"
+    : "Go to file, or type > for commands\u2026";
+  paletteBuild(inp.value);
+  if (palFileMode) palFilesLoad();
   $("#palSearch").classList.add("hidden");
-  setTimeout(() => inp.focus(), 30);
+  setTimeout(() => { inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); }, 30);
+}
+
+let palFileMode = false;
+let palFiles = [];
+
+async function palFilesLoad() {
+  try {
+    palFiles = await workspaceFiles();
+  } catch { palFiles = []; }
+  const inp = $("#paletteInput");
+  // the overlay may already be closed, or moved on to a command query
+  if (!$("#paletteOverlay").classList.contains("hidden") && !inp.value.trimStart().startsWith(">")) {
+    paletteBuild(inp.value);
+  }
+}
+
+function palFuzzy(path, q) {
+  if (!q) return 0;
+  const hay = path.toLowerCase();
+  const base = hay.slice(hay.lastIndexOf("/") + 1);
+  let i = 0, score = 0, run = 0;
+  for (const ch of q) {
+    const at = hay.indexOf(ch, i);
+    if (at < 0) return -1;                       // not a subsequence: reject
+    run = at === i ? run + 1 : 0;                // consecutive chars score higher
+    score += 1 + run * 2 + (at >= hay.length - base.length ? 2 : 0);
+    i = at + 1;
+  }
+  return score - hay.length * 0.01;              // shorter paths win ties
 }
 function paletteClose() { $("#paletteOverlay").classList.add("hidden"); $("#palSearch").classList.add("hidden"); }
 
@@ -2665,8 +2704,12 @@ function paletteSearchAsync(q) {
   }, 220);
 }
 
-function paletteBuild(q) {
-  q = q.toLowerCase();
+function paletteBuild(raw) {
+  const commandMode = raw.trimStart().startsWith(">") || !palFileMode;
+  if (!commandMode) return palBuildFiles(raw.trim().toLowerCase());
+  let q = raw.trimStart();
+  if (q.startsWith(">")) q = q.slice(1);
+  q = q.trim().toLowerCase();
   palItems = [];
   const cmds = [
     ["New chat", () => newChat()],
@@ -2675,6 +2718,7 @@ function paletteBuild(q) {
     ["Toggle theme", () => toggleTheme()],
     ["Open settings", () => openSettings()],
     ["Keyboard shortcuts", () => shortcutsOpen()],
+    ["Go to file\u2026", () => paletteOpen(false)],
     ["Export session as Markdown", () => exportSession("md")],
     ["Export session as JSON", () => exportSession("json")],
     ["Show Activity tab", () => stageShow("activity", false)],
@@ -2696,6 +2740,10 @@ function paletteBuild(q) {
     if (q && !((s.task || "").toLowerCase().includes(q) || s.id.toLowerCase().includes(q))) continue;
     palItems.push({ icon: "\u25a4", label: (s.task || "(interactive)") + "  \u00b7 " + s.id, run: () => openSession(s.id) });
   }
+  palRender();
+}
+
+function palRender() {
   palSel = 0;
   const list = $("#paletteList");
   list.replaceChildren();
@@ -2706,6 +2754,28 @@ function paletteBuild(q) {
     row.addEventListener("click", () => { paletteClose(); it.run(); });
     list.appendChild(row);
   });
+}
+
+function palBuildFiles(q) {
+  palItems = [];
+  const scored = [];
+  for (const f of palFiles) {
+    if (f.endsWith("/")) continue;               // Quick Open lists files, not folders
+    const sc = q ? palFuzzy(f, q) : -f.length * 0.01;
+    if (sc > -1) scored.push([sc, f]);
+  }
+  scored.sort((a, b) => b[0] - a[0]);
+  for (const [, f] of scored.slice(0, 40)) {
+    palItems.push({
+      icon: "\u25a1",
+      label: f,
+      run: () => { stageShow("files", false); openWsFile(f); },
+    });
+  }
+  if (!palItems.length) {
+    palItems.push({ icon: "\u00b7", label: palFiles.length ? "no matching file" : "reading the workspace\u2026", run: () => {} });
+  }
+  palRender();
 }
 
 function paletteKey(k) {
@@ -4620,6 +4690,13 @@ let atSel = 0;
 let atToken = "";
 let atFilesCache = { key: "", files: [], at: 0 };
 
+// build artefacts and vendored trees are noise in both Quick Open and an
+// @-mention; this mirrors repo_index.SKIP_DIRS on the Python side
+const WS_SKIP_DIRS = new Set([
+  "__pycache__", "node_modules", ".venv", "venv", "dist", "build",
+  ".pytest_cache", ".mypy_cache", ".ruff_cache", "target", ".next", "coverage",
+]);
+
 async function workspaceFiles() {
   const key = (state.proj || "") + "|" + (state.sid || "");
   const now = Date.now();
@@ -4632,6 +4709,7 @@ async function workspaceFiles() {
     catch { return; }
     for (const e of data.entries || []) {
       if (files.length >= 400) break;
+      if (WS_SKIP_DIRS.has(e.name)) continue;
       const rpath = (rel ? rel.replace(/\/+$/, "") + "/" : "") + e.name;
       if (e.dir) { files.push(rpath + "/"); await walk(rpath + "/", depth + 1); }
       else files.push(rpath);
@@ -5226,7 +5304,14 @@ function bindEvents() {
       e.target.blur();
     }
   });
-  $("#paletteInput").addEventListener("input", (e) => { paletteBuild(e.target.value); paletteSearchAsync(e.target.value.trim()); });
+  $("#paletteInput").addEventListener("input", (e) => {
+    const raw = e.target.value;
+    paletteBuild(raw);
+    // the chat-content search belongs to command mode; in Quick Open the list
+    // is files, and a second results block underneath is just noise
+    const cmd = raw.trimStart();
+    paletteSearchAsync(cmd.startsWith(">") ? cmd.slice(1).trim() : (palFileMode ? "" : cmd.trim()));
+  });
   $("#paletteInput").addEventListener("keydown", (e) => { if (paletteKey(e.key)) e.preventDefault(); });
   $("#paletteOverlay").addEventListener("mousedown", (e) => { if (e.target === $("#paletteOverlay")) paletteClose(); });
   for (const b of document.querySelectorAll(".stage-tab")) {
@@ -5264,20 +5349,45 @@ function bindEvents() {
   function hideDrop() { const ov = $("#dropOverlay"); if (ov) ov.remove(); }
 
   document.addEventListener("keydown", (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); paletteOpen(); return; }
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") { e.preventDefault(); openFind(); return; }
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "m") { e.preventDefault(); closeMenus(); openModelMenu(); return; }
-    if (e.altKey && (e.key === "m" || e.key === "M")) { e.preventDefault(); cycleFavoriteModel(); return; }
-    if (e.altKey && !e.ctrlKey && !e.metaKey && e.key >= "1" && e.key <= "8") {
-      const tabs = Array.from(document.querySelectorAll(".stage-tab"));
-      const t = tabs[+e.key - 1];
-      if (t) { e.preventDefault(); stageShow(t.dataset.tab, false); if (t.dataset.tab === "files") filesEnsure(true); }
+    const mod = e.ctrlKey || e.metaKey;
+    const key = (e.key || "").toLowerCase();
+    const panel = (tab, extra) => { e.preventDefault(); stageShow(tab, false); if (extra) extra(); };
+
+    // Ctrl+K is a chord PREFIX in VS Code, not a command of its own; resolve a
+    // pending one before anything else, and let any other key cancel it.
+    if (chordPrefix === "k") {
+      clearTimeout(chordTimer);
+      chordPrefix = null;
+      if (mod && key === "s") { e.preventDefault(); shortcutsOpen(); return; }
+      if (mod && key === "h") { panel("activity"); return; }   // Show Output, Linux
+    }
+    if (mod && !e.shiftKey && !e.altKey && key === "k") {
+      e.preventDefault();
+      chordPrefix = "k";
+      clearTimeout(chordTimer);
+      chordTimer = setTimeout(() => { chordPrefix = null; }, 2000);
       return;
     }
-    if ((e.ctrlKey || e.metaKey) && e.key === "/") { e.preventDefault(); shortcutsOpen(); return; }
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "n") { e.preventDefault(); newChat(); return; }
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "b") { e.preventDefault(); toggleSidebar(); return; }
-    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "c") { e.preventDefault(); ctxOpen(); return; }
+
+    // Quick Open and the command palette are one overlay, as in VS Code
+    if (e.key === "F1") { e.preventDefault(); paletteOpen(true); return; }
+    if (mod && e.shiftKey && key === "p") { e.preventDefault(); paletteOpen(true); return; }
+    if (mod && !e.shiftKey && key === "p") { e.preventDefault(); paletteOpen(false); return; }
+
+    // the panels, on VS Code's activity-bar and panel keys
+    if (mod && e.shiftKey && key === "e") { panel("files", () => filesEnsure(true)); return; }
+    if (mod && e.shiftKey && key === "g") { panel("changes"); return; }
+    if (mod && e.shiftKey && key === "u") { panel("activity"); return; }
+    if (mod && e.shiftKey && key === "d") { panel("runs"); return; }
+    if (mod && e.shiftKey && key === "v") { panel("preview"); return; }
+    if (mod && !e.shiftKey && key === ",") { e.preventDefault(); openSettings(); return; }
+
+    if (mod && key === "f") { e.preventDefault(); openFind(); return; }
+    if (mod && key === "m") { e.preventDefault(); closeMenus(); openModelMenu(); return; }
+    if (e.altKey && key === "m") { e.preventDefault(); cycleFavoriteModel(); return; }
+    if (mod && key === "n") { e.preventDefault(); newChat(); return; }
+    if (mod && key === "b") { e.preventDefault(); toggleSidebar(); return; }
+    if (mod && e.shiftKey && key === "c") { e.preventDefault(); ctxOpen(); return; }
     if (e.key === "Escape") {
       // Trust modal is non-dismissible: require an explicit button click.
       if (!$("#trustModal").classList.contains("hidden")) return;

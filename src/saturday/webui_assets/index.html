@@ -163,15 +163,15 @@
 
       <section id="stage">
         <div id="stageTabs">
-          <button class="stage-tab on" data-tab="home" title="Workbench &mdash; Alt+1">Workbench</button>
-          <button class="stage-tab" data-tab="activity" title="Activity &mdash; Alt+2">Activity <span class="tab-badge hidden" id="badgeActivity"></span></button>
-          <button class="stage-tab" data-tab="changes" title="Changes &mdash; Alt+3">Changes <span class="tab-badge hidden" id="badgeChanges"></span></button>
-          <button class="stage-tab" data-tab="plan" title="Plan &mdash; Alt+4">Plan <span class="tab-badge hidden" id="badgePlan"></span></button>
-          <button class="stage-tab" data-tab="preview" title="Preview &mdash; Alt+5">Preview <span class="tab-badge hidden" id="badgePreview"></span></button>
+          <button class="stage-tab on" data-tab="home" title="Workbench">Workbench</button>
+          <button class="stage-tab" data-tab="activity" title="Activity &mdash; Ctrl+Shift+U">Activity <span class="tab-badge hidden" id="badgeActivity"></span></button>
+          <button class="stage-tab" data-tab="changes" title="Changes &mdash; Ctrl+Shift+G">Changes <span class="tab-badge hidden" id="badgeChanges"></span></button>
+          <button class="stage-tab" data-tab="plan" title="Plan">Plan <span class="tab-badge hidden" id="badgePlan"></span></button>
+          <button class="stage-tab" data-tab="preview" title="Preview &mdash; Ctrl+Shift+V">Preview <span class="tab-badge hidden" id="badgePreview"></span></button>
           <span class="stage-tab-sep" aria-hidden="true"></span>
-          <button class="stage-tab" data-tab="files" title="Files &mdash; Alt+6">Files</button>
-          <button class="stage-tab" data-tab="memory" title="Memory graph &mdash; Alt+7">Memory</button>
-          <button class="stage-tab" data-tab="runs" title="Runs &mdash; Alt+8">Runs <span class="tab-badge hidden" id="badgeRuns"></span></button>
+          <button class="stage-tab" data-tab="files" title="Files &mdash; Ctrl+Shift+E">Files</button>
+          <button class="stage-tab" data-tab="memory" title="Memory graph">Memory</button>
+          <button class="stage-tab" data-tab="runs" title="Runs &mdash; Ctrl+Shift+D">Runs <span class="tab-badge hidden" id="badgeRuns"></span></button>
           <div id="stageMeta"></div>
         </div>
         <div id="stageBody">
@@ -639,10 +639,10 @@
 
 <div id="paletteOverlay" class="modal hidden">
   <div class="palette">
-    <input id="paletteInput" type="text" placeholder="Search sessions, chat content, run a command&hellip;" spellcheck="false" autocomplete="off">
+    <input id="paletteInput" type="text" placeholder="Go to file, or type &gt; for commands&hellip;" spellcheck="false" autocomplete="off">
     <div id="paletteList" class="palette-list" role="listbox"></div>
     <div id="palSearch" class="palette-search hidden"></div>
-    <div class="palette-foot"><kbd>&uarr;</kbd><kbd>&darr;</kbd> navigate &middot; <kbd>Enter</kbd> run &middot; <kbd>Esc</kbd> close</div>
+    <div class="palette-foot"><kbd>&uarr;</kbd><kbd>&darr;</kbd> navigate &middot; <kbd>Enter</kbd> run &middot; <kbd>&gt;</kbd> commands &middot; <kbd>Esc</kbd> close</div>
   </div>
 </div>
 
@@ -687,15 +687,23 @@
       </button>
     </div>
     <div class="modal-body shortcuts-grid">
-      <span><kbd>Ctrl</kbd> <kbd>N</kbd></span><span>New chat</span>
+      <span class="sc-head">Same keys as VS Code</span><span class="sc-head"></span>
+      <span><kbd>Ctrl</kbd> <kbd>P</kbd></span><span>Go to file</span>
+      <span><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>P</kbd> / <kbd>F1</kbd></span><span>Command palette</span>
+      <span><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>E</kbd></span><span>Files &mdash; VS Code&rsquo;s Explorer</span>
+      <span><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>G</kbd></span><span>Changes &mdash; Source Control</span>
+      <span><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>U</kbd></span><span>Activity &mdash; Output</span>
+      <span><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>D</kbd></span><span>Runs &mdash; Run and Debug</span>
+      <span><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>V</kbd></span><span>Preview</span>
       <span><kbd>Ctrl</kbd> <kbd>B</kbd></span><span>Toggle sidebar</span>
-      <span><kbd>Ctrl</kbd> <kbd>K</kbd></span><span>Command palette</span>
       <span><kbd>Ctrl</kbd> <kbd>F</kbd></span><span>Find in chat</span>
+      <span><kbd>Ctrl</kbd> <kbd>N</kbd></span><span>New chat</span>
+      <span><kbd>Ctrl</kbd> <kbd>,</kbd></span><span>Settings</span>
+      <span><kbd>Ctrl</kbd> <kbd>K</kbd> <kbd>Ctrl</kbd> <kbd>S</kbd></span><span>This overlay</span>
+      <span class="sc-head">Saturday&rsquo;s own</span><span class="sc-head"></span>
       <span><kbd>Ctrl</kbd> <kbd>M</kbd></span><span>Model menu</span>
       <span><kbd>Alt</kbd> <kbd>M</kbd></span><span>Cycle favorite models</span>
-      <span><kbd>Alt</kbd> <kbd>1</kbd>&hellip;<kbd>8</kbd></span><span>Jump to a panel tab</span>
       <span><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>C</kbd></span><span>Context panel</span>
-      <span><kbd>Ctrl</kbd> <kbd>/</kbd></span><span>This overlay</span>
       <span><kbd>Enter</kbd></span><span>Send message</span>
       <span><kbd>Shift</kbd> <kbd>Enter</kbd></span><span>Newline in composer</span>
       <span><kbd>/</kbd></span><span>Slash commands</span>
