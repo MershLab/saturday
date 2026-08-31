@@ -3845,6 +3845,58 @@ function copyDiagnostics() {
   navigator.clipboard.writeText(text).then(() => toast("Diagnostics copied", "ok"));
 }
 
+/* ----------------------------------------------------------------- audit */
+
+async function loadAudit() {
+  const btn = $("#auditRun"), sum = $("#auditSummary"), list = $("#auditList");
+  btn.disabled = true;
+  const was = btn.textContent;
+  btn.textContent = "verifying\u2026";
+  sum.replaceChildren();
+  list.replaceChildren(el("div", "field-hint", "reading every transcript\u2026"));
+  let d;
+  try { d = await api("/api/audit"); }
+  catch (e) {
+    list.replaceChildren(el("div", "audit-bad", "could not verify: " + e.message));
+    btn.disabled = false; btn.textContent = was;
+    return;
+  }
+  btn.disabled = false; btn.textContent = was;
+
+  const bad = d.tampered;
+  sum.replaceChildren();
+  const head = el("div", "audit-head" + (bad ? " bad" : " ok"));
+  head.appendChild(el("span", "audit-badge", bad ? "\u2715" : "\u2713"));
+  head.appendChild(el("span", "", bad
+    ? bad + " of " + d.checked + " session" + (d.checked === 1 ? "" : "s") + " no longer match their chain"
+    : "all " + d.checked + " session" + (d.checked === 1 ? "" : "s") + " verified intact"));
+  sum.appendChild(head);
+  if (d.truncated) sum.appendChild(el("div", "field-hint", "showing the newest 400"));
+
+  list.replaceChildren();
+  // a clean run is a single line; only the broken ones are worth enumerating
+  const rows = d.sessions.filter((s) => s.ok === false).concat(d.sessions.filter((s) => s.ok === null));
+  for (const s of rows) {
+    const row = el("div", "audit-row");
+    row.appendChild(el("span", "audit-dot " + (s.ok === false ? "bad" : "unknown")));
+    row.appendChild(el("span", "audit-txt", s.task || s.id));
+    row.appendChild(el("span", "audit-meta mono", s.ok === false
+      ? "record " + s.broken_at + " of " + s.records
+      : "not verifiable"));
+    const dl = el("button", "mini-btn", "bundle");
+    dl.title = "Download the audit bundle for this session";
+    dl.addEventListener("click", () => auditBundle(s.id));
+    row.appendChild(dl);
+    list.appendChild(row);
+  }
+}
+
+function auditBundle(sid) {
+  // same-origin navigation so the token cookie rides along and the server's
+  // Content-Disposition drives the save
+  window.location.href = "/api/audit?export=1&sid=" + encodeURIComponent(sid);
+}
+
 /* ------------------------------------------------------------------- MCP */
 
 async function loadMcp(probe) {
@@ -5443,6 +5495,7 @@ function bindEvents() {
     }
   });
   $("#mcpTest").addEventListener("click", () => loadMcp(true));
+  $("#auditRun").addEventListener("click", () => loadAudit());
   $("#openFolderBtn").addEventListener("click", () => folderOpen());
   $("#folderClose").addEventListener("click", () => folderClose());
   $("#folderOpen").addEventListener("click", () => folderUse());

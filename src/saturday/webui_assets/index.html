@@ -564,6 +564,16 @@
             <div class="path-row"><span class="field-static" id="dataPathWorkspace"></span><button id="btnRevealWorkspace" class="mini-btn">open</button></div>
           </div>
           <div class="field">
+            <div class="path-row">
+              <span class="field-label">Session integrity</span>
+              <button id="auditRun" class="mini-btn">verify chains</button>
+            </div>
+            <div id="auditSummary" class="audit-summary"></div>
+            <div id="auditList" class="audit-list"></div>
+            <span class="field-hint">Every session is a hash chain: each record commits to the one before it,
+            so an edited or deleted record cannot go unnoticed. Verifying rereads each transcript.</span>
+          </div>
+          <div class="field">
             <span class="field-label">Provenance marking</span>
             <select id="cfgProvenance">
               <option value="metadata">metadata - stamp exports &amp; audit bundles</option>
