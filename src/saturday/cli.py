@@ -1005,6 +1005,46 @@ def cmd_memory(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_codemem(args: argparse.Namespace) -> int:
+    """Structural code retrieval: report status, or fetch the pinned binary."""
+    from saturday import codemem
+
+    action = getattr(args, "action", "status")
+    st = codemem.status()
+    if action == "status":
+        _print(f"retrieval : {st['retrieval']}")
+        _print(f"version   : {st['version']}")
+        _print(f"platform  : {st['platform']}"
+               + ("" if st["supported"] else "  (no pinned build)"))
+        if st["available"]:
+            _print(f"binary    : {st['binary']}")
+        else:
+            _print("binary    : not installed"
+                   + ("  - run 'saturday codemem install'" if st["supported"] else ""))
+        return 0
+    if action == "install":
+        if not st["supported"]:
+            _print(f"no pinned build for {st['platform']}; "
+                   "Saturday keeps using the lexical repo_search index")
+            return 1
+        if st["available"] and not getattr(args, "force", False):
+            _print(f"already installed: {st['binary']}  (use --force to reinstall)")
+            return 0
+        _print(f"asset     : {st['asset']}")
+        try:
+            path = codemem.install(progress=lambda m: _print(f"           {m}"))
+        except codemem.VerificationError as exc:
+            _print(f"refused   : {exc}")
+            return 1
+        except Exception as exc:
+            _print(f"failed    : {type(exc).__name__}: {exc}")
+            return 1
+        _print(f"installed : {path}")
+        return 0
+    _print("usage: saturday codemem [status|install]")
+    return 2
+
+
 def cmd_audit(args: argparse.Namespace) -> int:
     """Tamper-evidence for session history: verify hash chains, export bundles."""
     from saturday.sessions import SessionStore
@@ -1443,6 +1483,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_init = sub.add_parser("init", help="scaffold AGENTS.md + .saturday config examples in this directory")
     p_init.add_argument("--force", action="store_true", help="overwrite existing scaffolded files")
     p_init.set_defaults(fn=cmd_init)
+
+    p_cm = sub.add_parser("codemem", help="structural code retrieval (vendored, checksum pinned)")
+    p_cm.add_argument("action", nargs="?", default="status", choices=["status", "install"])
+    p_cm.add_argument("--force", action="store_true", help="reinstall even if present")
+    p_cm.set_defaults(fn=cmd_codemem)
 
     p_mem = sub.add_parser("memory", help="search, inspect and consolidate memory")
     p_mem.add_argument("action", nargs="?", default="search",

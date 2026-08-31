@@ -123,6 +123,23 @@ def run_checks(cfg, offline: bool = False) -> list[dict[str, Any]]:
     else:
         out.append(_check("runs", "runs", OK, "none tracked as running"))
 
+    try:
+        from saturday import codemem
+
+        cm = codemem.status()
+        if cm["available"]:
+            out.append(_check("codemem", "code memory", OK,
+                              f"structural ({cm['version']})"))
+        elif cm["supported"]:
+            out.append(_check("codemem", "code memory", OK,
+                              "lexical repo_search (structural index not installed)",
+                              "saturday codemem install adds structural code retrieval"))
+        else:
+            out.append(_check("codemem", "code memory", OK,
+                              f"lexical repo_search (no build for {cm['platform']})"))
+    except Exception as exc:
+        out.append(_check("codemem", "code memory", WARN, f"unknown - {exc}"))
+
     guardrails = bool(getattr(cfg, "destructive_guardrails", True))
     out.append(_check("guardrails", "guardrails", OK if guardrails else WARN,
                       "on - irreversible data ops ask + db files auto-backed-up" if guardrails
