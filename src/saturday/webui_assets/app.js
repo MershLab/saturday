@@ -1518,6 +1518,10 @@ async function handleEvent(e) {
       }
       break;
     }
+    case "attn": {
+      mgAttnEvent(e);
+      break;
+    }
     case "tool_start": {
       if (!live) liveBegin();
       const c = makeToolCard(e.name, e.args, true);
@@ -6377,6 +6381,7 @@ const mg = {
   hidden: new Set(), query: "", match: null,
   heat: null, raf: 0, canvas: null, ctx: null, dpr: 1,
   labels: true, err: "", idle: 0, named: new Set(), framed: false,
+  attn: [], attnKind: null, maxStep: 0, stepView: null, follow: false,
 };
 
 function mgRGBA(kind, a) {
@@ -6411,6 +6416,8 @@ function mgAdopt(g) {
   mg.fixed = new Uint8Array(n);
   mg.deg = new Float32Array(n);
   mg.heat = new Float32Array(n);
+  mg.attnKind = new Int8Array(n).fill(-1);
+  mg.attn = []; mg.maxStep = 0; mg.stepView = null;
   for (const e of mg.edges) { mg.deg[e.s] += e.w; mg.deg[e.t] += e.w; }
   // seed on a ring: a random cloud takes far longer to untangle than one
   // that already has every node outside every other node
@@ -6674,14 +6681,22 @@ function mgDraw() {
     if (!dimmed && (r > 3 || heat > 0.02)) {
       const glow = r * (heat > 0.02 ? 7 : 4);
       const g = ctx.createRadialGradient(px, py, 0, px, py, glow);
-      const col = heat > 0.02 ? [255, 230, 120] : (G_COLOR[n.kind] || G_COLOR.file);
+      const tier = mg.attnKind[i];
+      const col = heat <= 0.02 ? (G_COLOR[n.kind] || G_COLOR.file)
+        : tier === 1 ? [150, 190, 255]      // considered: scored and rejected
+        : tier === 0 ? [130, 140, 160]      // adjacent: structure only
+        : [255, 230, 120];                  // used: entered the context
       g.addColorStop(0, "rgba(" + col[0] + "," + col[1] + "," + col[2] + "," + (dark ? 0.30 + heat * 0.5 : 0.16) + ")");
       g.addColorStop(1, "rgba(" + col[0] + "," + col[1] + "," + col[2] + ",0)");
       ctx.fillStyle = g;
       ctx.beginPath(); ctx.arc(px, py, glow, 0, 6.2832); ctx.fill();
     }
+    const tierC = mg.attnKind[i];
     ctx.fillStyle = dimmed ? mgRGBA(n.kind, 0.10)
-                 : heat > 0.02 ? "rgba(255,238,170," + (0.7 + heat * 0.3) + ")"
+                 : heat > 0.02
+                   ? (tierC === 1 ? "rgba(170,205,255," + (0.65 + heat * 0.35) + ")"
+                      : tierC === 0 ? "rgba(150,160,180," + (0.5 + heat * 0.3) + ")"
+                      : "rgba(255,238,170," + (0.7 + heat * 0.3) + ")")
                  : mgRGBA(n.kind, dark ? 0.92 : 0.85);
     ctx.beginPath(); ctx.arc(px, py, r, 0, 6.2832); ctx.fill();
   }
@@ -6720,11 +6735,16 @@ function mgTick() {
     if (!mg.on) return;
     let busy = false;
     for (let s = 0; s < 2 && mg.alpha > 0.002; s++) { mgStep(); busy = true; }
+    // attention decays toward its tier floor rather than to nothing: what the
+    // agent used stays visible after the pulse, it just stops shouting
     for (let i = 0; i < mg.heat.length; i++) {
-      if (mg.heat[i] > 0.005) { mg.heat[i] *= 0.985; busy = true; }
-      else if (mg.heat[i]) mg.heat[i] = 0;
+      const floor = mg.attnKind[i] >= 0
+        ? (mg.attnKind[i] === 2 ? 0.55 : mg.attnKind[i] === 1 ? 0.28 : 0.12) : 0;
+      if (mg.heat[i] > floor + 0.005) { mg.heat[i] *= 0.985; busy = true; }
+      else if (mg.heat[i] !== floor) mg.heat[i] = floor;
     }
     mgDraw();
+    if (mg.follow) mgLookAtAttention(); else mgAwayIndicator();
     if (busy || mg.drag >= 0 || mg.panning) mg.idle = 0;
     else {
       // the ring it starts from is nothing like where it ends up, so frame it
@@ -6925,18 +6945,125 @@ function mgSearch(q) {
   mgWake();
 }
 
-/* attention: light up whatever the agent is reading right now */
-function mgAttend(path) {
-  if (!mg.loaded || !path) return;
-  const want = String(path).replace(/\\/g, "/").replace(/^\.\//, "");
-  for (let i = 0; i < mg.nodes.length; i++) {
-    const p = (mg.nodes[i].meta || {}).path;
-    if (p && (p === want || want.endsWith("/" + p) || p.endsWith("/" + want))) {
-      mg.heat[i] = 1;
-      mgWake();
-      return;
+/* --- attention -------------------------------------------------------- *
+ * Three tiers, and the middle one is the reason this exists: "considered"
+ * is what retrieval scored and rejected, which is invisible everywhere else
+ * and is exactly what you want when the answer came out wrong.
+ * Every number here was produced by the real retrieval; nothing is scored
+ * again for the picture.
+ * --------------------------------------------------------------------- */
+
+const ATTN_WEIGHT = { used: 1.0, considered: 0.45, adjacent: 0.18 };
+
+function mgAttnEvent(e) {
+  if (!mg.loaded) return;
+  const idx = mgFindNode(e.region, e.node);
+  if (idx < 0) return;
+  const step = Number(e.step) || 0;
+  mg.attn.push({ i: idx, kind: e.kind, score: Number(e.score) || 0, step,
+                 label: e.label || e.node });
+  mg.maxStep = Math.max(mg.maxStep, step);
+  if (mg.stepView === null) mgApplyAttn(idx, e.kind, Number(e.score) || 0);
+  // one hop out is structural context, not a claim the agent looked there
+  if (e.kind === "used") {
+    for (const edge of mg.edges) {
+      const other = edge.s === idx ? edge.t : edge.t === idx ? edge.s : -1;
+      if (other >= 0 && mg.heat[other] < ATTN_WEIGHT.adjacent) {
+        mg.heat[other] = ATTN_WEIGHT.adjacent;
+      }
     }
   }
+  mgStepBar();
+  mgWake();
+}
+
+function mgApplyAttn(idx, kind, score) {
+  const w = ATTN_WEIGHT[kind] != null ? ATTN_WEIGHT[kind] : ATTN_WEIGHT.used;
+  // the retrieval score modulates within the tier; the tier sets the floor
+  mg.heat[idx] = Math.max(mg.heat[idx], w * (0.6 + 0.4 * Math.min(1, score)));
+  mg.attnKind[idx] = kind === "used" ? 2 : kind === "considered" ? 1 : 0;
+}
+
+function mgFindNode(region, node) {
+  const want = String(node || "").replace(/\\/g, "/").replace(/^\.\//, "");
+  if (!want) return -1;
+  for (let i = 0; i < mg.nodes.length; i++) {
+    const n = mg.nodes[i], m = n.meta || {};
+    if (region === "memory" && n.kind === "fact" && m.slug === want) return i;
+    if (region === "code" && m.path && (m.path === want || want.endsWith("/" + m.path)
+        || m.path.endsWith("/" + want))) return i;
+    if (region === "chat" && n.kind === "session" && m.session === want) return i;
+    if (region === "skill" && n.kind === "skill" && m.name === want) return i;
+  }
+  return -1;
+}
+
+/* legacy path: a tool touching a file is attention too, just untyped */
+function mgAttend(path) {
+  if (!mg.loaded || !path) return;
+  const idx = mgFindNode("code", path);
+  if (idx >= 0) { mgApplyAttn(idx, "used", 1); mgWake(); }
+}
+
+
+function mgHottest() {
+  let best = -1, bestH = 0.25;
+  for (let i = 0; i < mg.heat.length; i++) {
+    if (mg.heat[i] > bestH) { bestH = mg.heat[i]; best = i; }
+  }
+  return best;
+}
+
+function mgLookAtAttention() {
+  const i = mgHottest();
+  if (i < 0 || !mg.canvas) return;
+  const w = mg.canvas.width / mg.dpr, h = mg.canvas.height / mg.dpr;
+  mg.view.x = w / 2 - mg.x[i] * mg.view.k;
+  mg.view.y = h / 2 - mg.y[i] * mg.view.k;
+  mgWake();
+}
+
+function mgAwayIndicator() {
+  const box = $("#mgAway");
+  if (!box) return;
+  const i = mgHottest();
+  if (i < 0) { box.classList.add("hidden"); return; }
+  const w = mg.canvas.width / mg.dpr, h = mg.canvas.height / mg.dpr;
+  const px = mg.x[i] * mg.view.k + mg.view.x;
+  const py = mg.y[i] * mg.view.k + mg.view.y;
+  const off = px < 0 || py < 0 || px > w || py > h;
+  box.classList.toggle("hidden", !off);
+  if (off) {
+    const dir = px > w ? "\u2192" : px < 0 ? "\u2190" : py < 0 ? "\u2191" : "\u2193";
+    box.textContent = "activity in " + (mg.nodes[i].label || "").slice(0, 28) + "  " + dir;
+  }
+}
+
+function mgStepBar() {
+  const bar = $("#mgSteps");
+  if (!bar) return;
+  bar.classList.toggle("hidden", mg.maxStep < 1);
+  if (mg.maxStep < 1) return;
+  const at = mg.stepView === null ? mg.maxStep : mg.stepView;
+  $("#mgStepRange").max = String(mg.maxStep);
+  $("#mgStepRange").value = String(at);
+  $("#mgStepLabel").textContent = mg.stepView === null
+    ? "live \u00b7 step " + mg.maxStep
+    : "step " + at + " of " + mg.maxStep;
+}
+
+function mgScrubTo(step) {
+  // replay from the beginning up to this step, so what is lit is exactly what
+  // had been looked at by then, not everything that ever was
+  mg.stepView = step >= mg.maxStep ? null : step;
+  mg.heat.fill(0);
+  mg.attnKind.fill(-1);
+  const limit = mg.stepView === null ? Infinity : mg.stepView;
+  for (const a of mg.attn) {
+    if (a.step <= limit) mgApplyAttn(a.i, a.kind, a.score);
+  }
+  mgStepBar();
+  mgWake();
 }
 
 function mgOpen() {
@@ -6957,6 +7084,21 @@ function mgOpen() {
     if (l) l.addEventListener("click", () => {
       mg.labels = !mg.labels; l.classList.toggle("on", mg.labels); mgWake();
     });
+    const sr = $("#mgStepRange");
+    if (sr) sr.addEventListener("input", () => mgScrubTo(+sr.value));
+    const lv = $("#mgLive");
+    if (lv) lv.addEventListener("click", () => mgScrubTo(mg.maxStep));
+    const fw = $("#mgFollow");
+    if (fw) fw.addEventListener("click", () => {
+      // stay put by default: auto-follow demos well and fights you the moment
+      // you want to look at something yourself, the way a map that keeps
+      // recentring does
+      mg.follow = !mg.follow;
+      fw.classList.toggle("on", mg.follow);
+      if (mg.follow) mgLookAtAttention();
+    });
+    const aw = $("#mgAway");
+    if (aw) aw.addEventListener("click", () => mgLookAtAttention());
   }
   mgResize();
   if (!mg.loaded) mgLoad(false);

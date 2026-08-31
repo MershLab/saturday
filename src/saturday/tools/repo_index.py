@@ -253,6 +253,15 @@ def make_repo_search_tool(workspace_root_fn):
                 return False, f"{type(exc).__name__}: {exc}"
             if not results:
                 return True, "(no matches)"
+            # the view is told what retrieval already scored; nothing here is
+            # computed twice, and nothing is computed only for the view
+            try:
+                from saturday import attention
+
+                attention.emit_ranked(attention.CODE, results, used=len(results),
+                                      node_key="path", label_key="path")
+            except Exception:
+                pass
             lines = [f"{r['path']}:{r['line']}  (score {r['score']})" for r in results]
             return True, "\n".join(lines)
 

@@ -359,6 +359,15 @@ class MemoryIndex:
                              "archived": bool(row[6]), "matched": False}
         out = [dict(info[key], score=round(spread[key], 4)) for key in info if key in spread]
         out.sort(key=lambda r: -r["score"])
+        try:
+            from saturday import attention
+
+            # everything ranked is published, with the cutoff marked: the notes
+            # that lost are the ones worth seeing when the answer is wrong
+            attention.emit_ranked(attention.MEMORY, out, used=k,
+                                  node_key="slug", label_key="text")
+        except Exception:
+            pass
         return out[:k]
 
     def graph(self, scope: str | None = None) -> dict[str, Any]:

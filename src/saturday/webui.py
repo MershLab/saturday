@@ -688,6 +688,7 @@ class AppState:
                 rt = _SessionRuntime(sid, agent, bus, project_id=pid)
                 rt.app = self
                 _install_web_surface(rt, agent)
+                _install_attention_sink(rt)
                 self.runtimes[sid] = rt
             rt.last_used = time.monotonic()
             return rt
@@ -2466,6 +2467,7 @@ class Handler(BaseHTTPRequestHandler):
                 rt.bus.publish({"t": "notice", "s": f"[{name}] {kind} {label}{suffix}"})
 
         def work() -> None:
+            rt.run_thread = threading.current_thread()  # the run moved off the request thread
             final, stop = "", "pipeline"
             try:
                 out = P.run(pipe, task, agent_runner=runner,
@@ -3164,6 +3166,28 @@ _DELETE_ROUTES = [
     (_RE_SESSION, "_delete_session"),
     (_RE_PROJECT, "_delete_project"),
 ]
+
+
+def _install_attention_sink(rt) -> None:
+    """Forward what retrieval scored onto this session's event stream.
+
+    One process-wide sink would mix sessions together, so the sink filters on
+    the thread that owns the run: only events raised while THIS runtime is
+    working belong to its stream."""
+    import threading as _th
+
+    def sink(event: dict) -> None:
+        if getattr(rt, "run_thread", None) is not _th.current_thread():
+            return
+        try:
+            rt.bus.publish({"t": "attn", **event})
+        except Exception:
+            pass
+
+    from saturday import attention
+
+    rt._attn_sink = sink
+    attention.add_sink(sink)
 
 
 def _pipeline_agent_runner(cfg_overrides: dict):
