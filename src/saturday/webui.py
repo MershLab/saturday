@@ -2190,6 +2190,38 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._send_json({"checks": checks, "failures": failure_count(checks)})
 
+    def _get_update(self) -> None:
+        """Is there a newer Saturday, and how would this install get it.
+
+        Checking hits the GitHub API, so it is button triggered. Applying is
+        deliberately NOT offered here: the update replaces the package this
+        server is running from and then wants to relaunch, which is not
+        something to do underneath a live HTTP request. The UI reports the
+        version and the exact command instead."""
+        from saturday import update as upd
+
+        cur = upd.current_version()
+        try:
+            rel = upd.latest_release()
+        except Exception as exc:
+            self._send_json({"current": cur, "error": f"{type(exc).__name__}: {exc}"})
+            return
+        if rel is None:
+            self._send_json({"current": cur,
+                             "error": "update check failed (network unreachable or GitHub API error)"})
+            return
+        latest = rel.get("tag") or ""
+        channel = upd.detect_channel()
+        self._send_json({
+            "current": cur,
+            "latest": latest,
+            "newer": bool(latest) and upd.is_newer(latest, cur),
+            "channel": channel,
+            "command": "saturday update --apply",
+            "manual": upd.manual_update_hint(channel),
+            "url": rel.get("url") or "",
+        })
+
     def _get_journal(self) -> None:
         from urllib.parse import parse_qs, unquote, urlparse
 
@@ -2823,6 +2855,7 @@ _GET_ROUTES = [
     ("/api/audit", "_get_audit"),
     ("/api/tools", "_get_tools"),
     ("/api/doctor", "_get_doctor"),
+    ("/api/update", "_get_update"),
     ("/api/schedules", "_get_schedules"),
     ("/api/runs", "_get_runs"),
     ("/api/git/status", "_get_git_status"),

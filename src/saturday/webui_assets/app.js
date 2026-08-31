@@ -3870,6 +3870,59 @@ function copyDiagnostics() {
   navigator.clipboard.writeText(text).then(() => toast("Diagnostics copied", "ok"));
 }
 
+/* ---------------------------------------------------------------- update */
+
+async function loadUpdate() {
+  const btn = $("#updCheck"), out = $("#updOut");
+  btn.disabled = true;
+  btn.textContent = "checking\u2026";
+  out.replaceChildren();
+  let d;
+  try { d = await api("/api/update"); }
+  catch (e) { d = { error: e.message }; }
+  btn.disabled = false;
+  btn.textContent = "check for updates";
+
+  if (d.error) {
+    out.replaceChildren(el("div", "upd-line warn", d.error));
+    return;
+  }
+  if (!d.newer) {
+    out.replaceChildren(el("div", "upd-line ok",
+      "Up to date \u2014 " + d.current + " is the latest release."));
+    return;
+  }
+  out.replaceChildren();
+  const head = el("div", "upd-line new", d.current + " \u2192 " + d.latest + " available");
+  out.appendChild(head);
+  // applying replaces the package this server runs from, so the UI hands over
+  // the command rather than pulling the floor out from under itself
+  const row = el("div", "upd-cmd");
+  row.appendChild(el("code", "mono", d.channel === "pip" || d.channel === "pipx"
+    ? d.command : d.manual));
+  const copy = el("button", "mini-btn", "copy");
+  copy.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(row.querySelector("code").textContent);
+      toast("Copied", "ok");
+    } catch { toast("Could not copy", "error"); }
+  });
+  row.appendChild(copy);
+  out.appendChild(row);
+  out.appendChild(el("div", "upd-hint",
+    "Run this in a terminal. Saturday updates itself in place, so it cannot "
+    + "replace the package it is currently serving from."));
+  if (d.url) {
+    const a2 = document.createElement("a");
+    a2.className = "upd-link";
+    a2.href = d.url;
+    a2.target = "_blank";
+    a2.rel = "noopener noreferrer";
+    a2.textContent = "release notes";
+    out.appendChild(a2);
+  }
+}
+
 /* ---------------------------------------------------------------- doctor */
 
 async function loadDoctor() {
@@ -5554,6 +5607,7 @@ function bindEvents() {
   $("#mcpTest").addEventListener("click", () => loadMcp(true));
   $("#auditRun").addEventListener("click", () => loadAudit());
   $("#doctorRun").addEventListener("click", () => loadDoctor());
+  $("#updCheck").addEventListener("click", () => loadUpdate());
   $("#openFolderBtn").addEventListener("click", () => folderOpen());
   $("#folderClose").addEventListener("click", () => folderClose());
   $("#folderOpen").addEventListener("click", () => folderUse());

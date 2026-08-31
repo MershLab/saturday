@@ -3434,3 +3434,63 @@ def test_doctor_endpoint_reports_an_unwritable_workspace(tmp_path):
     assert ws["status"] == "fail" and "NOT WRITABLE" in ws["detail"]
     assert ws["hint"], "a failure must say what to do next"
     assert data["failures"] >= 1
+
+
+def test_update_endpoint_reports_a_newer_release(tmp_path, monkeypatch):
+    """A GUI-only user could not learn a release existed."""
+    import saturday.update as upd
+
+    monkeypatch.setattr(upd, "current_version", lambda: "0.9.0")
+    monkeypatch.setattr(upd, "latest_release", lambda *a, **k: {
+        "tag": "v0.9.1", "url": "https://example.invalid/rel", "assets": []})
+    monkeypatch.setattr(upd, "detect_channel", lambda: "pip")
+    app = AppState(store_root=tmp_path / "s")
+    base, _ = _server(app)
+
+    status, data = _req(base, "/api/update")
+    assert status == 200, data
+    assert data["current"] == "0.9.0" and data["latest"] == "v0.9.1"
+    assert data["newer"] is True and data["channel"] == "pip"
+    assert data["command"] == "saturday update --apply"
+
+
+def test_update_endpoint_says_up_to_date_and_survives_no_network(tmp_path, monkeypatch):
+    import saturday.update as upd
+
+    monkeypatch.setattr(upd, "current_version", lambda: "0.9.0")
+    monkeypatch.setattr(upd, "detect_channel", lambda: "pip")
+    monkeypatch.setattr(upd, "latest_release", lambda *a, **k: {"tag": "v0.9.0", "url": ""})
+    app = AppState(store_root=tmp_path / "s")
+    base, _ = _server(app)
+    status, data = _req(base, "/api/update")
+    assert status == 200 and data["newer"] is False
+
+    # a failed check must report, not 500 - the app still works offline
+    monkeypatch.setattr(upd, "latest_release", lambda *a, **k: None)
+    status, data = _req(base, "/api/update")
+    assert status == 200 and "error" in data and data["current"] == "0.9.0"
+
+    def boom(*a, **k):
+        raise OSError("no route to host")
+
+    monkeypatch.setattr(upd, "latest_release", boom)
+    status, data = _req(base, "/api/update")
+    assert status == 200 and "OSError" in data["error"]
+
+
+def test_update_endpoint_never_applies_anything(tmp_path, monkeypatch):
+    """Applying replaces the package this server runs from; the check must not."""
+    import saturday.update as upd
+
+    called = []
+    monkeypatch.setattr(upd, "current_version", lambda: "0.9.0")
+    monkeypatch.setattr(upd, "detect_channel", lambda: "pip")
+    monkeypatch.setattr(upd, "latest_release", lambda *a, **k: {"tag": "v9.9.9", "url": ""})
+    monkeypatch.setattr(upd, "perform_update", lambda ch: called.append(ch) or (True, ""))
+    monkeypatch.setattr(upd, "relaunch", lambda: called.append("relaunch"))
+    app = AppState(store_root=tmp_path / "s")
+    base, _ = _server(app)
+
+    status, data = _req(base, "/api/update")
+    assert status == 200 and data["newer"] is True
+    assert called == [], "checking for an update must never install one"
