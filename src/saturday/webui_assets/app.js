@@ -231,6 +231,7 @@ const stagePanes = {
   files: $("#stageFiles"),
   runs: $("#stageRuns"),
   memory: $("#stageMemory"),
+  pipelines: $("#stagePipelines"),
 };
 const stage = {
   tab: "home", manual: false, entries: new Map(), imageSrcs: [],
@@ -252,6 +253,7 @@ function stageShow(tab, auto) {
   if (tab === "changes") stagePanes.changes.scrollTop = 0; // newest file sits on top
   // the graph animates, so it only runs while it is the visible pane
   if (tab === "memory") mgOpen(); else mgClose();
+  if (tab === "pipelines") loadPipelines();
 }
 
 function stageBadge(name, n) {
@@ -2735,6 +2737,7 @@ function paletteBuild(raw) {
     ["Show Plan tab", () => stageShow("plan", false)],
     ["Show Files tab", () => { stageShow("files", false); filesEnsure(true); }],
     ["Show Memory graph", () => stageShow("memory", false)],
+    ["Show Pipelines", () => stageShow("pipelines", false)],
     ["Show Runs tab", () => stageShow("runs", false)],
     ["Memory: reindex the workspace", () => { stageShow("memory", false); mgLoad(true); }],
   ];
@@ -3868,6 +3871,67 @@ function copyDiagnostics() {
     "platform: " + navigator.platform + "  ua: " + navigator.userAgent.slice(0, 80),
   ].join("\n");
   navigator.clipboard.writeText(text).then(() => toast("Diagnostics copied", "ok"));
+}
+
+/* ------------------------------------------------------------- pipelines */
+
+async function loadPipelines() {
+  const box = $("#pipeList");
+  box.replaceChildren(el("div", "field-hint", "reading\u2026"));
+  let d;
+  try { d = await api("/api/pipelines"); }
+  catch (e) { box.replaceChildren(el("div", "pipe-bad", "could not read: " + e.message)); return; }
+
+  box.replaceChildren();
+  if (!d.pipelines.length) {
+    box.appendChild(el("div", "field-hint",
+      "No pipelines yet. Drop a .json into " + (d.dir || "~/.saturday/pipelines") + "."));
+    return;
+  }
+  for (const p of d.pipelines) {
+    const row = el("div", "pipe-item");
+    const head = el("div", "pipe-head");
+    head.appendChild(el("span", "pipe-dot " + (p.valid ? "ok" : "bad")));
+    head.appendChild(el("span", "pipe-name", p.name));
+    head.appendChild(el("span", "pipe-meta mono", p.nodes + " nodes, " + (p.edges || 0) + " edges"));
+    row.appendChild(head);
+    // an invalid graph says why, and offers no run button: starting it would
+    // spend real calls on the nodes before the broken wire
+    for (const problem of p.problems || []) row.appendChild(el("div", "pipe-bad", problem));
+    if (p.valid) {
+      const form = el("div", "pipe-run");
+      const input = document.createElement("input");
+      input.type = "text";
+      input.className = "pipe-input";
+      input.placeholder = "what should it work on?";
+      const go = el("button", "mini-btn", "run");
+      const start = async () => {
+        const task = input.value.trim();
+        if (!task) { input.focus(); return; }
+        go.disabled = true;
+        try {
+          const out = await api("/api/pipelines/run", {
+            method: "POST",
+            body: JSON.stringify({ name: p.name, input: task, sid: state.sid || "" }),
+          });
+          toast("Running " + p.name, "ok");
+          if (out.session_id && out.session_id !== state.sid) openSession(out.session_id);
+          stageShow("activity", false);
+        } catch (e) {
+          toast("Could not start: " + e.message, "error");
+        } finally { go.disabled = false; }
+      };
+      go.addEventListener("click", start);
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") { e.preventDefault(); start(); }
+        e.stopPropagation();
+      });
+      form.appendChild(input);
+      form.appendChild(go);
+      row.appendChild(form);
+    }
+    box.appendChild(row);
+  }
 }
 
 /* ---------------------------------------------------------------- update */
@@ -5608,6 +5672,7 @@ function bindEvents() {
   $("#auditRun").addEventListener("click", () => loadAudit());
   $("#doctorRun").addEventListener("click", () => loadDoctor());
   $("#updCheck").addEventListener("click", () => loadUpdate());
+  $("#pipeReload").addEventListener("click", () => loadPipelines());
   $("#openFolderBtn").addEventListener("click", () => folderOpen());
   $("#folderClose").addEventListener("click", () => folderClose());
   $("#folderOpen").addEventListener("click", () => folderUse());

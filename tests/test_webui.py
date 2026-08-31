@@ -3636,3 +3636,56 @@ def test_pipelines_endpoint_lists_saves_and_refuses_bad_graphs(tmp_path, monkeyp
     assert status == 400 and "error" in data
     status, data = _req(base, "/api/pipelines?name=nope")
     assert status == 404, "a refused pipeline must not have been written"
+
+
+def test_pipeline_run_streams_progress_and_never_blocks(tmp_path, monkeypatch):
+    """A run spends real model calls, so the request returns immediately and
+    progress rides the same bus a chat run uses."""
+    import time as _t
+
+    monkeypatch.setattr("saturday.config.get_config_dir", lambda: tmp_path)
+    from saturday import pipeline as P
+
+    pipe = {"version": 1, "name": "demo", "nodes": [
+        {"id": "n1", "type": "input", "widgets": {}},
+        {"id": "a1", "type": "agent", "widgets": {"name": "W"}},
+        {"id": "o1", "type": "output", "widgets": {}}],
+        "edges": [{"from": "n1", "out": "task", "to": "a1", "in": "task"},
+                  {"from": "a1", "out": "result", "to": "o1", "in": "result"}]}
+    P.save("demo", pipe)
+
+    calls = []
+
+    def fake_runner(overrides):
+        def run(prompt, widgets):
+            calls.append(prompt)
+            return "pipeline answered"
+        return run
+
+    monkeypatch.setattr("saturday.webui._pipeline_agent_runner", fake_runner)
+
+    app = AppState(store_root=tmp_path / "s")
+    base, _ = _server(app)
+
+    status, data = _req(base, "/api/pipelines/run", "POST",
+                        {"name": "demo", "input": "do the thing"})
+    assert status == 200, data
+    sid = data["session_id"]
+
+    events = []
+    for _ in range(80):
+        _t.sleep(0.05)
+        rt = app.runtimes.get(sid)
+        if rt is None:
+            continue
+        if not rt.busy:
+            break
+    assert calls, "the agent node must have run"
+    assert "do the thing" in calls[0]
+
+    # unknown pipeline and invalid input are refused, not started
+    status, data = _req(base, "/api/pipelines/run", "POST",
+                        {"name": "ghost", "input": "x"})
+    assert status == 404
+    status, data = _req(base, "/api/pipelines/run", "POST", {"name": "demo"})
+    assert status == 400
