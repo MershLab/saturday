@@ -1074,17 +1074,9 @@ def cmd_pipeline(args: argparse.Namespace) -> int:
 
 
 def _pipeline_agent_runner(args):
-    """Run one agent node through Saturday itself."""
-    def runner(prompt: str, widgets: dict) -> str:
-        from saturday.agent.core import Agent
+    from saturday import pipeline as P
 
-        overrides = _overrides(args)
-        if widgets.get("model"):
-            overrides["model"] = widgets["model"]
-        cfg = AgentConfig.load(overrides)
-        traj = Agent(cfg=cfg, enable_subagents=False).run(prompt)
-        return traj.final_answer or f"[no answer; stopped: {traj.stop_reason}]"
-    return runner
+    return P.make_runner(_overrides(args))
 
 
 def _pipeline_memory_lookup():

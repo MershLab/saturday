@@ -3191,21 +3191,11 @@ def _install_attention_sink(rt) -> None:
 
 
 def _pipeline_agent_runner(cfg_overrides: dict):
-    """Build the callable one agent node runs through.
+    """Seam kept so a test can swap how a node executes; the behaviour itself
+    is shared with the CLI so the two cannot drift."""
+    from saturday import pipeline as P
 
-    Module level so it is a seam: a caller (or a test) can substitute the way a
-    node executes without reaching into the request handler, and without
-    replacing the Agent class that session runtimes also construct."""
-    def runner(prompt: str, widgets: dict) -> str:
-        from saturday.agent.core import Agent
-        from saturday.config import AgentConfig
-
-        overrides = dict(cfg_overrides)
-        if widgets.get("model"):
-            overrides["model"] = widgets["model"]
-        traj = Agent(cfg=AgentConfig.load(overrides), enable_subagents=False).run(prompt)
-        return traj.final_answer or f"[no answer; stopped: {traj.stop_reason}]"
-    return runner
+    return P.make_runner(cfg_overrides)
 
 
 def _pipeline_memory_lookup():
