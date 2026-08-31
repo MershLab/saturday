@@ -189,3 +189,54 @@ def test_memory_graph_still_lists_facts_if_the_index_fails(tmp_path, monkeypatch
     g = build_graph(None)
     assert [n["label"] for n in g["nodes"] if n["kind"] == "fact"] == \
         ["a note that must still show up"]
+
+
+def test_staleness_is_verified_against_the_workspace_not_guessed_from_age(tmp_path):
+    """The distinguishing claim: a note is stale because the thing it
+    describes is gone, not because nobody touched it recently."""
+    ws = tmp_path / "ws"
+    (ws / "src").mkdir(parents=True)
+    (ws / "src" / "parser.py").write_text("def parse():\n    return 1\n", encoding="utf-8")
+
+    idx = MemoryIndex(db_path=tmp_path / "m.db")
+    idx.reindex(
+        "- The parser lives in src/parser.py and is slow\n"
+        "- The old loader was in src/loader.py\n"
+        "- Customer support rotates weekly on Mondays\n")
+
+    stale = idx.stale(ws)
+    assert [s["code_entity"] for s in stale] == ["src/loader.py"]
+
+    # freshly written, so age-based heuristics would flag nothing at all
+    out = idx.consolidate(dry_run=True, workspace=ws)
+    assert out["archived"] == [] and len(out["stale"]) == 1
+    idx.close()
+
+
+def test_symbols_are_checked_against_what_the_repo_defines(tmp_path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "a.py").write_text("def build_index():\n    return {}\n", encoding="utf-8")
+    idx = MemoryIndex(db_path=tmp_path / "m.db")
+    idx.reindex("- call build_index() before searching\n- renderNode() draws each node\n")
+    assert [s["code_entity"] for s in idx.stale(ws)] == ["renderNode"]
+    idx.close()
+
+
+def test_code_entity_detection_prefers_a_path_and_ignores_prose():
+    from saturday.memindex import code_entity_of
+
+    assert code_entity_of("see src/app/parser.py for the loop") == "src/app/parser.py"
+    assert code_entity_of("renderNode() draws each node") == "renderNode"
+    assert code_entity_of("call build_index() in src/x.py") == "src/x.py"
+    assert code_entity_of("Customer support rotates weekly on Mondays") == ""
+    assert code_entity_of("") == ""
+
+
+def test_stale_is_empty_without_a_workspace(tmp_path):
+    idx = MemoryIndex(db_path=tmp_path / "m.db")
+    idx.reindex("- The old loader was in src/loader.py\n")
+    assert idx.stale(None) == []
+    assert idx.stale(tmp_path / "does-not-exist") == []
+    assert idx.consolidate(dry_run=True)["stale"] == []
+    idx.close()

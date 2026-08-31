@@ -3538,3 +3538,29 @@ def test_memory_endpoint_picks_up_an_edited_file(tmp_path, monkeypatch):
         "- the original note about caching\n- a second note about queues\n", encoding="utf-8")
     _, second = _req(base, "/api/memory?graph=1")
     assert len(second["nodes"]) == 2
+
+
+def test_memory_consolidate_is_a_post_and_reports_before_it_changes(tmp_path, monkeypatch):
+    """Archiving mutates what the agent can recall; a page load must not do it."""
+    cfg = tmp_path / "cfg"
+    cfg.mkdir()
+    monkeypatch.setattr("saturday.config.CONFIG_DIR", cfg)
+    monkeypatch.setattr("saturday.config.get_config_dir", lambda: cfg)
+    ws = tmp_path / "ws"
+    (ws / "src").mkdir(parents=True)
+    (ws / "src" / "parser.py").write_text("def parse():\n    pass\n", encoding="utf-8")
+    (cfg / "MEMORY.md").write_text(
+        "- The parser lives in src/parser.py\n- The old loader was in src/loader.py\n",
+        encoding="utf-8")
+
+    app = AppState(store_root=tmp_path / "s", cfg_overrides={"workspace_root": str(ws)})
+    base, _ = _server(app)
+
+    status, data = _req(base, "/api/memory/consolidate", "POST", {})
+    assert status == 200, data
+    assert data["dry_run"] is True
+    assert [s["code_entity"] for s in data["stale"]] == ["src/loader.py"]
+
+    # and it must not be reachable as a GET
+    status, _ = _req(base, "/api/memory/consolidate")
+    assert status in (404, 405)

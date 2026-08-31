@@ -982,12 +982,15 @@ def cmd_memory(args: argparse.Namespace) -> int:
             _print(f"  {by_id.get(e['from'], '?')} --{e['relation']}--> {by_id.get(e['to'], '?')}")
         return 0
     if action == "consolidate":
-        out = idx.consolidate(dry_run=bool(getattr(args, "dry_run", False)))
+        out = idx.consolidate(dry_run=bool(getattr(args, "dry_run", False)), workspace=ws)
         _print(f"scanned {out['scanned']} notes; "
                f"{len(out['archived'])} {'would be ' if out['dry_run'] else ''}archived"
-               f"; {out['contradictions']} contradiction edge(s)")
+               f"; {out['contradictions']} contradiction edge(s)"
+               f"; {len(out['stale'])} stale")
         for slug in out["archived"]:
             _print(f"  archived: {slug}")
+        for st in out["stale"]:
+            _print(f"  stale: {st['code_entity']} is gone - {st['text'][:70]}")
         return 0
 
     query = " ".join(getattr(args, "query", []) or [])

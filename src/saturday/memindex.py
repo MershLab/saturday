@@ -58,6 +58,25 @@ ARCHIVE_SALIENCE_FLOOR = 0.08
 ARCHIVE_AGE_DAYS = 90.0
 
 
+# a note about code usually names it: a path, or a dotted/qualified symbol
+_PATH_RE = re.compile(r"\b[\w./-]+\.(?:py|js|ts|tsx|jsx|go|rs|java|rb|c|h|cpp|hpp|cs|sh|sql|ya?ml|toml|md)\b")
+# camelCase starting lowercase is the common case and an earlier pattern,
+# alternating "starts upper" with "all lower", could not match it at all
+_SYMBOL_RE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]{2,})\s*\(\)")
+
+
+def code_entity_of(text: str) -> str:
+    """The code thing a note is about, or "" if it is not about code.
+
+    A path wins over a symbol: it is checkable exactly, where a symbol needs a
+    search that can be wrong in both directions."""
+    m = _PATH_RE.search(text or "")
+    if m:
+        return m.group(0).lstrip("./")
+    m = _SYMBOL_RE.search(text or "")
+    return m.group(1) if m else ""
+
+
 def slugify(text: str, limit: int = 48) -> str:
     s = _SLUG_RE.sub("-", (text or "").strip().lower()).strip("-")
     return (s[:limit].rstrip("-") or "note")
@@ -197,14 +216,16 @@ class MemoryIndex:
             if known:
                 node_id, salience, created = known
                 conn.execute(
-                    "UPDATE memory_nodes SET text=?, last_touched=?, touch_count=touch_count+1 "
-                    "WHERE id=?", (note["text"], now, node_id))
+                    "UPDATE memory_nodes SET text=?, last_touched=?, touch_count=touch_count+1,"
+                    " code_entity=? WHERE id=?",
+                    (note["text"], now, code_entity_of(note["text"]), node_id))
             else:
                 salience = sal.add(note["text"])
                 cur = conn.execute(
                     "INSERT INTO memory_nodes(slug, text, scope, created_at, last_touched,"
-                    " touch_count, salience) VALUES(?,?,?,?,?,1,?)",
-                    (note["slug"], note["text"], scope, now, now, salience))
+                    " touch_count, salience, code_entity) VALUES(?,?,?,?,?,1,?,?)",
+                    (note["slug"], note["text"], scope, now, now, salience,
+                     code_entity_of(note["text"])))
                 node_id = int(cur.lastrowid)
                 added += 1
             note["id"] = node_id
@@ -365,8 +386,56 @@ class MemoryIndex:
 
     # -------------------------------------------------------------- manage
 
-    def consolidate(self, dry_run: bool = False) -> dict[str, Any]:
-        """Archive notes that add nothing and have not been touched in months.
+    def stale(self, workspace: str | Path | None) -> list[dict[str, Any]]:
+        """Notes about code that is no longer there.
+
+        This is a verified fact, not the usual heuristic of "nothing touched
+        this in N weeks". A note can be months old and perfectly true; what
+        makes it stale is that the thing it describes is gone."""
+        conn = self._connect()
+        rows = conn.execute(
+            "SELECT id, slug, text, code_entity FROM memory_nodes "
+            "WHERE archived=0 AND code_entity IS NOT NULL AND code_entity<>''"
+        ).fetchall()
+        if not rows or not workspace:
+            return []
+        root = Path(workspace)
+        if not root.is_dir():
+            return []
+        known: set[str] | None = None
+        out: list[dict[str, Any]] = []
+        for node_id, slug, text, entity in rows:
+            if "/" in entity or "." in entity.rsplit("/", 1)[-1]:
+                exists = (root / entity).exists()
+                if not exists:
+                    exists = any(root.rglob(entity.rsplit("/", 1)[-1]))
+            else:
+                if known is None:
+                    known = self._workspace_symbols(root)
+                exists = entity.lower() in known
+            if not exists:
+                out.append({"id": node_id, "slug": slug, "text": text, "code_entity": entity})
+        return out
+
+    @staticmethod
+    def _workspace_symbols(root: Path) -> set[str]:
+        """Symbols the repo index already knows it defines."""
+        try:
+            from saturday.tools.repo_index import build_index
+
+            index = build_index(root)
+        except Exception:
+            return set()
+        names: set[str] = set()
+        for meta in (index.get("files") or {}).values():
+            for sym in (meta.get("symbols") or []):
+                names.add(str(sym).lower())
+        return names
+
+    def consolidate(self, dry_run: bool = False,
+                    workspace: str | Path | None = None) -> dict[str, Any]:
+        """Archive notes that add nothing and have not been touched in months,
+        and report the ones describing code that no longer exists.
 
         Never deletes: MEMORY.md is the truth, and a note dropped from the
         index would come straight back on the next reparse anyway."""
@@ -380,9 +449,10 @@ class MemoryIndex:
                   if float(r[2] or 0.0) < ARCHIVE_SALIENCE_FLOOR and float(r[3] or 0.0) < cutoff]
         contradictions = conn.execute(
             "SELECT COUNT(*) FROM memory_edges WHERE relation='contradicts'").fetchone()[0]
+        stale = self.stale(workspace) if workspace else []
         if not dry_run and doomed:
             conn.executemany("UPDATE memory_nodes SET archived=1 WHERE id=?",
                              [(r[0],) for r in doomed])
             conn.commit()
         return {"scanned": len(rows), "archived": [r[1] for r in doomed],
-                "contradictions": contradictions, "dry_run": dry_run}
+                "contradictions": contradictions, "stale": stale, "dry_run": dry_run}
