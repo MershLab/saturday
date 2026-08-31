@@ -3652,6 +3652,31 @@ function populateToolToggles(info) {
     lbl.appendChild(el("span", "", name));
     wrap.appendChild(lbl);
   }
+  loadToolDescriptions();
+}
+
+// The checklist has always shown names. What each tool DOES lived only in
+// `saturday tools`, so pull the descriptions in and hang them off every
+// toggle - as a tooltip for the mapped families, and as visible text for the
+// dynamic ones, whose names alone (lsp_*, mcp aliases) mean the least.
+async function loadToolDescriptions() {
+  let d;
+  try { d = await api("/api/tools"); } catch { return; }
+  const by = new Map(d.tools.map((t) => [t.name, t.description]));
+  for (const [id, names] of Object.entries(TOOL_TOGGLE_MAP)) {
+    const lbl = $("#" + id);
+    if (!lbl) continue;
+    const desc = names.map((n) => by.get(n)).filter(Boolean);
+    if (desc.length && lbl.parentElement) lbl.parentElement.title = desc[0];
+  }
+  document.querySelectorAll("#cfgToolOther input[data-tool]").forEach((cb) => {
+    const desc = by.get(cb.dataset.tool);
+    if (!desc) return;
+    cb.parentElement.title = desc;
+    if (!cb.parentElement.querySelector(".tool-desc")) {
+      cb.parentElement.appendChild(el("span", "tool-desc", desc.split(/(?<=\.)\s/)[0].slice(0, 90)));
+    }
+  });
 }
 
 function renderApprovalRules(rules) {

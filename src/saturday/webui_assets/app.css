@@ -2474,3 +2474,10 @@ body.mode-assistant #composerModes { display: none; }
 .audit-txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .audit-meta { margin-left: auto; font-size: 10.5px; color: var(--dim); flex: 0 0 auto; }
 .audit-bad { color: var(--err); font-size: 12px; }
+
+.tool-desc {
+  display: block; width: 100%; margin-top: 2px;
+  font-size: 10.5px; color: var(--dim); line-height: 1.4;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+#cfgToolOther .toggle { align-items: flex-start; flex-wrap: wrap; }
