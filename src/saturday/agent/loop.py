@@ -229,6 +229,14 @@ class AgentLoop:
         stall_count = 0
         run_started_at = time.monotonic()
         for step_index in range(self.max_steps):
+            # every attention event this step produces is tagged with it, so a
+            # watcher can scrub back through where the agent went
+            try:
+                from saturday import attention
+
+                attention.set_step(step_index)
+            except Exception:
+                pass
             if self.hooks.on_step_start:
                 self.hooks.on_step_start(step_index)
 

@@ -44,6 +44,13 @@ class MemorySearchTool(Tool):
             from saturday.recall import format_recall
 
             results = self._index_for().search(query, k=k)
+            try:
+                from saturday import attention
+
+                attention.emit_ranked(attention.CHAT, results, used=len(results),
+                                      node_key="session", label_key="text")
+            except Exception:
+                pass
             return True, format_recall(results)
         except Exception as exc:  # recall must never break the agent loop
             return False, f"memory_search unavailable: {type(exc).__name__}: {exc}"

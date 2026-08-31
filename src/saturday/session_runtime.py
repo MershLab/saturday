@@ -384,6 +384,9 @@ class SessionRuntime:
             self._stop_requested = False
             self.run_started_at = time.time()
             self.run_generation += 1
+            # whoever begins the run owns it; watchers use this to tell one
+            # session's events from another's when several run at once
+            self.run_thread = threading.current_thread()
             return True
 
     def finish_run(self) -> None:

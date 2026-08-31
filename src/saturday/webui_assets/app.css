@@ -2619,3 +2619,21 @@ body.mode-assistant #composerModes { display: none; }
 }
 .pipe-hint.on { opacity: 1; }
 .pipe-hint.bad { color: var(--err); border-color: color-mix(in srgb, var(--err) 45%, transparent); }
+
+/* ---------------- attention overlay ---------------- */
+
+.mg-steps {
+  position: absolute; left: 12px; right: 12px; bottom: 34px; z-index: 4;
+  display: flex; align-items: center; gap: 9px;
+  background: rgba(8, 8, 11, .78); border: 1px solid var(--line);
+  border-radius: 8px; padding: 5px 10px;
+}
+.mg-steps.hidden { display: none; }
+.mg-steps input[type="range"] { flex-grow: 1; accent-color: var(--accent); }
+.mg-steps .mono { font-size: 10.5px; color: var(--dim); flex: 0 0 auto; }
+.mg-away {
+  position: absolute; right: 12px; top: 12px; z-index: 5; cursor: pointer;
+  background: var(--bg2); border: 1px solid var(--accent-line); border-radius: 999px;
+  padding: 4px 11px; font-size: 11px; color: var(--accent);
+}
+.mg-away.hidden { display: none; }
