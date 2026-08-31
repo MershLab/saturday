@@ -3605,3 +3605,34 @@ def test_skills_endpoint_reports_a_refusal_as_a_client_error(tmp_path, monkeypat
     base, _ = _server(app)
     status, data = _req(base, "/api/skills", "POST", {"action": "install", "url": "ftp://evil/x"})
     assert status == 400 and "refusing" in data["error"]
+
+
+def test_pipelines_endpoint_lists_saves_and_refuses_bad_graphs(tmp_path, monkeypatch):
+    monkeypatch.setattr("saturday.config.get_config_dir", lambda: tmp_path)
+    app = AppState(store_root=tmp_path / "s")
+    base, _ = _server(app)
+
+    status, data = _req(base, "/api/pipelines")
+    assert status == 200 and data["pipelines"] == []
+
+    good = {"version": 1, "name": "demo", "nodes": [
+        {"id": "n1", "type": "input", "widgets": {}},
+        {"id": "a1", "type": "agent", "widgets": {"name": "W"}},
+        {"id": "o1", "type": "output", "widgets": {}}],
+        "edges": [{"from": "n1", "out": "task", "to": "a1", "in": "task"},
+                  {"from": "a1", "out": "result", "to": "o1", "in": "result"}]}
+    status, data = _req(base, "/api/pipelines", "POST",
+                        {"action": "save", "name": "demo", "pipeline": good})
+    assert status == 200, data
+    assert [p["name"] for p in data["pipelines"]] == ["demo"]
+
+    status, data = _req(base, "/api/pipelines?name=demo")
+    assert status == 200 and data["problems"] == []
+
+    bad = json.loads(json.dumps(good))
+    bad["edges"][1]["in"] = "task"
+    status, data = _req(base, "/api/pipelines", "POST",
+                        {"action": "save", "name": "nope", "pipeline": bad})
+    assert status == 400 and "error" in data
+    status, data = _req(base, "/api/pipelines?name=nope")
+    assert status == 404, "a refused pipeline must not have been written"

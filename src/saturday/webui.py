@@ -2357,6 +2357,53 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._send_json({"error": "unknown action"}, 400)
 
+    def _get_pipelines(self) -> None:
+        """List pipelines, or return one by ?name=."""
+        from urllib.parse import parse_qs, unquote, urlparse
+
+        from saturday import pipeline as P
+
+        qs = parse_qs(urlparse(self.path).query)
+        name = unquote((qs.get("name") or [""])[0])
+        try:
+            if name:
+                data = P.load(name)
+                self._send_json({"pipeline": data, "problems": P.validate(data)})
+                return
+            self._send_json({"pipelines": P.list_pipelines(),
+                             "dir": str(P.pipelines_dir())})
+        except P.PipelineError as exc:
+            self._send_json({"error": str(exc)}, 404)
+        except Exception as exc:
+            self._send_json({"error": f"{type(exc).__name__}: {exc}"}, 500)
+
+    def _post_pipelines(self, payload: dict) -> None:
+        """Save or validate. Saving refuses a graph that cannot run, which is
+        the point of typing the sockets in the first place."""
+        from saturday import pipeline as P
+
+        action = str(payload.get("action") or "save")
+        name = str(payload.get("name") or "")
+        try:
+            if action == "validate":
+                self._send_json({"problems": P.validate(payload.get("pipeline") or {})})
+                return
+            if action == "save":
+                path = P.save(name, payload.get("pipeline") or {})
+                self._send_json({"ok": True, "path": str(path),
+                                 "pipelines": P.list_pipelines()})
+                return
+            if action == "clear-cache":
+                self._send_json({"ok": True, "cleared": P.clear_cache(name or None)})
+                return
+        except P.PipelineError as exc:
+            self._send_json({"error": str(exc)}, 400)
+            return
+        except Exception as exc:
+            self._send_json({"error": f"{type(exc).__name__}: {exc}"}, 500)
+            return
+        self._send_json({"error": "unknown action"}, 400)
+
     def _get_journal(self) -> None:
         from urllib.parse import parse_qs, unquote, urlparse
 
@@ -2994,6 +3041,7 @@ _GET_ROUTES = [
     ("/api/memory", "_get_memory"),
     ("/api/codemem", "_get_codemem"),
     ("/api/skills", "_get_skills"),
+    ("/api/pipelines", "_get_pipelines"),
     ("/api/schedules", "_get_schedules"),
     ("/api/runs", "_get_runs"),
     ("/api/git/status", "_get_git_status"),
@@ -3021,6 +3069,7 @@ _POST_ROUTES = {
     "/api/journal/restore": "_post_journal_restore",
     "/api/memory/consolidate": "_post_memory_consolidate",
     "/api/skills": "_post_skills",
+    "/api/pipelines": "_post_pipelines",
     "/api/schedules": "_post_schedules",
     "/api/archive": "_post_archive",
     "/api/commands": "_post_commands",

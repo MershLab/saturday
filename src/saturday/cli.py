@@ -1008,6 +1008,105 @@ def cmd_memory(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_pipeline(args: argparse.Namespace) -> int:
+    """List, inspect, validate and run pipelines."""
+    import json as _json
+
+    from saturday import pipeline as P
+
+    action = getattr(args, "action", "list")
+    name = (getattr(args, "name", None) or [None])[0] if isinstance(
+        getattr(args, "name", None), list) else getattr(args, "name", None)
+    try:
+        if action == "list":
+            rows = P.list_pipelines()
+            if not rows:
+                _print(f"no pipelines yet; add one under {P.pipelines_dir()}")
+                return 0
+            for r in rows:
+                mark = "ok " if r["valid"] else "BAD"
+                _print(f"{mark} {r['name']:24} {r['nodes']} nodes, {r.get('edges', 0)} edges")
+                for pr in r["problems"]:
+                    _print(f"      {pr}")
+            return 0
+
+        if not name:
+            _print(f"usage: saturday pipeline {action} <name>")
+            return 2
+
+        if action == "show":
+            _print(_json.dumps(P.load(name), indent=2))
+            return 0
+
+        if action == "validate":
+            problems = P.validate(P.load(name))
+            if not problems:
+                _print(f"{name}: ok")
+                return 0
+            for pr in problems:
+                _print(f"{name}: {pr}")
+            return 1
+
+        if action == "run":
+            task = " ".join(getattr(args, "input", []) or [])
+            if not task:
+                _print("usage: saturday pipeline run <name> --input '<task>'")
+                return 2
+            pipe = P.load(name)
+            out = P.run(pipe, task, agent_runner=_pipeline_agent_runner(args),
+                        memory_lookup=_pipeline_memory_lookup(),
+                        on_event=lambda e: _print(f"  [{e['type']}] "
+                                                  + (e.get('node') or '')
+                                                  + (" (cached)" if e.get('cached') else "")),
+                        use_cache=not getattr(args, "no_cache", False))
+            _print("")
+            _print(out["output"] or "(no output node produced anything)")
+            return 0
+
+        if action == "clear-cache":
+            _print(f"cleared {P.clear_cache(name)} cached node result(s)")
+            return 0
+    except P.PipelineError as exc:
+        _print(str(exc))
+        return 1
+    _print("usage: saturday pipeline [list|show|validate|run|clear-cache]")
+    return 2
+
+
+def _pipeline_agent_runner(args):
+    """Run one agent node through Saturday itself."""
+    def runner(prompt: str, widgets: dict) -> str:
+        from saturday.agent.core import Agent
+
+        overrides = _overrides(args)
+        if widgets.get("model"):
+            overrides["model"] = widgets["model"]
+        cfg = AgentConfig.load(overrides)
+        traj = Agent(cfg=cfg, enable_subagents=False).run(prompt)
+        return traj.final_answer or f"[no answer; stopped: {traj.stop_reason}]"
+    return runner
+
+
+def _pipeline_memory_lookup():
+    def lookup(query: str) -> str:
+        try:
+            from saturday.memindex import MemoryIndex
+            from saturday.tools.memory import memory_path
+
+            idx = MemoryIndex()
+            try:
+                path = memory_path()
+                idx.reindex(path.read_text(encoding="utf-8", errors="replace")
+                            if path.is_file() else "", scope="global")
+                hits = idx.search(query, k=5)
+            finally:
+                idx.close()
+            return "\n".join(f"- {h['text']}" for h in hits)
+        except Exception:
+            return ""
+    return lookup
+
+
 def cmd_skill(args: argparse.Namespace) -> int:
     """Install, search, list, update and remove skills."""
     from saturday import skillhub
@@ -1566,6 +1665,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_init = sub.add_parser("init", help="scaffold AGENTS.md + .saturday config examples in this directory")
     p_init.add_argument("--force", action="store_true", help="overwrite existing scaffolded files")
     p_init.set_defaults(fn=cmd_init)
+
+    p_pipe = sub.add_parser("pipeline", help="typed multi agent pipelines")
+    p_pipe.add_argument("action", nargs="?", default="list",
+                        choices=["list", "show", "validate", "run", "clear-cache"])
+    p_pipe.add_argument("name", nargs="?", help="pipeline name")
+    p_pipe.add_argument("--input", nargs="+", help="task text for run")
+    p_pipe.add_argument("--no-cache", action="store_true", help="re-run every node")
+    p_pipe.set_defaults(fn=cmd_pipeline)
 
     p_skill = sub.add_parser("skill", help="install, search and manage skills")
     p_skill.add_argument("action", nargs="?", default="list",
