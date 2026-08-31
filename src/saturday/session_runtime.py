@@ -384,9 +384,15 @@ class SessionRuntime:
             self._stop_requested = False
             self.run_started_at = time.time()
             self.run_generation += 1
-            # whoever begins the run owns it; watchers use this to tell one
-            # session's events from another's when several run at once
             self.run_thread = threading.current_thread()
+            # name the run so retrieval events raised anywhere beneath it,
+            # including on the tool pool, can be attributed back to it
+            try:
+                from saturday import attention
+
+                attention.set_run(self.sid)
+            except Exception:
+                pass
             return True
 
     def finish_run(self) -> None:

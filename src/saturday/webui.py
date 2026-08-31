@@ -3171,13 +3171,12 @@ _DELETE_ROUTES = [
 def _install_attention_sink(rt) -> None:
     """Forward what retrieval scored onto this session's event stream.
 
-    One process-wide sink would mix sessions together, so the sink filters on
-    the thread that owns the run: only events raised while THIS runtime is
-    working belong to its stream."""
-    import threading as _th
-
+    One process-wide sink would mix sessions together, so events carry the run
+    they came from and each sink keeps only its own."""
     def sink(event: dict) -> None:
-        if getattr(rt, "run_thread", None) is not _th.current_thread():
+        # match on the run id, not the thread: tools execute on a pool, so the
+        # thread raising an event is never the one that began the run
+        if event.get("run") != rt.sid:
             return
         try:
             rt.bus.publish({"t": "attn", **event})

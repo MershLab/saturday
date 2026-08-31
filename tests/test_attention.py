@@ -14,6 +14,7 @@ def _clean_sinks():
     for fn in list(attention._sinks):
         attention.remove_sink(fn)
     attention.set_step(0)
+    attention.set_run("")
 
 
 def test_events_carry_tier_score_and_step():
@@ -22,7 +23,7 @@ def test_events_carry_tier_score_and_step():
     attention.set_step(4)
     attention.emit(attention.MEMORY, "a-note", attention.USED, 0.87, "the note text")
     assert seen == [{"region": "memory", "node": "a-note", "kind": "used",
-                     "score": 0.87, "label": "the note text", "step": 4}]
+                     "score": 0.87, "label": "the note text", "step": 4, "run": ""}]
 
 
 def test_emit_ranked_marks_the_cutoff_rather_than_dropping_losers():
@@ -93,3 +94,53 @@ def test_memory_search_publishes_what_it_ranked(tmp_path):
     # nothing that failed to match is reported as looked at
     assert all("billing" not in e["label"] for e in seen)
     idx.close()
+
+
+def test_context_survives_the_tool_pool(tmp_path, monkeypatch):
+    """Tools execute on a ThreadPoolExecutor. A context that stops at the loop
+    thread made every event report step 0 and belong to no run, which broke
+    both the time dimension and per-session attribution at once."""
+    from fakes import FakeLLM, assistant
+
+    from saturday.agent.core import Agent
+    from saturday.config import AgentConfig
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "a.py").write_text("def verify():\n    return 1\n", encoding="utf-8")
+
+    attention.set_run("sess-abc")
+    seen = []
+    attention.add_sink(lambda e: seen.append((e["run"], e["step"], e["region"])))
+
+    script = [assistant(tool_calls=[("repo_search", {"query": "verify"})]),
+              assistant(tool_calls=[("repo_search", {"query": "verify"})]),
+              assistant(content="done")]
+    cfg = AgentConfig.load({"workspace_root": str(ws), "provider": "ollama", "model": "x"})
+    Agent(cfg=cfg, client=FakeLLM(script), enable_subagents=False).run("go")
+
+    assert seen, "a real run must publish what its tools looked at"
+    assert all(run == "sess-abc" for run, _s, _r in seen), seen
+    steps = [s for _r, s, _g in seen]
+    assert steps == sorted(steps) and len(set(steps)) > 1, \
+        f"steps must advance with the loop, got {steps}"
+
+
+def test_restore_installs_a_captured_context():
+    import threading as _th
+
+    attention.set_run("outer")
+    attention.set_step(5)
+    captured = attention.snapshot()
+    got = {}
+
+    def worker():
+        got["blank"] = attention.snapshot()
+        attention.restore(captured)
+        got["restored"] = attention.snapshot()
+
+    t = _th.Thread(target=worker)
+    t.start()
+    t.join()
+    assert got["blank"] == ("", 0), "a fresh thread starts with no context"
+    assert got["restored"] == ("outer", 5)
