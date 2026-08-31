@@ -8,6 +8,7 @@ from concurrent.futures import TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass
 from typing import Callable
 
+from saturday.compress import compress
 from saturday.agent.memory import TokenMeter, WorkingMemory, estimate_message_tokens, estimate_tokens
 from saturday.llm.client import LLMClient, LLMContextOverflow, ModelResponse, StreamEvent
 from saturday.prompts.templates import render_tool_response, split_reasoning
@@ -23,8 +24,10 @@ MEMORY_NUDGE_TEXT = (
 # per-step parallel tool-call cap (Claude Code-class harnesses allow large
 # batches; 16 covers realistic multi-edit steps without unbounded fan-out)
 MAX_TOOL_CALLS_PER_STEP = 16
-# tool results are truncated on the wire at this size; larger outputs belong in
-# spill files (shell already does this) rather than eating the context window
+# tool results are compressed onto the wire at this size; larger outputs belong
+# in spill files (shell already does this) rather than eating the context window.
+# Compression, not a head cut: the end of a build log or test run is where the
+# verdict is, and slicing kept the opening and dropped exactly that.
 TOOL_RESULT_MAX_CHARS = 48_000
 
 # a reply consisting ONLY of echoed tool-result block(s) is noise, not an answer
@@ -415,7 +418,8 @@ class AgentLoop:
                     "role": "tool",
                     "tool_call_id": call.id,
                     "name": call.name,
-                    "content": render_tool_response(call.name, result.ok, payload[:TOOL_RESULT_MAX_CHARS]),
+                    "content": render_tool_response(
+                        call.name, result.ok, compress(payload, TOOL_RESULT_MAX_CHARS)),
                 }
                 history.append(tool_msg)
                 step_tool_messages.append(dict(tool_msg))
