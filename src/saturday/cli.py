@@ -945,6 +945,66 @@ def cmd_sessions(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_memory(args: argparse.Namespace) -> int:
+    """Search, inspect and consolidate the memory index over MEMORY.md."""
+    from saturday.config import get_config_dir
+    from saturday.memindex import MemoryIndex
+    from saturday.tools.memory import memory_path
+
+    cfg = AgentConfig.load(_overrides(args))
+    idx = MemoryIndex()
+    action = getattr(args, "action", "search")
+
+    # the index is derived; refresh it from the file before answering
+    sources = [("global", memory_path())]
+    ws = Path(cfg.workspace_root or ".")
+    proj = ws / ".saturday" / "MEMORY.md"
+    if proj.is_file():
+        sources.append((f"project:{ws.resolve()}", proj))
+    totals = {"notes": 0, "added": 0, "linked": 0}
+    for scope, path in sources:
+        text = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
+        stats = idx.reindex(text, scope=scope)
+        for key in totals:
+            totals[key] += stats.get(key, 0)
+
+    if action == "reindex":
+        _print(f"indexed {totals['notes']} notes ({totals['added']} new, {totals['linked']} links)")
+        return 0
+    if action == "graph":
+        graph = idx.graph()
+        if getattr(args, "json", False):
+            _print(json.dumps(graph, ensure_ascii=False, indent=2))
+            return 0
+        _print(f"{len(graph['nodes'])} notes, {len(graph['edges'])} links")
+        by_id = {n["id"]: n["slug"] for n in graph["nodes"]}
+        for e in graph["edges"]:
+            _print(f"  {by_id.get(e['from'], '?')} --{e['relation']}--> {by_id.get(e['to'], '?')}")
+        return 0
+    if action == "consolidate":
+        out = idx.consolidate(dry_run=bool(getattr(args, "dry_run", False)))
+        _print(f"scanned {out['scanned']} notes; "
+               f"{len(out['archived'])} {'would be ' if out['dry_run'] else ''}archived"
+               f"; {out['contradictions']} contradiction edge(s)")
+        for slug in out["archived"]:
+            _print(f"  archived: {slug}")
+        return 0
+
+    query = " ".join(getattr(args, "query", []) or [])
+    if not query:
+        _print("usage: saturday memory search <query>")
+        return 2
+    hits = idx.search(query, k=int(getattr(args, "limit", 8) or 8))
+    if not hits:
+        _print("nothing in memory matches that")
+        return 0
+    for h in hits:
+        via = "" if h["matched"] else "  (via a link)"
+        _print(f"[{h['score']:.2f}] {h['text']}{via}")
+        _print(f"        slug={h['slug']}  salience={h['salience']:.2f}  recency={h['recency']:.2f}")
+    return 0
+
+
 def cmd_audit(args: argparse.Namespace) -> int:
     """Tamper-evidence for session history: verify hash chains, export bundles."""
     from saturday.sessions import SessionStore
@@ -1383,6 +1443,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_init = sub.add_parser("init", help="scaffold AGENTS.md + .saturday config examples in this directory")
     p_init.add_argument("--force", action="store_true", help="overwrite existing scaffolded files")
     p_init.set_defaults(fn=cmd_init)
+
+    p_mem = sub.add_parser("memory", help="search, inspect and consolidate memory")
+    p_mem.add_argument("action", nargs="?", default="search",
+                       choices=["search", "graph", "consolidate", "reindex"])
+    p_mem.add_argument("query", nargs="*", help="words to search for")
+    p_mem.add_argument("--limit", type=int, default=8)
+    p_mem.add_argument("--json", action="store_true", help="graph: machine-readable output")
+    p_mem.add_argument("--dry-run", action="store_true", help="consolidate: report, change nothing")
+    p_mem.set_defaults(fn=cmd_memory)
 
     p_audit = sub.add_parser("audit", help="verify tamper-evident session chains; export audit bundles")
     p_audit.add_argument("session_id", nargs="?", help="verify a specific session (default: list all)")
