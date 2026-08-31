@@ -3564,3 +3564,44 @@ def test_memory_consolidate_is_a_post_and_reports_before_it_changes(tmp_path, mo
     # and it must not be reachable as a GET
     status, _ = _req(base, "/api/memory/consolidate")
     assert status in (404, 405)
+
+
+def test_skills_endpoint_lists_and_writes_only_on_post(tmp_path, monkeypatch):
+    import subprocess
+
+    from saturday import skillhub
+
+    root = tmp_path / "skills"
+    monkeypatch.setattr(skillhub, "skills_root", lambda: root)
+    src = tmp_path / "saturday-skill-demo"
+    src.mkdir()
+    (src / "SKILL.md").write_text("---\nname: demo\ndescription: a demo skill\n---\n", encoding="utf-8")
+    for cmd in (["init", "-q", "-b", "main"], ["add", "-A"],
+                ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "i"]):
+        subprocess.run(["git", *cmd], cwd=src, check=True, capture_output=True)
+
+    app = AppState(store_root=tmp_path / "s")
+    base, _ = _server(app)
+
+    status, data = _req(base, "/api/skills")
+    assert status == 200 and data["installed"] == []
+
+    status, data = _req(base, "/api/skills", "POST", {"action": "install", "url": str(src)})
+    assert status == 200, data
+    assert [s["name"] for s in data["installed"]] == ["demo"]
+
+    status, data = _req(base, "/api/skills")
+    assert data["installed"][0]["description"] == "a demo skill"
+
+    status, data = _req(base, "/api/skills", "POST", {"action": "remove", "name": "demo"})
+    assert status == 200 and data["installed"] == []
+
+
+def test_skills_endpoint_reports_a_refusal_as_a_client_error(tmp_path, monkeypatch):
+    from saturday import skillhub
+
+    monkeypatch.setattr(skillhub, "skills_root", lambda: tmp_path / "skills")
+    app = AppState(store_root=tmp_path / "s")
+    base, _ = _server(app)
+    status, data = _req(base, "/api/skills", "POST", {"action": "install", "url": "ftp://evil/x"})
+    assert status == 400 and "refusing" in data["error"]

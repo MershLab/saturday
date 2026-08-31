@@ -1008,6 +1008,86 @@ def cmd_memory(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_skill(args: argparse.Namespace) -> int:
+    """Install, search, list, update and remove skills."""
+    from saturday import skillhub
+
+    action = getattr(args, "action", "list")
+    try:
+        if action == "list":
+            rows = skillhub.list_installed()
+            if not rows:
+                _print("no skills installed; try: saturday skill search <topic>")
+                return 0
+            for r in rows:
+                origin = "git" if r["git"] else "local"
+                _print(f"{r['name']:24} [{origin}] {r['description']}")
+            return 0
+
+        if action == "search":
+            query = " ".join(getattr(args, "args", []) or [])
+            out = skillhub.search(query, limit=int(getattr(args, "limit", 10) or 10))
+            if out.get("error"):
+                _print(out["error"])
+                return 1
+            if not out["results"]:
+                _print(f"nothing tagged '{skillhub.TOPIC}' matches that")
+                return 0
+            for r in out["results"]:
+                _print(f"{r['stars']:>5}  {r['full_name']}")
+                if r["description"]:
+                    _print(f"       {r['description']}")
+                _print(f"       {r['url']}")
+            _print("")
+            _print("A search result is a lead, not an endorsement: an installed skill's")
+            _print("text goes into the model's prompt, and nobody has reviewed it.")
+            return 0
+
+        if action == "install":
+            urls = getattr(args, "args", []) or []
+            if not urls:
+                _print("usage: saturday skill install <git-url>")
+                return 2
+            rc = 0
+            for url in urls:
+                try:
+                    out = skillhub.install(url, force=bool(getattr(args, "force", False)))
+                    _print(f"installed {out['name']} -> {out['path']}")
+                except skillhub.SkillError as exc:
+                    _print(f"{url}: {exc}")
+                    rc = 1
+            return rc
+
+        if action == "update":
+            names = getattr(args, "args", []) or [None]
+            rc = 0
+            for name in names:
+                for r in skillhub.update(name):
+                    _print(f"{r['name']:24} {'ok ' if r['ok'] else 'FAIL'} {r['detail']}")
+                    if not r["ok"]:
+                        rc = 1
+            return rc
+
+        if action == "remove":
+            names = getattr(args, "args", []) or []
+            if not names:
+                _print("usage: saturday skill remove <name>")
+                return 2
+            rc = 0
+            for name in names:
+                if skillhub.remove(name):
+                    _print(f"removed {name}")
+                else:
+                    _print(f"{name}: not installed")
+                    rc = 1
+            return rc
+    except skillhub.SkillError as exc:
+        _print(str(exc))
+        return 1
+    _print("usage: saturday skill [list|search|install|update|remove]")
+    return 2
+
+
 def cmd_codemem(args: argparse.Namespace) -> int:
     """Structural code retrieval: report status, or fetch the pinned binary."""
     from saturday import codemem
@@ -1486,6 +1566,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_init = sub.add_parser("init", help="scaffold AGENTS.md + .saturday config examples in this directory")
     p_init.add_argument("--force", action="store_true", help="overwrite existing scaffolded files")
     p_init.set_defaults(fn=cmd_init)
+
+    p_skill = sub.add_parser("skill", help="install, search and manage skills")
+    p_skill.add_argument("action", nargs="?", default="list",
+                         choices=["list", "search", "install", "update", "remove"])
+    p_skill.add_argument("args", nargs="*", help="query, git URL or skill name")
+    p_skill.add_argument("--limit", type=int, default=10)
+    p_skill.add_argument("--force", action="store_true", help="install: replace an existing skill")
+    p_skill.set_defaults(fn=cmd_skill)
 
     p_cm = sub.add_parser("codemem", help="structural code retrieval (vendored, checksum pinned)")
     p_cm.add_argument("action", nargs="?", default="status", choices=["status", "install"])
