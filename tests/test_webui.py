@@ -3820,3 +3820,27 @@ def test_every_new_endpoint_answers_on_a_real_workspace(tmp_path, monkeypatch):
         status, body = _req(base, path)
         assert status == 200, (path, body)
         assert "error" not in body, (path, body)
+
+
+def test_skill_browse_is_its_own_mode_not_a_search_with_no_words(tmp_path, monkeypatch):
+    """An empty filter must show the whole catalogue. Branching on whether a
+    query was typed sent the browser down the installed-list path instead, so
+    it opened saying nothing matched."""
+    from saturday import skillhub
+
+    monkeypatch.setattr(skillhub, "skills_root", lambda: tmp_path / "skills")
+    monkeypatch.setattr(skillhub, "search",
+                        lambda q="", limit=60, timeout=12.0: {
+                            "results": [{"name": "a", "full_name": "o/a", "url": "https://h/o/a.git",
+                                         "installed": False, "stars": 1}],
+                            "total": 1, "topic": "t", "note": "n"})
+    app = AppState(store_root=tmp_path / "s")
+    base, _ = _server(app)
+
+    status, data = _req(base, "/api/skills?browse=1&q=")
+    assert status == 200 and data["results"], data
+    assert data["total"] == 1
+
+    # without browse=1 it is still the installed list, which the panel also needs
+    status, data = _req(base, "/api/skills")
+    assert status == 200 and "installed" in data and "results" not in data

@@ -100,19 +100,71 @@ def test_search_reports_rate_limiting_instead_of_raising(monkeypatch):
     assert out["results"] == [] and "rate limit" in out["error"]
 
 
-def test_search_parses_results_and_carries_the_caveat(monkeypatch):
-    payload = json.dumps({"items": [{
+def test_search_returns_what_a_detail_pane_needs(monkeypatch, tmp_path):
+    """One line per result cannot answer "should I install this". The browser
+    shows licence, age, size and reach, so the search has to carry them."""
+    payload = json.dumps({"total_count": 41, "items": [{
         "name": "deploy", "full_name": "someone/saturday-skill-deploy",
-        "description": "d" * 400, "stargazers_count": 12,
+        "owner": {"login": "someone"},
+        "description": "d" * 600, "stargazers_count": 12, "forks_count": 3,
+        "open_issues_count": 1, "size": 2048, "language": "Python",
+        "license": {"spdx_id": "MIT"},
+        "topics": ["saturday-skill", "deployment"],
+        "homepage": "https://example.invalid", "archived": False,
+        "html_url": "https://github.com/someone/saturday-skill-deploy",
         "clone_url": "https://github.com/someone/saturday-skill-deploy.git",
+        "created_at": "2025-01-02T00:00:00Z",
         "pushed_at": "2026-08-01T00:00:00Z"}]}).encode()
 
     class Resp(io.BytesIO):
         def __enter__(self): return self
         def __exit__(self, *a): return False
 
+    monkeypatch.setattr(skillhub, "skills_root", lambda: tmp_path / "skills")
     monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: Resp(payload))
     out = skillhub.search("deploy")
-    assert out["results"][0]["stars"] == 12
-    assert len(out["results"][0]["description"]) == 200
+    r = out["results"][0]
+    assert out["total"] == 41
+    assert r["stars"] == 12 and r["forks"] == 3 and r["issues"] == 1
+    assert r["license"] == "MIT" and r["language"] == "Python"
+    assert r["size_kb"] == 2048 and r["owner"] == "someone"
+    assert r["updated"] == "2026-08-01" and r["created"] == "2025-01-02"
+    # the tag every result shares carries no information, so it is dropped
+    assert r["topics"] == ["deployment"]
+    assert len(r["description"]) == 400
+    assert r["installed"] is False
     assert "lead, not an endorsement" in out["note"]
+
+
+def test_search_marks_what_is_already_installed(monkeypatch, tmp_path):
+    """Offering to install something twice is how a browser wastes your time."""
+    root = tmp_path / "skills"
+    (root / "deploy").mkdir(parents=True)
+    (root / "deploy" / "SKILL.md").write_text(SKILL_MD, encoding="utf-8")
+    monkeypatch.setattr(skillhub, "skills_root", lambda: root)
+    payload = json.dumps({"items": [{
+        "name": "deploy", "full_name": "x/saturday-skill-deploy",
+        "clone_url": "https://github.com/x/saturday-skill-deploy.git"}]}).encode()
+
+    class Resp(io.BytesIO):
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: Resp(payload))
+    assert skillhub.search("")["results"][0]["installed"] is True
+
+
+def test_an_unrecognised_licence_is_named_not_shown_as_a_code(monkeypatch, tmp_path):
+    """GitHub returns NOASSERTION for a licence it cannot identify. Showing
+    that verbatim tells a reader nothing."""
+    monkeypatch.setattr(skillhub, "skills_root", lambda: tmp_path / "s")
+    payload = json.dumps({"items": [{
+        "name": "x", "full_name": "a/x", "clone_url": "https://h/a/x.git",
+        "license": {"spdx_id": "NOASSERTION"}}]}).encode()
+
+    class Resp(io.BytesIO):
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: Resp(payload))
+    assert skillhub.search("")["results"][0]["license"] == "unrecognised"
