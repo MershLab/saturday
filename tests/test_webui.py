@@ -3728,3 +3728,45 @@ def test_every_backend_surface_is_reachable_from_the_frontend():
                     "mgTidy", "auditRun", "doctorRun", "updCheck", "mcpTest",
                     "pipeList", "openFolderBtn"):
         assert f'id="{node_id}"' in html, node_id
+
+
+def test_a_pipeline_run_names_its_run_on_its_own_thread(tmp_path, monkeypatch):
+    """The busy latch names the run on the REQUEST thread; a pipeline executes
+    on a fresh one, which starts with no context. Without reinstating it, every
+    attention event a pipeline raised was attributed to no session and dropped."""
+    import time as _t
+
+    monkeypatch.setattr("saturday.config.get_config_dir", lambda: tmp_path)
+    from saturday import attention
+    from saturday import pipeline as P
+
+    P.save("demo", {"version": 1, "name": "demo", "nodes": [
+        {"id": "n1", "type": "input", "widgets": {}},
+        {"id": "a1", "type": "agent", "widgets": {"name": "W"}},
+        {"id": "o1", "type": "output", "widgets": {}}],
+        "edges": [{"from": "n1", "out": "task", "to": "a1", "in": "task"},
+                  {"from": "a1", "out": "result", "to": "o1", "in": "result"}]})
+
+    runs = []
+
+    def fake_runner(overrides):
+        def run(prompt, widgets):
+            runs.append(attention.current_run())
+            return "answered"
+        return run
+
+    monkeypatch.setattr("saturday.webui._pipeline_agent_runner", fake_runner)
+
+    app = AppState(store_root=tmp_path / "s")
+    base, _ = _server(app)
+    status, data = _req(base, "/api/pipelines/run", "POST",
+                        {"name": "demo", "input": "go"})
+    assert status == 200, data
+    sid = data["session_id"]
+    for _ in range(80):
+        _t.sleep(0.05)
+        rt = app.runtimes.get(sid)
+        if rt is not None and not rt.busy:
+            break
+    assert runs, "the agent node must have run"
+    assert runs[0] == sid, f"events must be attributed to {sid}, got {runs[0]!r}"
