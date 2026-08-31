@@ -174,6 +174,7 @@
           <span class="stage-tab-sep" aria-hidden="true"></span>
           <button class="stage-tab" data-tab="files" title="Files &mdash; Ctrl+Shift+E">Files</button>
           <button class="stage-tab" data-tab="memory" title="Memory graph">Memory</button>
+          <button class="stage-tab" data-tab="pipelines" title="Pipelines">Pipelines</button>
           <button class="stage-tab" data-tab="runs" title="Runs &mdash; Ctrl+Shift+D">Runs <span class="tab-badge hidden" id="badgeRuns"></span></button>
           <div id="stageMeta"></div>
         </div>
@@ -232,6 +233,13 @@
               <aside id="mgDetail" class="mg-detail hidden"></aside>
               <div id="mgStatus" class="mg-status">building the graph&hellip;</div>
             </div>
+          </div>
+          <div id="stagePipelines" class="stage-pane">
+            <div class="pipe-bar">
+              <span class="pipe-title">Pipelines</span>
+              <button id="pipeReload" class="mini-btn">reload</button>
+            </div>
+            <div id="pipeList" class="pipe-list"></div>
           </div>
           <div id="stageRuns" class="stage-pane"></div>
         </div>

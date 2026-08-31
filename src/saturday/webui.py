@@ -2404,6 +2404,75 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._send_json({"error": "unknown action"}, 400)
 
+    def _post_pipeline_run(self, payload: dict) -> None:
+        """Start a pipeline run in the background and return its session.
+
+        A run spends real model calls, so it never blocks the request: it takes
+        the same busy latch, publishes on the same bus and finishes with the
+        same done event as a chat run, which means /api/stream/<sid> carries it
+        with no new transport and no frontend change."""
+        from saturday import pipeline as P
+
+        app = self.app
+        name = str(payload.get("name") or "")
+        task = str(payload.get("input") or "").strip()
+        if not name or not task:
+            self._send_json({"error": "name and input are required"}, 400)
+            return
+        try:
+            pipe = P.load(name)
+        except P.PipelineError as exc:
+            self._send_json({"error": str(exc)}, 404)
+            return
+        problems = P.validate(pipe)
+        if problems:
+            self._send_json({"error": "; ".join(problems)}, 400)
+            return
+
+        sid = str(payload.get("sid") or "")
+        try:
+            rt = app.runtime_for(sid) if sid else None
+        except Exception as exc:
+            self._send_json({"error": f"{type(exc).__name__}: {exc}"}, 500)
+            return
+        if rt is None:
+            newsid = app.store.create({"task": f"pipeline: {name}", "surface": "app"})
+            rt = app.runtime_for(newsid)
+        if not rt.try_begin_run():
+            self._send_json({"error": "session busy", "session_id": rt.sid}, 409)
+            return
+
+        use_cache = payload.get("cache", True) is not False
+        cfg_overrides = dict(app.cfg_overrides)
+
+        runner = _pipeline_agent_runner(cfg_overrides)
+
+        def on_event(evt: dict) -> None:
+            if evt.get("type") == "pipeline_node":
+                label = evt.get("node") or ""
+                kind = evt.get("kind") or ""
+                suffix = " (cached)" if evt.get("cached") else ""
+                rt.bus.publish({"t": "notice", "s": f"[{name}] {kind} {label}{suffix}"})
+
+        def work() -> None:
+            final, stop = "", "pipeline"
+            try:
+                out = P.run(pipe, task, agent_runner=runner,
+                            memory_lookup=_pipeline_memory_lookup(),
+                            on_event=on_event, use_cache=use_cache)
+                final = str(out.get("output") or "")
+            except Exception as exc:
+                stop = "error"
+                rt.bus.publish({"t": "notice", "s": f"[{name}] failed: {type(exc).__name__}: {exc}"})
+            finally:
+                rt.bus.publish({"t": "done", "final": final, "stop_reason": stop,
+                                "steps": 0, "tokens": 0, "sid": rt.sid})
+                rt.finish_run()
+
+        threading.Thread(target=work, daemon=True,
+                         name=f"saturday-pipeline-{name}").start()
+        self._send_json({"ok": True, "session_id": rt.sid, "pipeline": name})
+
     def _get_journal(self) -> None:
         from urllib.parse import parse_qs, unquote, urlparse
 
@@ -3070,6 +3139,7 @@ _POST_ROUTES = {
     "/api/memory/consolidate": "_post_memory_consolidate",
     "/api/skills": "_post_skills",
     "/api/pipelines": "_post_pipelines",
+    "/api/pipelines/run": "_post_pipeline_run",
     "/api/schedules": "_post_schedules",
     "/api/archive": "_post_archive",
     "/api/commands": "_post_commands",
@@ -3083,6 +3153,46 @@ _DELETE_ROUTES = [
     (_RE_SESSION, "_delete_session"),
     (_RE_PROJECT, "_delete_project"),
 ]
+
+
+def _pipeline_agent_runner(cfg_overrides: dict):
+    """Build the callable one agent node runs through.
+
+    Module level so it is a seam: a caller (or a test) can substitute the way a
+    node executes without reaching into the request handler, and without
+    replacing the Agent class that session runtimes also construct."""
+    def runner(prompt: str, widgets: dict) -> str:
+        from saturday.agent.core import Agent
+        from saturday.config import AgentConfig
+
+        overrides = dict(cfg_overrides)
+        if widgets.get("model"):
+            overrides["model"] = widgets["model"]
+        traj = Agent(cfg=AgentConfig.load(overrides), enable_subagents=False).run(prompt)
+        return traj.final_answer or f"[no answer; stopped: {traj.stop_reason}]"
+    return runner
+
+
+def _pipeline_memory_lookup():
+    """Memory nodes read the same index the memory tools and CLI read."""
+    def lookup(query: str) -> str:
+        try:
+            from saturday.memindex import MemoryIndex
+            from saturday.tools.memory import memory_path
+
+            idx = MemoryIndex()
+            try:
+                path = memory_path()
+                idx.reindex(path.read_text(encoding="utf-8", errors="replace")
+                            if path.is_file() else "", scope="global")
+                hits = idx.search(query, k=5)
+            finally:
+                idx.close()
+            return "\n".join(f"- {h['text']}" for h in hits)
+        except Exception:
+            return ""
+    return lookup
+
 
 
 class AppServer(ThreadingHTTPServer):
