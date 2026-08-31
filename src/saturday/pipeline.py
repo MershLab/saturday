@@ -358,3 +358,71 @@ def _compose_prompt(resolved: dict, task: str) -> str:
         parts.append(f"Earlier transcript:\n{transcript}")
     parts.append(str(resolved.get(TASK) or task))
     return "\n\n".join(p for p in parts if p)
+
+TEMPLATES: dict[str, dict[str, Any]] = {
+    "one-agent": {
+        "label": "One agent",
+        "about": "A single agent answers. The simplest thing that works.",
+        "nodes": [
+            {"id": "n1", "type": "input", "pos": [40, 120], "widgets": {}},
+            {"id": "a1", "type": "agent", "pos": [300, 120],
+             "widgets": {"name": "Assistant", "role": "", "model": None, "agent": "auto"}},
+            {"id": "o1", "type": "output", "pos": [560, 120], "widgets": {"target": "chat"}}],
+        "edges": [{"from": "n1", "out": TASK, "to": "a1", "in": TASK},
+                  {"from": "a1", "out": RESULT, "to": "o1", "in": RESULT}],
+    },
+    "research-and-write": {
+        "label": "Research, then write",
+        "about": "One agent gathers, another writes it up, with your memory as context.",
+        "nodes": [
+            {"id": "n1", "type": "input", "pos": [40, 160], "widgets": {}},
+            {"id": "m1", "type": "memory", "pos": [280, 40], "widgets": {}},
+            {"id": "a1", "type": "agent", "pos": [280, 200],
+             "widgets": {"name": "Researcher", "role": "Gather the facts.",
+                         "model": None, "agent": "auto"}},
+            {"id": "a2", "type": "agent", "pos": [560, 120],
+             "widgets": {"name": "Writer", "role": "Write it up clearly.",
+                         "model": None, "agent": "auto"}},
+            {"id": "o1", "type": "output", "pos": [820, 120], "widgets": {"target": "chat"}}],
+        "edges": [{"from": "n1", "out": TASK, "to": "m1", "in": TASK},
+                  {"from": "n1", "out": TASK, "to": "a1", "in": TASK},
+                  {"from": "m1", "out": CONTEXT, "to": "a1", "in": CONTEXT},
+                  # transcript, not result: the writer needs what the
+                  # researcher saw, which is the case the opt-in edge is for
+                  {"from": "a1", "out": TRANSCRIPT, "to": "a2", "in": TRANSCRIPT},
+                  {"from": "a2", "out": RESULT, "to": "o1", "in": RESULT}],
+    },
+    "two-opinions": {
+        "label": "Two opinions, then a verdict",
+        "about": "Two agents answer independently and a third reconciles them.",
+        "nodes": [
+            {"id": "n1", "type": "input", "pos": [40, 160], "widgets": {}},
+            {"id": "a1", "type": "agent", "pos": [300, 60],
+             "widgets": {"name": "First", "role": "", "model": None, "agent": "auto"}},
+            {"id": "a2", "type": "agent", "pos": [300, 260],
+             "widgets": {"name": "Second", "role": "", "model": None, "agent": "auto"}},
+            {"id": "g1", "type": "aggregator", "pos": [580, 160],
+             "widgets": {"synthesize": True}},
+            {"id": "o1", "type": "output", "pos": [820, 160], "widgets": {"target": "chat"}}],
+        "edges": [{"from": "n1", "out": TASK, "to": "a1", "in": TASK},
+                  {"from": "n1", "out": TASK, "to": "a2", "in": TASK},
+                  {"from": "a1", "out": RESULT, "to": "g1", "in": RESULT},
+                  {"from": "a2", "out": RESULT, "to": "g1", "in": RESULT},
+                  {"from": "g1", "out": RESULT, "to": "o1", "in": RESULT}],
+    },
+}
+
+
+def templates() -> list[dict[str, Any]]:
+    """Starting points, so a first pipeline is a choice rather than a blank page."""
+    return [{"id": tid, "label": t["label"], "about": t["about"],
+             "nodes": len(t["nodes"])} for tid, t in TEMPLATES.items()]
+
+
+def from_template(template_id: str, name: str) -> dict[str, Any]:
+    tpl = TEMPLATES.get(template_id)
+    if tpl is None:
+        raise PipelineError(f"unknown template {template_id!r}")
+    return {"version": VERSION, "name": name,
+            "nodes": json.loads(json.dumps(tpl["nodes"])),
+            "edges": json.loads(json.dumps(tpl["edges"]))}
