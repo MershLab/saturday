@@ -1,6 +1,8 @@
 """Tool-output compression: keep the answer, not just the opening."""
 from __future__ import annotations
 
+import pathlib
+
 import pytest
 
 from saturday.compress import MIN_BUDGET, compress
@@ -79,3 +81,40 @@ def test_single_long_line_is_still_bounded():
     """No newlines at all: the line-based path has nothing to rank."""
     out = compress("x" * 100_000, 1000)
     assert len(out) <= 1000
+
+
+def test_an_oversized_tool_result_reaches_the_model_compressed(tmp_path):
+    """End to end through a real loop: the seam between the compressor and the
+    wire, which is where a working function can still do nothing."""
+    import sys
+
+    sys.path.insert(0, str(pathlib.Path(__file__).parent))
+    from fakes import FakeLLM, assistant
+
+    from saturday.agent.core import Agent
+    from saturday.config import AgentConfig
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    script_file = ws / "noisy.py"
+    script_file.write_text(
+        "for i in range(9000):\n"
+        "    print(f'tests/test_mod_{i%40}.py::case_{i} PASSED')\n"
+        "print('E       KeyError: the answer is at the bottom')\n"
+        "print('========= 1 failed, 9000 passed =========')\n", encoding="utf-8")
+
+    llm = FakeLLM([assistant(tool_calls=[("shell", {"command": f"{sys.executable} {script_file}"})]),
+                   assistant(content="done")])
+    cfg = AgentConfig.load({"workspace_root": str(ws), "provider": "ollama",
+                            "model": "x", "safety": "off"})
+    Agent(cfg=cfg, client=llm, enable_subagents=False).run("run it")
+
+    tool_msgs = [m for call in llm.calls for m in call["messages"] if m.get("role") == "tool"]
+    assert tool_msgs, "the tool result must reach the model"
+    body = tool_msgs[-1]["content"]
+    raw_lines = 9002
+    assert len(body) < 60_000, "an oversized result must not go out whole"
+    # the point: head truncation kept 9000 PASSED lines and dropped both of these
+    assert "1 failed, 9000 passed" in body
+    assert "KeyError" in body
+    assert body.count("PASSED") < raw_lines

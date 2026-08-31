@@ -2467,7 +2467,15 @@ class Handler(BaseHTTPRequestHandler):
                 rt.bus.publish({"t": "notice", "s": f"[{name}] {kind} {label}{suffix}"})
 
         def work() -> None:
-            rt.run_thread = threading.current_thread()  # the run moved off the request thread
+            # the run moved off the request thread, and a fresh thread starts
+            # with no context, so what named this run has to be reinstated here
+            rt.run_thread = threading.current_thread()
+            try:
+                from saturday import attention
+
+                attention.set_run(rt.sid)
+            except Exception:
+                pass
             final, stop = "", "pipeline"
             try:
                 out = P.run(pipe, task, agent_runner=runner,
