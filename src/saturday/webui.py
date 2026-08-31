@@ -2306,6 +2306,57 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             idx.close()
 
+    def _get_skills(self) -> None:
+        """Installed skills, or a search of the public topic index."""
+        from urllib.parse import parse_qs, unquote, urlparse
+
+        from saturday import skillhub
+
+        qs = parse_qs(urlparse(self.path).query)
+        query = unquote((qs.get("q") or [""])[0])
+        try:
+            if query:
+                out = skillhub.search(query, limit=int((qs.get("limit") or ["10"])[0] or 10))
+                self._send_json(out)
+                return
+            self._send_json({"installed": skillhub.list_installed()})
+        except Exception as exc:
+            self._send_json({"error": f"{type(exc).__name__}: {exc}"}, 500)
+
+    def _post_skills(self, payload: dict) -> None:
+        """Install, update or remove. All three write to disk, so none of them
+        is reachable by loading a page."""
+        from saturday import skillhub
+
+        action = str(payload.get("action") or "")
+        try:
+            if action == "install":
+                url = str(payload.get("url") or "")
+                if not url:
+                    self._send_json({"error": "url required"}, 400)
+                    return
+                out = skillhub.install(url, force=bool(payload.get("force")))
+                self._send_json({"ok": True, "skill": out,
+                                 "installed": skillhub.list_installed()})
+                return
+            if action == "remove":
+                name = str(payload.get("name") or "")
+                ok = skillhub.remove(name) if name else False
+                self._send_json({"ok": ok, "installed": skillhub.list_installed()})
+                return
+            if action == "update":
+                results = skillhub.update(str(payload.get("name") or "") or None)
+                self._send_json({"ok": True, "results": results,
+                                 "installed": skillhub.list_installed()})
+                return
+        except skillhub.SkillError as exc:
+            self._send_json({"error": str(exc)}, 400)
+            return
+        except Exception as exc:
+            self._send_json({"error": f"{type(exc).__name__}: {exc}"}, 500)
+            return
+        self._send_json({"error": "unknown action"}, 400)
+
     def _get_journal(self) -> None:
         from urllib.parse import parse_qs, unquote, urlparse
 
@@ -2942,6 +2993,7 @@ _GET_ROUTES = [
     ("/api/update", "_get_update"),
     ("/api/memory", "_get_memory"),
     ("/api/codemem", "_get_codemem"),
+    ("/api/skills", "_get_skills"),
     ("/api/schedules", "_get_schedules"),
     ("/api/runs", "_get_runs"),
     ("/api/git/status", "_get_git_status"),
@@ -2968,6 +3020,7 @@ _POST_ROUTES = {
     "/api/onboard": "_post_onboard",
     "/api/journal/restore": "_post_journal_restore",
     "/api/memory/consolidate": "_post_memory_consolidate",
+    "/api/skills": "_post_skills",
     "/api/schedules": "_post_schedules",
     "/api/archive": "_post_archive",
     "/api/commands": "_post_commands",
