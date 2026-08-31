@@ -2035,6 +2035,16 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 warnings.append(f"{type(exc).__name__}: {exc}")
         servers.update(self.app.base_cfg.mcp_servers or {})
+        # the vendored structural index speaks MCP, so it appears here like any
+        # other server rather than through a bespoke channel
+        try:
+            from saturday import codemem
+
+            vendored = codemem.mcp_spec()
+            if vendored and codemem.MCP_ALIAS not in servers:
+                servers[codemem.MCP_ALIAS] = vendored
+        except Exception:
+            pass
 
         out = []
         for alias, spec in sorted(servers.items()):
@@ -2259,6 +2269,15 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"error": f"{type(exc).__name__}: {exc}"}, 500)
         finally:
             idx.close()
+
+    def _get_codemem(self) -> None:
+        """Is structural code retrieval active, and what would enable it."""
+        from saturday import codemem
+
+        try:
+            self._send_json(codemem.status())
+        except Exception as exc:
+            self._send_json({"error": f"{type(exc).__name__}: {exc}"}, 500)
 
     def _get_journal(self) -> None:
         from urllib.parse import parse_qs, unquote, urlparse
@@ -2895,6 +2914,7 @@ _GET_ROUTES = [
     ("/api/doctor", "_get_doctor"),
     ("/api/update", "_get_update"),
     ("/api/memory", "_get_memory"),
+    ("/api/codemem", "_get_codemem"),
     ("/api/schedules", "_get_schedules"),
     ("/api/runs", "_get_runs"),
     ("/api/git/status", "_get_git_status"),
