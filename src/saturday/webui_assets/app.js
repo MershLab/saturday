@@ -3882,10 +3882,26 @@ async function loadPipelines() {
   try { d = await api("/api/pipelines"); }
   catch (e) { box.replaceChildren(el("div", "pipe-bad", "could not read: " + e.message)); return; }
 
+  pipe.kinds = d.kinds || {};
+  pipe.templates = d.templates || [];
+
   box.replaceChildren();
+  // a first pipeline should be a choice, not a blank page
+  const starter = el("div", "pipe-item");
+  starter.appendChild(el("div", "pipe-starter-h", "Start from a template"));
+  for (const t of pipe.templates) {
+    const row = el("button", "pipe-template");
+    row.appendChild(el("span", "pipe-tname", t.label));
+    row.appendChild(el("span", "pipe-tabout", t.about));
+    row.addEventListener("click", () => pipeNewFrom(t.id, t.label));
+    starter.appendChild(row);
+  }
+  box.appendChild(starter);
+
   if (!d.pipelines.length) {
     box.appendChild(el("div", "field-hint",
-      "No pipelines yet. Drop a .json into " + (d.dir || "~/.saturday/pipelines") + "."));
+      "Nothing saved yet \u2014 pick a template above, or drop a .json into "
+      + (d.dir || "~/.saturday/pipelines") + "."));
     return;
   }
   for (const p of d.pipelines) {
@@ -3894,6 +3910,9 @@ async function loadPipelines() {
     head.appendChild(el("span", "pipe-dot " + (p.valid ? "ok" : "bad")));
     head.appendChild(el("span", "pipe-name", p.name));
     head.appendChild(el("span", "pipe-meta mono", p.nodes + " nodes, " + (p.edges || 0) + " edges"));
+    const edit = el("button", "mini-btn", "edit");
+    edit.addEventListener("click", () => pipeEdit(p.name));
+    head.appendChild(edit);
     row.appendChild(head);
     // an invalid graph says why, and offers no run button: starting it would
     // spend real calls on the nodes before the broken wire
@@ -3932,6 +3951,362 @@ async function loadPipelines() {
     }
     box.appendChild(row);
   }
+}
+
+async function pipeEdit(name) {
+  try {
+    const d = await api("/api/pipelines?name=" + encodeURIComponent(name));
+    pipeOpen(name, d.pipeline);
+  } catch (e) { toast("Could not open: " + e.message, "error"); }
+}
+
+async function pipeNewFrom(templateId, label) {
+  const raw = await uiPrompt({ title: "New pipeline",
+                               msg: "What should this one be called?", value: label });
+  const name = (raw || "").trim();
+  if (!name) return;
+  try {
+    const d = await api("/api/pipelines", { method: "POST", body: JSON.stringify(
+      { action: "new", name, template: templateId }) });
+    pipeOpen(name, d.pipeline);
+  } catch (e) { toast("Could not create: " + e.message, "error"); }
+}
+
+
+/* ------------------------------------------------------------------ *
+ * Pipeline canvas
+ *
+ * Nodes are DOM, wires are one SVG underneath. DOM rather than canvas
+ * because a node carries real form controls - a name, a role, a model -
+ * and reimplementing text inputs on a 2D context to save a few
+ * milliseconds would be a bad trade.
+ *
+ * The socket types come from the server, so the canvas refuses exactly
+ * the wiring the engine refuses. Keeping a second copy of those rules
+ * here is how the two drift apart.
+ * ------------------------------------------------------------------ */
+
+const pipe = {
+  name: "", graph: null, kinds: {}, templates: [],
+  drag: null,      // moving a node
+  wire: null,      // dragging a new connection
+  dirty: false,
+};
+
+const article = (w) => ("aeiou".includes(String(w)[0]) ? "an" : "a");
+const SOCKET_LABEL = {
+  task: "task", result: "answer", transcript: "full working",
+  context: "what it knows", artifact: "file",
+};
+const NODE_ABOUT = {
+  input: "where the request comes in",
+  memory: "looks things up in your memory",
+  router: "picks which agent should do it",
+  agent: "an agent does the work",
+  aggregator: "combines several answers into one",
+  output: "where the answer goes",
+};
+
+function pipeOpen(name, graph) {
+  pipe.name = name;
+  pipe.graph = graph;
+  pipe.dirty = false;
+  $("#pipeList").classList.add("hidden");
+  $("#pipeCanvasWrap").classList.remove("hidden");
+  $("#pipeTitle").textContent = name;
+  for (const id of ["pipeAdd", "pipeSave", "pipeBack"]) $("#" + id).classList.remove("hidden");
+  const add = $("#pipeAdd");
+  add.replaceChildren();
+  add.appendChild(new Option("add a step…", ""));
+  for (const kind of Object.keys(pipe.kinds)) add.appendChild(new Option(kind, kind));
+  pipeRender();
+}
+
+function pipeClose() {
+  pipe.graph = null;
+  $("#pipeList").classList.remove("hidden");
+  $("#pipeCanvasWrap").classList.add("hidden");
+  $("#pipeTitle").textContent = "Pipelines";
+  for (const id of ["pipeAdd", "pipeSave", "pipeBack"]) $("#" + id).classList.add("hidden");
+  loadPipelines();
+}
+
+function pipeNodeById(id) {
+  return (pipe.graph.nodes || []).find((n) => String(n.id) === String(id));
+}
+
+function pipeCanConnect(fromId, out, toId, inSock) {
+  const a = pipeNodeById(fromId), b = pipeNodeById(toId);
+  if (!a || !b || a.id === b.id) return "a step cannot feed itself";
+  const produced = (pipe.kinds[a.type] || {}).out || [];
+  const accepted = (pipe.kinds[b.type] || {}).in || [];
+  if (!produced.includes(out)) return `${a.type} does not produce ${out}`;
+  if (!accepted.includes(inSock)) return `${b.type} does not take ${inSock}`;
+  if (out !== inSock) {
+    const a = SOCKET_LABEL[out] || out, b = SOCKET_LABEL[inSock] || inSock;
+    return `${article(a)} ${a} is not ${article(b)} ${b}`;
+  }
+  if ((pipe.graph.edges || []).some((e) =>
+      String(e.from) === String(fromId) && e.out === out &&
+      String(e.to) === String(toId) && e.in === inSock)) return "already connected";
+  // a cycle is refused here rather than at save time, so the wire simply
+  // does not land instead of the graph becoming unsaveable
+  if (pipeWouldCycle(fromId, toId)) return "that would make a loop";
+  return "";
+}
+
+function pipeWouldCycle(fromId, toId) {
+  const seen = new Set();
+  const walk = (id) => {
+    if (String(id) === String(fromId)) return true;
+    if (seen.has(String(id))) return false;
+    seen.add(String(id));
+    return (pipe.graph.edges || [])
+      .filter((e) => String(e.from) === String(id))
+      .some((e) => walk(e.to));
+  };
+  return walk(toId);
+}
+
+function pipeHint(msg, bad) {
+  const h = $("#pipeHint");
+  h.textContent = msg || "";
+  h.classList.toggle("bad", !!bad);
+  h.classList.toggle("on", !!msg);
+  if (msg) {
+    clearTimeout(pipe._hintTimer);
+    pipe._hintTimer = setTimeout(() => h.classList.remove("on"), 2600);
+  }
+}
+
+function pipeMarkDirty() {
+  pipe.dirty = true;
+  $("#pipeSave").textContent = "save •";
+}
+
+function pipeRender() {
+  const wrap = $("#pipeNodes");
+  wrap.replaceChildren();
+  for (const node of pipe.graph.nodes || []) {
+    wrap.appendChild(pipeNodeEl(node));
+  }
+  pipeWires();
+}
+
+function pipeNodeEl(node) {
+  const pos = node.pos || [40, 40];
+  const box = el("div", "pnode pnode-" + node.type);
+  box.style.left = pos[0] + "px";
+  box.style.top = pos[1] + "px";
+  box.dataset.id = node.id;
+
+  const head = el("div", "pnode-head");
+  head.appendChild(el("span", "pnode-kind", node.type));
+  const title = el("span", "pnode-title", (node.widgets && node.widgets.name) || NODE_ABOUT[node.type] || node.type);
+  head.appendChild(title);
+  if (node.type !== "input") {
+    const x = el("button", "pnode-x", "×");
+    x.title = "remove this step";
+    x.addEventListener("pointerdown", (e) => e.stopPropagation());
+    x.addEventListener("click", () => {
+      pipe.graph.nodes = pipe.graph.nodes.filter((n) => n.id !== node.id);
+      pipe.graph.edges = (pipe.graph.edges || []).filter(
+        (e) => e.from !== node.id && e.to !== node.id);
+      pipeMarkDirty();
+      pipeRender();
+    });
+    head.appendChild(x);
+  }
+  head.addEventListener("pointerdown", (ev) => {
+    ev.preventDefault();
+    const rect = box.getBoundingClientRect();
+    pipe.drag = { id: node.id, dx: ev.clientX - rect.left, dy: ev.clientY - rect.top };
+    // capture is a convenience, not a requirement: a pointer id the browser
+    // will not capture must not abort the drag before it starts
+    try { box.setPointerCapture(ev.pointerId); } catch {}
+  });
+  box.appendChild(head);
+
+  const body = el("div", "pnode-body");
+  if (node.type === "agent") {
+    body.appendChild(pipeWidget(node, "name", "called", "Researcher"));
+    body.appendChild(pipeWidget(node, "role", "should", "gather the facts"));
+    body.appendChild(pipeWidget(node, "model", "model", "leave blank to let it choose"));
+  } else if (node.type === "output") {
+    body.appendChild(pipeWidget(node, "target", "goes to", "chat"));
+  } else {
+    body.appendChild(el("div", "pnode-about", NODE_ABOUT[node.type] || ""));
+  }
+  box.appendChild(body);
+
+  const kinds = pipe.kinds[node.type] || { in: [], out: [] };
+  const ports = el("div", "pnode-ports");
+  const ins = el("div", "pnode-in");
+  for (const sock of kinds.in) ins.appendChild(pipePort(node, sock, "in"));
+  const outs = el("div", "pnode-out");
+  for (const sock of kinds.out) outs.appendChild(pipePort(node, sock, "out"));
+  ports.appendChild(ins);
+  ports.appendChild(outs);
+  box.appendChild(ports);
+  return box;
+}
+
+function pipeWidget(node, key, label, placeholder) {
+  const row = el("label", "pnode-widget");
+  row.appendChild(el("span", "pnode-wlabel", label));
+  const input = document.createElement("input");
+  input.type = "text";
+  input.value = (node.widgets && node.widgets[key]) || "";
+  input.placeholder = placeholder;
+  input.addEventListener("pointerdown", (e) => e.stopPropagation());
+  input.addEventListener("keydown", (e) => e.stopPropagation());
+  input.addEventListener("input", () => {
+    node.widgets = node.widgets || {};
+    // blank means "unset", which the engine reads as let the router decide
+    node.widgets[key] = input.value.trim() || null;
+    pipeMarkDirty();
+    if (key === "name") pipeRender();
+  });
+  row.appendChild(input);
+  return row;
+}
+
+function pipePort(node, sock, dir) {
+  const port = el("div", "pport pport-" + dir);
+  port.dataset.node = node.id;
+  port.dataset.sock = sock;
+  port.dataset.dir = dir;
+  port.title = (dir === "in" ? "takes " : "gives ") + (SOCKET_LABEL[sock] || sock);
+  port.appendChild(el("i", "pport-dot"));
+  port.appendChild(el("span", "pport-label", SOCKET_LABEL[sock] || sock));
+  port.addEventListener("pointerdown", (ev) => {
+    if (dir !== "out") return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    pipe.wire = { from: node.id, out: sock, x: ev.clientX, y: ev.clientY };
+    try { $("#pipeNodes").setPointerCapture(ev.pointerId); } catch {}
+  });
+  return port;
+}
+
+function pipePortCentre(nodeId, sock, dir) {
+  const sel = `.pport[data-node="${CSS.escape(String(nodeId))}"][data-sock="${sock}"][data-dir="${dir}"] .pport-dot`;
+  const dot = $("#pipeNodes").querySelector(sel);
+  const wrap = $("#pipeCanvasWrap").getBoundingClientRect();
+  if (!dot) return null;
+  const r = dot.getBoundingClientRect();
+  return [r.left + r.width / 2 - wrap.left, r.top + r.height / 2 - wrap.top];
+}
+
+function pipeWires() {
+  const svg = $("#pipeWires");
+  svg.replaceChildren();
+  const wrap = $("#pipeCanvasWrap").getBoundingClientRect();
+  svg.setAttribute("viewBox", `0 0 ${wrap.width} ${wrap.height}`);
+  for (const e of pipe.graph.edges || []) {
+    const a = pipePortCentre(e.from, e.out, "out");
+    const b = pipePortCentre(e.to, e.in, "in");
+    if (!a || !b) continue;
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    const mid = Math.max(30, Math.abs(b[0] - a[0]) / 2);
+    path.setAttribute("d", `M ${a[0]} ${a[1]} C ${a[0] + mid} ${a[1]}, ${b[0] - mid} ${b[1]}, ${b[0]} ${b[1]}`);
+    path.setAttribute("class", "pwire" + (e.out === "transcript" ? " pwire-opt" : ""));
+    path.addEventListener("click", () => {
+      pipe.graph.edges = pipe.graph.edges.filter((x) => x !== e);
+      pipeMarkDirty();
+      pipeRender();
+    });
+    svg.appendChild(path);
+  }
+  if (pipe.wire && pipe.wire.cursor) {
+    const a = pipePortCentre(pipe.wire.from, pipe.wire.out, "out");
+    if (a) {
+      const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      path.setAttribute("d", `M ${a[0]} ${a[1]} L ${pipe.wire.cursor[0]} ${pipe.wire.cursor[1]}`);
+      path.setAttribute("class", "pwire pwire-live");
+      svg.appendChild(path);
+    }
+  }
+}
+
+
+const PORT_SNAP_PX = 34;
+
+function pipeNearestInPort(clientX, clientY) {
+  let best = null, bestD = PORT_SNAP_PX * PORT_SNAP_PX;
+  for (const port of $("#pipeNodes").querySelectorAll(".pport-in")) {
+    const dot = port.querySelector(".pport-dot");
+    if (!dot) continue;
+    const r = dot.getBoundingClientRect();
+    const dx = r.left + r.width / 2 - clientX;
+    const dy = r.top + r.height / 2 - clientY;
+    const d = dx * dx + dy * dy;
+    if (d < bestD) { bestD = d; best = port; }
+  }
+  return best;
+}
+
+function pipeWireCanvas() {
+  const nodes = $("#pipeNodes");
+  nodes.addEventListener("pointermove", (ev) => {
+    const wrap = $("#pipeCanvasWrap").getBoundingClientRect();
+    if (pipe.drag) {
+      const node = pipeNodeById(pipe.drag.id);
+      if (!node) return;
+      node.pos = [Math.max(0, ev.clientX - wrap.left - pipe.drag.dx),
+                  Math.max(0, ev.clientY - wrap.top - pipe.drag.dy)];
+      const box = nodes.querySelector(`.pnode[data-id="${CSS.escape(String(node.id))}"]`);
+      if (box) { box.style.left = node.pos[0] + "px"; box.style.top = node.pos[1] + "px"; }
+      pipeWires();
+      return;
+    }
+    if (pipe.wire) {
+      pipe.wire.cursor = [ev.clientX - wrap.left, ev.clientY - wrap.top];
+      pipeWires();
+    }
+  });
+  nodes.addEventListener("pointerup", (ev) => {
+    if (pipe.drag) { pipe.drag = null; pipeMarkDirty(); return; }
+    if (!pipe.wire) return;
+    // snap to the nearest input port rather than demanding a hit on a 9px
+    // dot: an exact drop is fiddly with a mouse and impossible on a trackpad
+    const port = pipeNearestInPort(ev.clientX, ev.clientY);
+    if (port) {
+      const why = pipeCanConnect(pipe.wire.from, pipe.wire.out, port.dataset.node, port.dataset.sock);
+      if (why) {
+        pipeHint(why, true);
+      } else {
+        pipe.graph.edges = pipe.graph.edges || [];
+        pipe.graph.edges.push({ from: pipe.wire.from, out: pipe.wire.out,
+                                to: port.dataset.node, in: port.dataset.sock });
+        pipeMarkDirty();
+      }
+    }
+    pipe.wire = null;
+    pipeRender();
+  });
+}
+
+function pipeNextId(kind) {
+  let n = 1;
+  const taken = new Set((pipe.graph.nodes || []).map((x) => String(x.id)));
+  while (taken.has(kind[0] + n)) n++;
+  return kind[0] + n;
+}
+
+async function pipeSave() {
+  if (!pipe.graph) return;
+  const btn = $("#pipeSave");
+  btn.disabled = true;
+  try {
+    await api("/api/pipelines", { method: "POST", body: JSON.stringify(
+      { action: "save", name: pipe.name, pipeline: pipe.graph }) });
+    pipe.dirty = false;
+    btn.textContent = "save";
+    pipeHint("saved", false);
+  } catch (e) {
+    pipeHint(e.message, true);
+  } finally { btn.disabled = false; }
 }
 
 /* ---------------------------------------------------------------- update */
@@ -5673,6 +6048,22 @@ function bindEvents() {
   $("#doctorRun").addEventListener("click", () => loadDoctor());
   $("#updCheck").addEventListener("click", () => loadUpdate());
   $("#pipeReload").addEventListener("click", () => loadPipelines());
+  $("#pipeSave").addEventListener("click", () => pipeSave());
+  $("#pipeBack").addEventListener("click", async () => {
+    if (pipe.dirty && !(await uiConfirm({ title: "Unsaved changes",
+                                          msg: "Go back and lose them?",
+                                          ok: "Discard", danger: true }))) return;
+    pipeClose();
+  });
+  $("#pipeAdd").addEventListener("change", (e) => {
+    const kind = e.target.value;
+    e.target.value = "";
+    if (!kind || !pipe.graph) return;
+    pipe.graph.nodes.push({ id: pipeNextId(kind), type: kind, pos: [60, 60], widgets: {} });
+    pipeMarkDirty();
+    pipeRender();
+  });
+  pipeWireCanvas();
   $("#openFolderBtn").addEventListener("click", () => folderOpen());
   $("#folderClose").addEventListener("click", () => folderClose());
   $("#folderOpen").addEventListener("click", () => folderUse());

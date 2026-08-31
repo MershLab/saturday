@@ -161,3 +161,33 @@ def test_unset_model_and_agent_are_defaults_not_errors(tmp_path, monkeypatch):
     pipe["nodes"][1]["widgets"] = {"name": "W", "model": None, "agent": "auto"}
     assert P.validate(pipe) == []
     assert P.run(pipe, "t", agent_runner=lambda p, w: "ok")["output"] == "ok"
+
+
+def test_every_shipped_template_is_valid():
+    """A template that does not validate is worse than none: it hands a
+    beginner a broken graph and makes the tool look wrong, not the template."""
+    assert P.templates(), "there must be somewhere to start"
+    for entry in P.templates():
+        pipe = P.from_template(entry["id"], entry["id"])
+        assert P.validate(pipe) == [], (entry["id"], P.validate(pipe))
+        assert entry["about"], f"{entry['id']} must say what it is for"
+
+
+def test_from_template_is_a_copy_not_a_reference():
+    a = P.from_template("one-agent", "a")
+    b = P.from_template("one-agent", "b")
+    a["nodes"][1]["widgets"]["name"] = "changed"
+    assert b["nodes"][1]["widgets"]["name"] != "changed"
+    assert P.TEMPLATES["one-agent"]["nodes"][1]["widgets"]["name"] != "changed"
+
+
+def test_unknown_template_is_refused():
+    with pytest.raises(P.PipelineError, match="unknown template"):
+        P.from_template("no-such-template", "x")
+
+
+def test_research_template_forwards_a_transcript_deliberately():
+    """The opt-in edge exists for the case where the next agent needs what the
+    previous one saw, not just what it concluded."""
+    pipe = P.from_template("research-and-write", "r")
+    assert any(e["out"] == P.TRANSCRIPT for e in pipe["edges"])

@@ -2370,8 +2370,13 @@ class Handler(BaseHTTPRequestHandler):
                 data = P.load(name)
                 self._send_json({"pipeline": data, "problems": P.validate(data)})
                 return
+            # the canvas enforces the same socket rules the engine does, so
+            # it is served them rather than keeping a second copy in JS
             self._send_json({"pipelines": P.list_pipelines(),
-                             "dir": str(P.pipelines_dir())})
+                             "dir": str(P.pipelines_dir()),
+                             "kinds": {k: {"in": list(i), "out": list(o)}
+                                       for k, (i, o) in P.NODE_KINDS.items()},
+                             "templates": P.templates()})
         except P.PipelineError as exc:
             self._send_json({"error": str(exc)}, 404)
         except Exception as exc:
@@ -2391,6 +2396,12 @@ class Handler(BaseHTTPRequestHandler):
             if action == "save":
                 path = P.save(name, payload.get("pipeline") or {})
                 self._send_json({"ok": True, "path": str(path),
+                                 "pipelines": P.list_pipelines()})
+                return
+            if action == "new":
+                pipe = P.from_template(str(payload.get("template") or "one-agent"), name)
+                P.save(name, pipe)
+                self._send_json({"ok": True, "pipeline": pipe,
                                  "pipelines": P.list_pipelines()})
                 return
             if action == "clear-cache":

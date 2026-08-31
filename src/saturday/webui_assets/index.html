@@ -236,10 +236,20 @@
           </div>
           <div id="stagePipelines" class="stage-pane">
             <div class="pipe-bar">
-              <span class="pipe-title">Pipelines</span>
+              <span class="pipe-title" id="pipeTitle">Pipelines</span>
+              <select id="pipeAdd" class="pipe-select hidden">
+                <option value="">add a step&hellip;</option>
+              </select>
+              <button id="pipeSave" class="mini-btn hidden">save</button>
+              <button id="pipeBack" class="mini-btn hidden">back</button>
               <button id="pipeReload" class="mini-btn">reload</button>
             </div>
             <div id="pipeList" class="pipe-list"></div>
+            <div id="pipeCanvasWrap" class="pipe-canvas-wrap hidden">
+              <svg id="pipeWires" class="pipe-wires"></svg>
+              <div id="pipeNodes" class="pipe-nodes"></div>
+              <div id="pipeHint" class="pipe-hint"></div>
+            </div>
           </div>
           <div id="stageRuns" class="stage-pane"></div>
         </div>

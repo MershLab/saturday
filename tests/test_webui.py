@@ -3689,3 +3689,26 @@ def test_pipeline_run_streams_progress_and_never_blocks(tmp_path, monkeypatch):
     assert status == 404
     status, data = _req(base, "/api/pipelines/run", "POST", {"name": "demo"})
     assert status == 400
+
+
+def test_pipeline_new_from_template_saves_a_valid_graph(tmp_path, monkeypatch):
+    monkeypatch.setattr("saturday.config.get_config_dir", lambda: tmp_path)
+    app = AppState(store_root=tmp_path / "s")
+    base, _ = _server(app)
+
+    status, data = _req(base, "/api/pipelines")
+    assert status == 200
+    assert data["templates"], "the canvas needs somewhere to start"
+    assert "agent" in data["kinds"], "the canvas is served the socket rules"
+    assert data["kinds"]["agent"]["out"] == ["result", "transcript", "artifact"]
+
+    status, data = _req(base, "/api/pipelines", "POST",
+                        {"action": "new", "name": "mine", "template": "two-opinions"})
+    assert status == 200, data
+    assert data["pipeline"]["name"] == "mine"
+    status, got = _req(base, "/api/pipelines?name=mine")
+    assert got["problems"] == []
+
+    status, data = _req(base, "/api/pipelines", "POST",
+                        {"action": "new", "name": "x", "template": "ghost"})
+    assert status == 400
