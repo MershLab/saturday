@@ -3392,3 +3392,45 @@ def test_tools_endpoint_describes_every_tool_and_its_state(tmp_path):
     # a disabled family expands to its members, matching the toggle semantics
     assert "browser" in data["disabled"]
     assert data["tools"] == sorted(data["tools"], key=lambda t: t["name"])
+
+
+def test_doctor_endpoint_matches_the_cli_checks(tmp_path, monkeypatch):
+    """One implementation, two renderers: the endpoint and `saturday doctor`
+    must not drift into two different opinions about the same machine."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    app = AppState(store_root=tmp_path / "s", cfg_overrides={"workspace_root": str(ws)})
+    base, _ = _server(app)
+    monkeypatch.setattr("saturday.llm.probe.probe_connection",
+                        lambda *a, **k: (True, "reachable", []))
+
+    status, data = _req(base, "/api/doctor?offline=1")
+    assert status == 200, data
+    ids = [c["id"] for c in data["checks"]]
+    assert {"python", "provider", "model", "api_key", "endpoint", "workspace", "tools"} <= set(ids)
+    assert all(c["status"] in ("ok", "warn", "fail") for c in data["checks"])
+    assert data["failures"] == sum(1 for c in data["checks"] if c["status"] == "fail")
+
+    from saturday.diagnostics import format_check, run_checks
+
+    cli_checks = run_checks(app.base_cfg, offline=True)
+    assert [c["id"] for c in cli_checks] == ids
+    # the CLI's rendering of the shared check is the line doctor always printed
+    assert format_check({"label": "python", "detail": "3.12.0 ok"}).startswith("python        : ")
+
+
+def test_doctor_endpoint_reports_an_unwritable_workspace(tmp_path):
+    app = AppState(store_root=tmp_path / "s",
+                   cfg_overrides={"workspace_root": str(tmp_path / "ws")})
+    base, _ = _server(app)
+    # a path whose parent is a FILE cannot be created, so mkdir fails
+    blocker = tmp_path / "blocker"
+    blocker.write_text("x", encoding="utf-8")
+    app.base_cfg.workspace_root = str(blocker / "inside")
+
+    status, data = _req(base, "/api/doctor?offline=1")
+    assert status == 200, data
+    ws = next(c for c in data["checks"] if c["id"] == "workspace")
+    assert ws["status"] == "fail" and "NOT WRITABLE" in ws["detail"]
+    assert ws["hint"], "a failure must say what to do next"
+    assert data["failures"] >= 1

@@ -523,108 +523,21 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         _print("                      queries are not proxied through any Saturday service")
         return 0
 
-    _print(f"python        : {_sys.version.split()[0]} " + ("ok" if _sys.version_info >= (3, 10) else "TOO OLD"))
-    if _sys.version_info < (3, 10):
-        failures += 1
+    from saturday.diagnostics import failure_count, format_check, run_checks
 
-    try:
-        profile = cfg.profile()
-        _print(f"provider      : {cfg.provider} ({profile.resolve_base_url()})")
-        _print(f"model         : {cfg.model}")
-    except ValueError as exc:
-        _print(f"provider      : FAIL - {exc}")
+    checks = run_checks(cfg, offline=bool(getattr(args, "offline", False)))
+    for c in checks:
+        _print(format_check(c))
+    # a provider that will not resolve short-circuits everything after it
+    if len(checks) == 1 and checks[0]["id"] == "provider":
         return 1
 
-    key = profile.resolve_api_key()
-    needs_key = profile.name not in ("ollama", "vllm")
-    if needs_key and not key:
-        _print(f"api key       : MISSING ({profile.api_key_env})")
-        failures += 1
-    else:
-        _print("api key       : present" if key or not needs_key else "api key       : n/a (local provider)")
-
-    # --offline skips the probe entirely (CI/smoke: a provider that isn't
-    # running must not fail the harness check)
-    if getattr(args, "offline", False):
-        ok, detail = True, "skipped (--offline)"
-    else:
-        ok, detail, _models = probe_connection(profile, key, timeout=8)
-    if ok:
-        _print(f"endpoint      : {detail}")
-    elif "auth rejected" in detail:
-        _print("endpoint      : reachable (auth rejected -> check key)")
-        failures += 1
-    elif needs_key and not key:
-        _print("endpoint      : unverified (no key; expected for cloud providers)")
-    elif detail.startswith("endpoint answered with HTTP "):
-        _print(f"endpoint      : reachable ({detail.removeprefix('endpoint answered with ')})")
-    else:
-        _print(f"endpoint      : UNREACHABLE - {detail}")
-        failures += 1
-
-    ws = Path(cfg.workspace_root)
-    try:
-        ws.mkdir(parents=True, exist_ok=True)
-        probe_file = ws / ".saturday-write-test"
-        probe_file.write_text("ok", encoding="utf-8")
-        probe_file.unlink()
-        _print(f"workspace     : writable ({ws})")
-    except OSError as exc:
-        _print(f"workspace     : NOT WRITABLE - {exc}")
-        failures += 1
-
-    try:
-        from saturday.tools import default_registry
-
-        n = len(default_registry(cfg).names())
-        _print(f"tools         : {n} registered")
-    except Exception as exc:
-        _print(f"tools         : FAILED to build registry - {exc}")
-        failures += 1
-
-    from saturday.config import get_config_dir
-    from saturday.sessions import RunState
-
-    runs = RunState.scan(get_config_dir() / "sessions")
-    orphaned = [r for r in runs if r["orphaned"]]
-    live = [r for r in runs if r["alive"] and r["status"] == "running"]
-    if orphaned:
-        ids = ", ".join(r["id"] for r in orphaned[:5])
-        more = f" (+{len(orphaned) - 5} more)" if len(orphaned) > 5 else ""
-        _print(f"runs          : {len(orphaned)} orphaned (crashed mid-run) - {ids}{more}")
-        _print("                resume with: saturday chat --resume <session-id>")
-    elif live:
-        _print(f"runs          : {len(live)} currently active, no orphaned runs")
-    else:
-        _print("runs          : none tracked as running")
-
-    guardrails = bool(getattr(cfg, "destructive_guardrails", True))
-    _print(f"guardrails    : {'on - irreversible data ops ask + db files auto-backed-up' if guardrails else 'OFF (destructive_guardrails=false)'}")
-    mode = getattr(cfg, "persona_mode", "agent") or "agent"
-    if mode == "assistant":
-        _print("mode          : personal assistant (curated toolset)")
-
-    # local config files must parse or every surface silently falls back to
-    # defaults — surface that here instead of letting users discover it late
-    from saturday.config import get_config_dir
-
-    home = get_config_dir()
-    for name in ("hooks.json", "approvals.json", "config.json"):
-        p = home / name
-        if p.is_file():
-            try:
-                json.loads(p.read_text(encoding="utf-8-sig"))
-                _print(f"{name:<13} : ok")
-            except (json.JSONDecodeError, OSError) as exc:
-                _print(f"{name:<13} : INVALID JSON - {exc}")
-                failures += 1
-
+    failures = failure_count(checks)
     if failures:
         _print(f"\n{failures} problem(s) found.")
         return 1
     _print("\nall checks passed; ready to run: saturday run \"your task\"")
     return 0
-
 
 def cmd_tui(args: argparse.Namespace) -> int:
     from saturday.agent.core import Agent

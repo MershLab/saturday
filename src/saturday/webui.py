@@ -2171,6 +2171,25 @@ class Handler(BaseHTTPRequestHandler):
         } for sp in sorted(specs, key=lambda x: x["name"])]
         self._send_json({"tools": out, "disabled": sorted(disabled)})
 
+    def _get_doctor(self) -> None:
+        """The same preflight checks `saturday doctor` runs.
+
+        The user least able to read a terminal is the one most likely to have
+        a broken setup, so this has to be answerable from the app. It probes
+        the provider endpoint, so it is button triggered, not polled."""
+        from urllib.parse import parse_qs, urlparse
+
+        qs = parse_qs(urlparse(self.path).query)
+        offline = (qs.get("offline") or [""])[0] in ("1", "true")
+        from saturday.diagnostics import failure_count, run_checks
+
+        try:
+            checks = run_checks(self.app.base_cfg, offline=offline)
+        except Exception as exc:
+            self._send_json({"error": f"{type(exc).__name__}: {exc}"}, 500)
+            return
+        self._send_json({"checks": checks, "failures": failure_count(checks)})
+
     def _get_journal(self) -> None:
         from urllib.parse import parse_qs, unquote, urlparse
 
@@ -2803,6 +2822,7 @@ _GET_ROUTES = [
     ("/api/mcp", "_get_mcp"),
     ("/api/audit", "_get_audit"),
     ("/api/tools", "_get_tools"),
+    ("/api/doctor", "_get_doctor"),
     ("/api/schedules", "_get_schedules"),
     ("/api/runs", "_get_runs"),
     ("/api/git/status", "_get_git_status"),
