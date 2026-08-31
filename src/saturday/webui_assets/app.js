@@ -6445,7 +6445,9 @@ function mgStats(stats) {
       mgWake();
     }));
   }
-  mgStatus(stats.nodes + " things, " + stats.edges + " connections");
+  const clashes = mg.edges.filter((e) => e.kind === "contradicts").length;
+  mgStatus(stats.nodes + " things, " + stats.edges + " connections"
+    + (clashes ? "  \u00b7  " + clashes + " in red disagree" : ""));
 }
 
 function mgSearch(q) {
