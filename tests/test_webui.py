@@ -3215,7 +3215,7 @@ def test_open_folder_creates_a_project_in_one_call(tmp_path, monkeypatch):
 # older test files) stub load_mcp_config to {} for EVERY test here, including
 # the ones below. Capture the genuine function at import time - before any
 # fixture can run - so the MCP endpoint tests can exercise the real loader.
-import saturday.mcp_plugin as _mcpmod
+import saturday.mcp_plugin as _mcpmod  # noqa: E402 - must run after the fixtures above
 
 _REAL_LOAD_MCP_CONFIG = _mcpmod.load_mcp_config
 

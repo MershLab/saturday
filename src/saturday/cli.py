@@ -491,9 +491,6 @@ def cmd_mcp(args: argparse.Namespace) -> int:
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
-    import sys as _sys
-
-    from saturday.llm.probe import probe_connection
     from saturday.utils.env import load_env_file
 
     load_env_file(getattr(args, "env", None))
@@ -956,7 +953,6 @@ def cmd_sessions(args: argparse.Namespace) -> int:
 
 def cmd_memory(args: argparse.Namespace) -> int:
     """Search, inspect and consolidate the memory index over MEMORY.md."""
-    from saturday.config import get_config_dir
     from saturday.memindex import MemoryIndex
     from saturday.tools.memory import memory_path
 

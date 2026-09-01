@@ -170,8 +170,8 @@ def compress(text: str, budget: int) -> str:
             body.append(f"... [{skipped} less informative line{'s' if skipped != 1 else ''} omitted]")
         return "\n".join(head + body + tail)
 
-    note_for = lambda text: (
-        f"\n... [compressed: {original_len - len(text)} of {original_len} chars removed, ends kept]")
+    def note_for(text: str) -> str:
+        return f"\n... [compressed: {original_len - len(text)} of {original_len} chars removed, ends kept]"
 
     # The elision markers are not free, and an earlier version absorbed the
     # overflow with out[:budget] - which cut the tail off and reinstated

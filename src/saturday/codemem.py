@@ -134,7 +134,15 @@ def _safe_extract(archive: Path, dest: Path) -> None:
         members = [m for m in tf.getmembers() if safe(m.name) and not m.issym() and not m.islnk()]
         if len(members) != len(tf.getmembers()):
             raise VerificationError("archive contains entries outside the target directory")
-        tf.extractall(dest, members=members)
+        # "data" is the strictest filter: it refuses absolute paths, links that
+        # escape, and device/setuid entries. Belt and braces with the check
+        # above, and explicit because the default changes in 3.14 - leaving a
+        # security-sensitive unpack to depend on the interpreter version is
+        # exactly the kind of silent difference worth spelling out.
+        try:
+            tf.extractall(dest, members=members, filter="data")
+        except TypeError:
+            tf.extractall(dest, members=members)  # <3.11.4: no filter argument
 
 
 def install(progress=None, timeout: float = 180.0) -> Path:

@@ -20,7 +20,7 @@ import re
 import sqlite3
 import time
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from saturday.memscore import (
     SalienceIndex,
