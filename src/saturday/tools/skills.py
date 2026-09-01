@@ -107,7 +107,18 @@ class SkillLoadTool(Tool):
         name = str(args.get("name") or "").strip()
         if not name:
             return False, "name required"
-        return self.store.load(name)
+        ok, msg = self.store.load(name)
+        if ok:
+            # an explicit load is the strongest signal this module ever
+            # gets - not inferred from a ranked search, a real pick
+            try:
+                from saturday import attention
+
+                desc = next((d for n, d in self.store.index() if n == name), "")
+                attention.emit(attention.SKILL, name, attention.USED, 1.0, desc)
+            except Exception:
+                pass
+        return ok, msg
 
 
 class SkillsIndexTool(Tool):
@@ -137,6 +148,18 @@ def skills_prompt_block(store: SkillStore) -> str:
             "# Skills\nNo skills saved yet. When you solve something non-obvious and reusable, "
             "capture the procedure with `skill_save`."
         )
+    try:
+        from saturday import attention
+
+        # nothing here is ranked - every skill in the prompt is offered
+        # unordered, so each is `considered` with no score rather than a
+        # fabricated one. skill_load above is where a real `used` comes from.
+        # This is the observation step the skill's own ranking design needs
+        # before any ranking can be built on top of it.
+        for n, d in entries:
+            attention.emit(attention.SKILL, n, attention.CONSIDERED, 0.0, d)
+    except Exception:
+        pass
     listing = "\n".join(f"- {n}: {d}" for n, d in entries)
     return (
         "# Saved skills\n"

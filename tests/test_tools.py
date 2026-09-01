@@ -18,7 +18,7 @@ import pytest
 from saturday.agent.loop import AgentLoop
 from saturday.plugins import install_plugins, learning_plugin
 from saturday.tools import web as webmod
-from saturday.tools.skills import SkillStore, skills_prompt_block
+from saturday.tools.skills import SkillLoadTool, SkillStore, skills_prompt_block
 from saturday.tools.vision import ViewImageTool
 from saturday.tools.web import BrowserTool, WebSearchTool, extract_readable
 import saturday.tools.ocr as ocr
@@ -510,6 +510,57 @@ def test_skills_prompt_block_empty_store():
 
     block = skills_prompt_block(Empty())
     assert "skill_save" in block
+
+
+def test_skills_prompt_block_publishes_every_skill_as_considered(tmp_path, monkeypatch):
+    """Nothing here is ranked yet - every skill shown to the agent is
+    `considered` with no score, the observation the skill-ranking design
+    needs to exist before any real ranking can be built on top of it."""
+    from saturday import attention
+
+    monkeypatch.setattr("saturday.tools.skills.skills_dir", lambda: tmp_path / "skills")
+    store = SkillStore()
+    store.save("deploy-vllm", "spin up a vllm server", "steps")
+    store.save("fix-cuda", "repair a broken cuda install", "steps")
+
+    seen = []
+    attention.add_sink(seen.append)
+    try:
+        skills_prompt_block(store)
+    finally:
+        attention.remove_sink(seen.append)
+
+    by_name = {e["node"]: e for e in seen}
+    assert set(by_name) == {"deploy-vllm", "fix-cuda"}
+    assert all(e["region"] == "skill" and e["kind"] == "considered" and e["score"] == 0.0
+              for e in seen)
+    assert by_name["deploy-vllm"]["label"] == "spin up a vllm server"
+
+
+def test_skill_load_publishes_a_used_event_only_on_success(tmp_path, monkeypatch):
+    from saturday import attention
+
+    monkeypatch.setattr("saturday.tools.skills.skills_dir", lambda: tmp_path / "skills")
+    store = SkillStore()
+    store.save("deploy-vllm", "spin up a vllm server", "steps")
+    tool = SkillLoadTool(store)
+
+    seen = []
+    attention.add_sink(seen.append)
+    try:
+        ok, _ = tool.run({"name": "deploy-vllm"})
+        assert ok
+        # a miss must never fabricate a used event for a skill that wasn't there
+        ok2, _ = tool.run({"name": "no-such-skill"})
+        assert not ok2
+    finally:
+        attention.remove_sink(seen.append)
+
+    assert len(seen) == 1
+    e = seen[0]
+    assert e["region"] == "skill" and e["node"] == "deploy-vllm"
+    assert e["kind"] == "used" and e["score"] == 1.0
+    assert e["label"] == "spin up a vllm server"
 
 
 def test_view_image_registry_image_transfer(tmp_path):
