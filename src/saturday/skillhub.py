@@ -17,9 +17,11 @@ skill's text is injected into the model's prompt, and nobody has reviewed it.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -59,6 +61,12 @@ def _check_url(url: str) -> None:
     contain a .git means a typo cannot quietly clone something unintended."""
     parsed = urllib.parse.urlparse(url)
     scheme = parsed.scheme or ("ssh" if url.startswith("git@") else "")
+    # A Windows path parses as a URL whose scheme is its drive letter, so
+    # C:\Users\me\skill arrived here as "a c URL" and was refused - installing
+    # from a local folder was simply broken on Windows. No registered scheme is
+    # one character, so a single letter means a drive, not a protocol.
+    if len(scheme) == 1 and scheme.isalpha():
+        scheme = ""
     if scheme in ALLOWED_SCHEMES or scheme == "file":
         return
     if not scheme:
@@ -67,6 +75,28 @@ def _check_url(url: str) -> None:
             return
         raise SkillError(f"{url!r} is not a URL and not a local git repository")
     raise SkillError(f"refusing to clone a {scheme} URL: {url!r}")
+
+
+def _rmtree(path: Path) -> None:
+    """Delete a clone, including on Windows.
+
+    Git marks objects in .git read-only, and Windows refuses to unlink a
+    read-only file, so a plain rmtree fails part way through and leaves a
+    half-deleted skill behind. Clearing the bit and retrying is the standard
+    remedy; the handler name changed in 3.12, hence the two spellings."""
+    import stat
+
+    def _clear_readonly(func, target, _exc):
+        try:
+            os.chmod(target, stat.S_IWRITE)
+            func(target)
+        except OSError:
+            pass
+
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=_clear_readonly)
+    else:
+        shutil.rmtree(path, onerror=_clear_readonly)
 
 
 def skills_root() -> Path:
@@ -122,11 +152,11 @@ def install(url: str, name: str | None = None, force: bool = False) -> dict[str,
     if dest.exists():
         if not force:
             raise SkillError(f"{folder} is already installed (use force to replace it)")
-        shutil.rmtree(dest, ignore_errors=True)
+        _rmtree(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
     _git(["clone", "--depth", "1", url, str(dest)])
     if not (dest / "SKILL.md").is_file():
-        shutil.rmtree(dest, ignore_errors=True)
+        _rmtree(dest)
         raise SkillError(f"{url} has no SKILL.md at its root; nothing was installed")
     return {"name": folder, "path": str(dest), "url": url}
 
@@ -157,7 +187,7 @@ def remove(name: str) -> bool:
     dest = skills_root() / folder
     if not dest.is_dir():
         return False
-    shutil.rmtree(dest)
+    _rmtree(dest)
     return True
 
 
