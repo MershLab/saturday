@@ -11,10 +11,12 @@ The interesting edges are the ones between layers - a session that touched a
 file, a fact that came out of a session - because that is what makes this a
 memory of the work rather than a diagram of the code.
 
-Code edges come from the index's own postings: a file that DEFINES a symbol is
-linked from every file whose text references it. That is a real call graph's
-cheap cousin, it needs no import resolution, and it works for every language
-the index reads rather than only Python.
+Code edges come from the index's own postings: a file that uniquely DEFINES a
+symbol is linked from every file whose text mentions it. It needs no import
+resolution and works for every language the index reads. It is a lexical
+signal, not a call graph - a mention counts whether it is a call, an unrelated
+attribute or a word in a comment - so names defined by more than one file are
+dropped rather than guessed at, and the edge is called `mentions`.
 """
 from __future__ import annotations
 
@@ -129,12 +131,23 @@ def _add_code_layer(b: _Builder, index: dict, limit: int) -> None:
         if parent and parent in dir_ids:
             b.edge(did, dir_ids[parent], "contains", 1.5)
 
-    # symbol edges: definer <- referencer
-    definers: dict[str, str] = {}
-    for rel, meta in ranked:
+    # symbol edges: definer <- mentioner
+    #
+    # A lexical index cannot tell two same-named symbols apart, so a name that
+    # more than one file defines cannot be attributed to any one of them. The
+    # old code took the first definer and pointed every other file at it, which
+    # invented an edge per rival definition: `run` is defined in 27 files here.
+    #
+    # Ambiguity is judged over the whole index, not the ranked slice, or a name
+    # defined once above the size cut and again below it still looks unique.
+    definers: dict[str, set[str]] = {}
+    for rel, meta in files.items():
         for sym in (meta.get("symbols") or []):
-            definers.setdefault(sym.lower(), rel)
-    for sym, owner in definers.items():
+            definers.setdefault(str(sym).lower(), set()).add(rel)
+    for sym, owners in definers.items():
+        if len(owners) != 1:
+            continue
+        owner = next(iter(owners))
         hits = postings.get(sym)
         if not hits or len(hits) > MAX_DEF_FANOUT:
             continue
@@ -150,7 +163,7 @@ def _add_code_layer(b: _Builder, index: dict, limit: int) -> None:
                     count = float(info[0])
                 except (TypeError, ValueError, IndexError):
                     count = 1.0
-                b.edge(rid, oid, "references", min(4.0, count))
+                b.edge(rid, oid, "mentions", min(4.0, count))
 
 
 def _session_records(path: Path):

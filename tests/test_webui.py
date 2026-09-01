@@ -3129,6 +3129,41 @@ def test_memgraph_builds_layers_and_links_them(tmp_path, monkeypatch):
     assert any((i, core) in pairs for k, i in idx.items() if k.startswith("fact:"))
 
 
+def test_memgraph_drops_symbol_edges_it_cannot_attribute(tmp_path, monkeypatch):
+    """A name two files define cannot be pinned on either of them.
+
+    The old builder kept the first definer and pointed every mentioner at it,
+    so a caller of one `run` got an edge to an unrelated file's `run`."""
+    cfg = tmp_path / "cfg"
+    (cfg / "sessions").mkdir(parents=True)
+    monkeypatch.setattr("saturday.config.get_config_dir", lambda: cfg)
+
+    ws = tmp_path / "ws"
+    (ws / "pkg").mkdir(parents=True)
+    # `run` is defined twice; `unique_spinner` only once
+    (ws / "pkg" / "a.py").write_text(
+        "def run():\n    return 1\n\ndef unique_spinner():\n    return 2\n", encoding="utf-8")
+    (ws / "pkg" / "b.py").write_text("def run():\n    return 3\n", encoding="utf-8")
+    (ws / "pkg" / "caller.py").write_text(
+        "from pkg.a import unique_spinner\nrun()\nunique_spinner()\n", encoding="utf-8")
+
+    from saturday.memgraph import build_graph
+
+    g = build_graph(ws)
+    idx = {n["id"]: i for i, n in enumerate(g["nodes"])}
+    pairs = {(e["s"], e["t"]) for e in g["edges"]} | {(e["t"], e["s"]) for e in g["edges"]}
+
+    caller = idx["file:pkg/caller.py"]
+    # the unambiguous symbol still links
+    assert (caller, idx["file:pkg/a.py"]) in pairs
+    # ...but `run` is unattributable, so the two rival definers stay unlinked.
+    # This is the exact shape of the old bug: a.py won the name, so b.py - which
+    # only defines its OWN run - was recorded as referencing a.py's.
+    # Checks ALL edges, not just the `mentions` kind, so it fails against the
+    # old builder rather than passing because the kind was renamed.
+    assert (idx["file:pkg/b.py"], idx["file:pkg/a.py"]) not in pairs
+
+
 def test_memgraph_survives_an_empty_workspace(tmp_path, monkeypatch):
     cfg = tmp_path / "cfg"
     cfg.mkdir()
