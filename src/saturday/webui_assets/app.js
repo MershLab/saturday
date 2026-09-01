@@ -3475,6 +3475,13 @@ async function loadAgents() {
     lbl.appendChild(el("span", "", a.agent));
     row.appendChild(lbl);
     row.appendChild(el("span", "agent-tier tier-" + a.tier_name, a.tier_name));
+    if (a.caution) {
+      // shown beside the switch that turns it on, which is the only moment
+      // the warning is any use
+      const warn = el("span", "agent-caution", "!");
+      warn.title = a.caution;
+      row.appendChild(warn);
+    }
     const stat = a.runs
       ? Math.round(a.success * 100) + "% over " + a.runs + " run" + (a.runs === 1 ? "" : "s")
       : (a.installed ? "not used yet" : "not installed");

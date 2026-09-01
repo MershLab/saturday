@@ -31,6 +31,10 @@ class ExternalAgentSpec:
     provider: str = ""
     model: str = ""
     tier: int | None = None
+    # a caution to repeat wherever this agent is offered - not a block. What a
+    # user may do with their own account is between them and their vendor; the
+    # least Saturday can do is not let them find out afterwards.
+    caution: str = ""
 
     @property
     def is_provider(self) -> bool:
@@ -88,6 +92,12 @@ AGENTS: dict[str, ExternalAgentSpec] = {
         binaries=("opencode",),
         install_hint="curl -fsSL https://opencode.ai/install | bash",
         build_argv=_opencode_argv,
+        # Named in Anthropic's April 2026 enforcement against third-party
+        # harnesses billing to a consumer subscription. Saturday only runs the
+        # binary, but if it is configured to bill a Claude subscription it is
+        # the USER'S account at risk, so say so where they choose it.
+        caution="check how you have this configured: billing a Claude "
+                "subscription through a third-party harness is restricted",
     ),
 }
 

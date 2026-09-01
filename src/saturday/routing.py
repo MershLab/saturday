@@ -1,17 +1,25 @@
-"""Auto-delegation: send work to the cheapest resource that can do it.
+"""Auto-delegation: send work to the resource the user already has for it.
 
-Cost tiers, cheapest first. The one that matters is tier 2: a Claude Code
-or Cursor subscription is already paid for, so using it costs nothing
-extra - which no price-per-token router can represent, and which often
-makes the "expensive" subscription the cheapest place to send hard work.
+Tiers, in the order they are tried: a local model, a free endpoint, a CLI
+the user already installed and signed in to, then a metered API. The
+ordering is about matching work to a tool the user has already chosen,
+not about extracting volume from a flat fee - and the distinction is not
+cosmetic, because tier 2 delegates by SPAWNING each vendor's own CLI, so
+every request goes through that vendor's own client, its own
+authentication and its own limits. Saturday never holds a subscription
+credential and never speaks a vendor's API on a subscription's behalf;
+`tests/test_no_borrowed_credentials.py` is what keeps that true.
 
-Quota is observed, not declared: nobody knows their remaining subscription
-quota as a number, so a tier stays available until a real quota error
-arrives, then backs off until the window resets.
+Quota is observed, not declared: nobody knows their remaining quota as a
+number, so an agent stays available until its own client reports a real
+limit, and then Saturday BACKS OFF for an hour rather than retrying. A
+router that treats someone else's rate limit as an obstacle to route
+around is the thing this deliberately is not.
 """
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import time
 from dataclasses import dataclass
@@ -20,7 +28,11 @@ from pathlib import Path
 LOCAL, FREE, SUBSCRIPTION, METERED = 0, 1, 2, 3
 TIER_NAMES = {LOCAL: "local", FREE: "free", SUBSCRIPTION: "subscription", METERED: "metered"}
 
-# external CLIs are normally subscription-billed; providers vary by how they charge
+# Tier 2 means "a CLI the user installed and signed in to", reached by running
+# that CLI. It does not mean cheap capacity to prefer on price: several vendors
+# restrict what a consumer subscription may be used for, and honouring that is
+# the CLI's job, which is exactly why Saturday delegates to it instead of
+# reimplementing its client.
 _DEFAULT_TIERS = {
     "claude-code": SUBSCRIPTION,
     "codex": SUBSCRIPTION,
@@ -126,9 +138,24 @@ def mark_quota_exhausted(agent: str) -> None:
         )
 
 
+_QUOTA_PHRASES = ("rate limit", "rate-limit", "quota", "usage limit",
+                  "too many requests", "overloaded")
+_STATUS_429 = re.compile(r"(?<!\d)429(?!\d)")
+_STATUS_CONTEXT = re.compile(
+    r"\b(http|https|status|code|error|response|limit|exceeded|retry)\b", re.IGNORECASE)
+
+
 def looks_like_quota_error(text: str) -> bool:
+    """Did the delegate report hitting its own limit?
+
+    A bare "429" is not enough on its own. This runs over a failed
+    delegation's whole output, and a delegate that ran a test suite can print
+    the number for unrelated reasons ("wrote 429 lines") - which would park a
+    working agent for an hour and push the work to a metered tier instead."""
     low = (text or "").lower()
-    return any(k in low for k in ("429", "rate limit", "quota", "usage limit", "too many requests"))
+    if any(k in low for k in _QUOTA_PHRASES):
+        return True
+    return bool(_STATUS_429.search(low) and _STATUS_CONTEXT.search(low))
 
 
 def record(agent: str, task_kind: str, ok: bool, latency: float = 0.0, note: str = "", alpha: float = 0.3) -> None:

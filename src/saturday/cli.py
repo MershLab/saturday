@@ -877,6 +877,15 @@ def cmd_agents(args: argparse.Namespace) -> int:
             f"{'yes' if c.installed else 'no':<6} {'on' if c.enabled else 'off':<5} "
             f"{success:<8} {c.n}"
         )
+    from saturday.tools.external_agent import all_agents
+
+    specs = all_agents()
+    notes = [(c.agent, getattr(specs.get(c.agent), "caution", "") or "")
+             for c in rows if getattr(specs.get(c.agent), "caution", "")]
+    if notes:
+        _print("")
+        for name, note in notes:
+            _print(f"note: {name} - {note}")
     if not any(c.enabled for c in rows):
         _print("\nNothing is enabled for auto-delegation - being installed is not permission to")
         _print("spend it. Turn one on: saturday agents --enable claude-code")
