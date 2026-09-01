@@ -703,6 +703,7 @@ def test_ui_send_and_streamed_reply_renders(ui_server):
                 if "<strong" not in html:
                     err_line = page.evaluate("() => { const e = document.querySelector('.sysline.error'); return e ? e.textContent : null; }")
                     raise AssertionError(f"markdown empty; sysline={err_line!r}; html={html[:120]!r}")
+                assert "script exhausted" not in html, "the shared fake ran out of replies"
                 assert 'class="codewrap"' in html, f"fenced code block missing: {html[:300]}"
                 assert 'class="inline"' in html, f"inline code missing: {html[:300]}"
                 stats = page.locator(".turn-stats").last.inner_text()
@@ -879,7 +880,10 @@ def ui_server(tmp_path_factory):
         # bold, a fenced block and an inline span
         reply = ("**bold** and `inline` code\n\n"
                  "```python\nprint('hi')\n```\n")
-        fake = make_scripted_model([{"content": reply}] * 8)
+        # one script shared by every browser test, and a slow retry burns
+        # entries; running out yields an error bubble with no markdown, which
+        # reads as a rendering failure rather than an exhausted fake
+        fake = make_scripted_model([{"content": reply}] * 80)
         orig = app._new_agent
         app._new_agent = lambda cfg: _with_fake(orig(cfg), fake)
         srv = AppServer(("127.0.0.1", 0), app, token=TOKEN)
@@ -3866,3 +3870,78 @@ def test_skill_browse_is_its_own_mode_not_a_search_with_no_words(tmp_path, monke
     # without browse=1 it is still the installed list, which the panel also needs
     status, data = _req(base, "/api/skills")
     assert status == 200 and "installed" in data and "results" not in data
+
+
+def test_qt_permission_patch_coerces_the_policy(monkeypatch):
+    """pywebview answers a permission request with a raw int and PyQt6 6.11
+    wants the enum, so the desktop window aborted the whole process the moment
+    a page asked for notifications."""
+    import sys
+    import types
+
+    calls = []
+
+    class Policy:
+        PermissionGrantedByUser = "granted"
+        PermissionDeniedByUser = "denied"
+
+    class Feat:
+        MediaAudioCapture = "audio"
+        MediaVideoCapture = "video"
+        MediaAudioVideoCapture = "av"
+        Notifications = "notify"
+
+    class FakePage:
+        # a class body cannot read an enclosing function's local of the same
+        # name, so these are deliberately spelled differently
+        PermissionPolicy = Policy
+        Feature = Feat
+
+        def setFeaturePermission(self, url, feature, policy):
+            # the real binding rejects an int here; mirror that
+            assert not isinstance(policy, int), "an int must never reach Qt"
+            calls.append((feature, policy))
+
+    core = types.ModuleType("PyQt6.QtWebEngineCore")
+    core.QWebEnginePage = FakePage
+    qt_backend = types.ModuleType("webview.platforms.qt")
+
+    class WebPage:
+        pass
+
+    qt_backend.BrowserView = types.SimpleNamespace(WebPage=WebPage)
+    # the whole import chain has to resolve: "import webview.platforms.qt"
+    # imports the parents first, and most installs have no pywebview at all
+    pyqt6 = types.ModuleType("PyQt6")
+    pyqt6.QtWebEngineCore = core
+    wv = types.ModuleType("webview")
+    platforms = types.ModuleType("webview.platforms")
+    wv.platforms = platforms
+    platforms.qt = qt_backend
+    for name, mod in (("PyQt6", pyqt6), ("PyQt6.QtWebEngineCore", core),
+                      ("webview", wv), ("webview.platforms", platforms),
+                      ("webview.platforms.qt", qt_backend)):
+        monkeypatch.setitem(sys.modules, name, mod)
+
+    from saturday import webui as webui_mod
+
+    webui_mod._patch_qt_permission_policy()
+    handler = WebPage.onFeaturePermissionRequested
+    page = FakePage()
+    handler(page, "http://localhost/", Feat.Notifications)
+    handler(page, "http://localhost/", Feat.MediaAudioCapture)
+    assert calls == [("notify", "denied"), ("audio", "granted")]
+
+    # patching twice must not stack
+    webui_mod._patch_qt_permission_policy()
+    assert WebPage.onFeaturePermissionRequested is handler
+
+
+def test_qt_permission_patch_is_silent_without_qt(monkeypatch):
+    """Most installs have no Qt at all; the patch must simply do nothing."""
+    import sys
+
+    from saturday import webui as webui_mod
+
+    monkeypatch.setitem(sys.modules, "PyQt6.QtWebEngineCore", None)
+    webui_mod._patch_qt_permission_policy()  # must not raise

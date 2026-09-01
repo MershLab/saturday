@@ -3430,6 +3430,42 @@ def embedded_window_hint() -> str:
     return "add a GUI backend:  uv tool install --force --with 'pywebview[qt]' saturday"
 
 
+def _patch_qt_permission_policy() -> None:
+    """Stop the Qt backend aborting the app on any permission request.
+
+    pywebview 6.2 answers featurePermissionRequested with a raw int, and PyQt6
+    6.11 requires the PermissionPolicy enum, so the whole process dies with a
+    TypeError the moment a page asks for notifications or the clipboard.
+    Coercing the int back to the enum is upstream's own intent."""
+    try:
+        from PyQt6.QtWebEngineCore import QWebEnginePage
+
+        import webview.platforms.qt as qt_backend
+    except Exception:
+        return  # not the Qt backend, or not installed: nothing to patch
+
+    policy = QWebEnginePage.PermissionPolicy
+    page = getattr(getattr(qt_backend, "BrowserView", None), "WebPage", None)
+    if page is None or getattr(page, "_saturday_policy_patch", False):
+        return
+
+    def on_feature_permission_requested(self, url, feature) -> None:
+        media = (QWebEnginePage.Feature.MediaAudioCapture,
+                 QWebEnginePage.Feature.MediaVideoCapture,
+                 QWebEnginePage.Feature.MediaAudioVideoCapture)
+        allow = policy.PermissionGrantedByUser if feature in media else policy.PermissionDeniedByUser
+        try:
+            self.setFeaturePermission(url, feature, allow)
+        except Exception:
+            pass  # a refused permission must never take the window down
+
+    try:
+        page.onFeaturePermissionRequested = on_feature_permission_requested
+        page._saturday_policy_patch = True
+    except Exception:
+        pass
+
+
 def launch_embedded_window(url: str, width: int, height: int) -> bool:
     """Frameless embedded window with a custom title bar (pywebview/WebView2).
 
@@ -3450,6 +3486,7 @@ def launch_embedded_window(url: str, width: int, height: int) -> bool:
         import logging
 
         logging.getLogger("pywebview").setLevel(logging.CRITICAL)
+    _patch_qt_permission_policy()
     try:
         controls = _WindowControls()
         win = webview.create_window(
