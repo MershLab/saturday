@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
+import subprocess
 import time
 from pathlib import Path
 
@@ -428,15 +430,83 @@ def _lsp_symdefs(workspace_root: str | Path, rel: str,
     return _flatten_lsp_symbols(symbols) or None
 
 
+# Rung 2 of the extraction ladder (design doc section 5): no resolution, but
+# definitions with kinds and line numbers across the ~40 languages
+# universal-ctags parses, for a repo with no LSP server configured. The
+# bundled ast extractor covers only Python; this is what gives every other
+# language a symbol layer at all rather than none.
+_CTAGS_KIND = {
+    "class": "class", "struct": "class", "interface": "class", "enum": "class",
+    "member": "field", "field": "field", "property": "field",
+    "variable": "constant", "constant": "constant",
+}
+
+
+def _ctags_kind(raw_kind: str, scope: str) -> str | None:
+    mapped = _CTAGS_KIND.get(raw_kind)
+    if mapped is not None:
+        return mapped
+    if raw_kind in ("function", "method", "subroutine"):
+        # ctags reports a member function under its enclosing scope the same
+        # as a bare one - `scope` is what tells them apart, the same signal
+        # documentSymbol's containment gives directly and ast gets from
+        # walking the tree
+        return "method" if scope else "function"
+    return None
+
+
+def _ctags_symdefs(workspace_root: str | Path, rel: str) -> list[dict] | None:
+    """None when the binary isn't on PATH, the invocation fails, or nothing
+    in the file's language is recognized - the same "enhancement, never a
+    requirement" contract every other rung in this codebase honours."""
+    ctags = shutil.which("ctags") or shutil.which("universal-ctags")
+    if not ctags:
+        return None
+    try:
+        from saturday.tools.lsp import _resolve_in_root
+
+        path, err = _resolve_in_root(rel, str(workspace_root))
+        if err:
+            return None
+        proc = subprocess.run(
+            [ctags, "--output-format=json", "--fields=+n", "-f", "-", str(path)],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+
+    out: list[dict] = []
+    for line in proc.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if entry.get("_type") != "tag" or not entry.get("name"):
+            continue
+        kind = _ctags_kind(str(entry.get("kind") or ""), str(entry.get("scope") or ""))
+        if kind is None:
+            continue
+        out.append({"name": str(entry["name"]), "kind": kind,
+                    "line": int(entry.get("line") or 0),
+                    "parent": str(entry.get("scope") or "")})
+    return out or None
+
+
 def expand_file(workspace_root: str | Path | None, rel: str,
                 index: dict | None = None, limit: int = SYMBOL_LIMIT,
                 lsp_servers_cfg: dict | None = None) -> dict:
     """Symbol nodes for one file, addressed by id rather than by position.
 
-    Prefers a configured language server's documentSymbol over the index's
-    ast-derived symdefs when one is available for this file's language: LSP
-    resolves real scope and covers languages the bundled ast extractor
-    cannot touch at all. Falls back to the index silently otherwise.
+    Best available source wins, in order: a configured language server's
+    documentSymbol (real scope, any language it covers); ctags, if the
+    binary is on PATH (no resolution, but kinds and lines across ~40
+    languages); the index's own ast-derived symdefs (exact, Python only).
+    Each rung falls back to the next silently on any failure.
 
     Returns edges as {source, target} node ids, not array offsets: the caller
     already holds a graph and has to splice these into its own numbering."""
@@ -447,6 +517,8 @@ def expand_file(workspace_root: str | Path | None, rel: str,
     defs = None
     if workspace_root:
         defs = _lsp_symdefs(workspace_root, rel, lsp_servers_cfg or {})
+        if defs is None:
+            defs = _ctags_symdefs(workspace_root, rel)
 
     if defs is None:
         idx = index

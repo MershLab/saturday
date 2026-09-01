@@ -3697,6 +3697,126 @@ def test_memgraph_focus_endpoint(tmp_path, monkeypatch):
     assert status == 200 and none["nodes"] == []
 
 
+def test_ctags_kind_maps_class_field_constant_and_function_vs_method():
+    from saturday.memgraph import _ctags_kind
+
+    assert _ctags_kind("class", "") == "class"
+    assert _ctags_kind("struct", "") == "class"
+    assert _ctags_kind("interface", "") == "class"
+    assert _ctags_kind("enum", "") == "class"
+    assert _ctags_kind("member", "Widget") == "field"
+    assert _ctags_kind("property", "Widget") == "field"
+    assert _ctags_kind("variable", "") == "constant"
+    assert _ctags_kind("constant", "") == "constant"
+    # scope is what tells a bare function from a method - ctags names both
+    # "function" or "method" depending on language/parser, either way
+    assert _ctags_kind("function", "") == "function"
+    assert _ctags_kind("function", "Widget") == "method"
+    assert _ctags_kind("method", "Widget") == "method"
+    assert _ctags_kind("method", "") == "function"
+    # namespace, macro, typedef etc. carry no cross-file identity here
+    assert _ctags_kind("namespace", "") is None
+    assert _ctags_kind("macro", "") is None
+
+
+CTAGS_JSON = "\n".join([
+    '{"_type": "pseudo-tag", "name": "!_TAG_FILE_FORMAT", "path": "a.go"}',
+    '{"_type": "tag", "name": "Widget", "path": "a.go", "pattern": "x", "kind": "struct", "line": 1}',
+    '{"_type": "tag", "name": "Spin", "path": "a.go", "pattern": "x", "kind": "method", "scope": "Widget", "line": 2}',
+    '{"_type": "tag", "name": "MaxSize", "path": "a.go", "pattern": "x", "kind": "constant", "line": 5}',
+    '{"_type": "tag", "name": "helper", "path": "a.go", "pattern": "x", "kind": "function", "line": 8}',
+    '{"_type": "tag", "name": "internalPackage", "path": "a.go", "pattern": "x", "kind": "package", "line": 0}',
+    "",
+])
+
+
+def test_ctags_symdefs_parses_real_shaped_output(tmp_path, monkeypatch):
+    from saturday.memgraph import _ctags_symdefs
+
+    (tmp_path / "a.go").write_text("package main\n", encoding="utf-8")
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/ctags")
+
+    class FakeProc:
+        returncode = 0
+        stdout = CTAGS_JSON
+
+    monkeypatch.setattr("subprocess.run", lambda *a, **k: FakeProc())
+
+    defs = _ctags_symdefs(tmp_path, "a.go")
+    by_name = {d["name"]: d for d in defs}
+    assert by_name["Widget"]["kind"] == "class"
+    assert by_name["Spin"] == {"name": "Spin", "kind": "method", "line": 2, "parent": "Widget"}
+    assert by_name["MaxSize"]["kind"] == "constant"
+    assert by_name["helper"]["kind"] == "function"
+    # a pseudo-tag and an unmapped kind (package) never become symbols
+    assert "!_TAG_FILE_FORMAT" not in by_name and "internalPackage" not in by_name
+
+
+def test_ctags_symdefs_absent_binary_or_failure_returns_none(tmp_path, monkeypatch):
+    from saturday.memgraph import _ctags_symdefs
+
+    (tmp_path / "a.go").write_text("package main\n", encoding="utf-8")
+
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    assert _ctags_symdefs(tmp_path, "a.go") is None
+
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/ctags")
+    class FailedProc:
+        returncode = 1
+        stdout = ""
+    monkeypatch.setattr("subprocess.run", lambda *a, **k: FailedProc())
+    assert _ctags_symdefs(tmp_path, "a.go") is None
+
+
+def test_expand_file_falls_through_lsp_then_ctags_then_index(tmp_path, monkeypatch):
+    """The three-rung ladder in order: an unconfigured/failed LSP falls to
+    ctags; an absent ctags binary falls to the ast-derived index."""
+    from saturday.memgraph import expand_file
+    from saturday.tools.repo_index import build_index
+
+    (tmp_path / "a.py").write_text("def from_ast(): pass\n", encoding="utf-8")
+    idx = build_index(tmp_path, force=True)
+
+    # no LSP configured, ctags present -> ctags wins over the index
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/ctags")
+
+    class FakeProc:
+        returncode = 0
+        stdout = '{"_type": "tag", "name": "from_ctags", "path": "a.py", "pattern": "x", "kind": "function", "line": 1}\n'
+
+    monkeypatch.setattr("subprocess.run", lambda *a, **k: FakeProc())
+    d = expand_file(tmp_path, "a.py", index=idx, lsp_servers_cfg={})
+    assert {n["label"] for n in d["nodes"]} == {"from_ctags"}
+
+    # neither LSP nor ctags available -> the index's ast symbols
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    d2 = expand_file(tmp_path, "a.py", index=idx, lsp_servers_cfg={})
+    assert {n["label"] for n in d2["nodes"]} == {"from_ast"}
+
+
+def test_ctags_symdefs_refuses_to_escape_the_workspace(tmp_path, monkeypatch):
+    from saturday.memgraph import _ctags_symdefs
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.go").write_text("package main\n", encoding="utf-8")
+
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/ctags")
+    called = []
+    def fake_run(cmd, **k):
+        called.append(cmd)
+        class P:
+            returncode = 0
+            stdout = ""
+        return P()
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    assert _ctags_symdefs(ws, "../outside/secret.go") is None
+    assert not called
+
+
 def test_browse_lists_directories_and_flags_repos(tmp_path, monkeypatch):
     """The folder picker's listing: directories only, git repos marked, and
     crumbs that walk back up. It is deliberately outside the ws sandbox."""
