@@ -28,3 +28,21 @@ jobs:
         run: python -m saturday doctor --provider ollama --offline
       - name: Tests
         run: python -m pytest -q
+
+  browser:
+    # The 13 playwright tests were skipped on every runner because nothing
+    # installed it, so they rotted unnoticed: the fixture predated the
+    # onboarding dialog and every keystroke they typed went into its API-key
+    # field. One job on one platform is enough to keep them honest.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install -e .[dev,browser]
+      - name: Install Chromium
+        run: python -m playwright install --with-deps chromium
+      - name: Browser tests
+        run: python -m pytest tests/test_webui.py -q -k "ui_" -p no:randomly
