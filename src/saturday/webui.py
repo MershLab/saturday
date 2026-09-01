@@ -1963,6 +1963,37 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._send_json({"error": str(exc)}, 500)
 
+    def _get_memgraph_focus(self) -> None:
+        """Level-2 detail: callers and callees of one already-expanded symbol.
+
+        No ast fallback exists for this - see memgraph.focus_symbol's own
+        docstring - so an unconfigured or missing server answers empty rather
+        than erroring, the same contract expand_file uses."""
+        from urllib.parse import parse_qs, unquote, urlparse
+
+        qs = parse_qs(urlparse(self.path).query)
+        sid = unquote((qs.get("sid") or [""])[0])
+        rel = unquote((qs.get("path") or [""])[0]).strip().replace("\\", "/")
+        name = unquote((qs.get("name") or [""])[0])
+        try:
+            line = int((qs.get("line") or ["0"])[0])
+            column = int((qs.get("column") or ["0"])[0])
+        except ValueError:
+            line, column = 0, 0
+        ws = self.app.session_workspace(sid) or self.app.base_cfg.workspace_root
+        empty = {"nodes": [], "edges": [], "path": rel, "truncated": False}
+        if not rel or not ws or not name or not line:
+            self._send_json(empty)
+            return
+        try:
+            from saturday.memgraph import focus_symbol
+
+            lsp_servers = dict(getattr(self.app.base_cfg, "lsp_servers", None) or {})
+            self._send_json(focus_symbol(ws, rel, name, line, column,
+                                          lsp_servers_cfg=lsp_servers))
+        except Exception as exc:
+            self._send_json({"error": str(exc)}, 500)
+
     def _get_browse(self) -> None:
         """Directory listing for the folder picker.
 
@@ -3153,6 +3184,7 @@ _GET_ROUTES = [
     ("/api/journal", "_get_journal"),
     ("/api/memgraph", "_get_memgraph"),
     ("/api/memgraph/expand", "_get_memgraph_expand"),
+    ("/api/memgraph/focus", "_get_memgraph_focus"),
     ("/api/browse", "_get_browse"),
     ("/api/mcp", "_get_mcp"),
     ("/api/audit", "_get_audit"),

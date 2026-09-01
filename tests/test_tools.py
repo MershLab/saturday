@@ -991,17 +991,17 @@ def test_lsp_references_normalizes_locations():
 
 def test_lsp_call_hierarchy_merges_callers_and_callees():
     t = FakeTransportFactory()
-    prepared = [{"name": "spin", "uri": "file:///w/a.py",
+    prepared = [{"name": "spin", "uri": "file:///w/a.py", "kind": 6,
                  "range": {"start": {"line": 4, "character": 4}}}]
-    incoming = [{"from": {"name": "main", "uri": "file:///w/main.py",
+    incoming = [{"from": {"name": "main", "uri": "file:///w/main.py", "kind": 12,
                           "range": {"start": {"line": 10, "character": 0}}}}]
-    outgoing = [{"to": {"name": "log", "uri": "file:///w/util.py",
+    outgoing = [{"to": {"name": "log", "uri": "file:///w/util.py", "kind": 6,
                         "range": {"start": {"line": 2, "character": 0}}}}]
     _answer_in_order(t, [prepared, incoming, outgoing])
     got = t.client.call_hierarchy("/w/a.py", 4, 4)
     assert got == {
-        "callers": [{"name": "main", "path": "w/main.py", "line": 11}],
-        "callees": [{"name": "log", "path": "w/util.py", "line": 3}],
+        "callers": [{"name": "main", "path": "w/main.py", "line": 11, "kind": "function"}],
+        "callees": [{"name": "log", "path": "w/util.py", "line": 3, "kind": "method"}],
     }
 
 

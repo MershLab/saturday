@@ -827,6 +827,106 @@ def test_ui_memory_graph_survives_a_wake_before_it_has_loaded(ui_server):
         browser.close()
 
 
+
+@pytest.mark.skipif(not HAS_PW, reason="playwright not installed")
+def test_ui_memory_graph_focuses_and_unfocuses_calls(ui_server):
+    """Level 2 in a real browser: pulling in a symbol's callers/callees and
+    releasing them again must never leave a parallel array short - the exact
+    class of bug the render-loop crash was, so it gets the same live check
+    rather than trusting the unit tests on mgReshape alone.
+
+    No real LSP server is configured in this fixture, so the focus endpoint
+    is intercepted at the network layer with a synthetic response - server
+    behaviour is already covered by test_focus_symbol_* in this file; this
+    test is about the client-side splice."""
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        page = browser.new_page(viewport={"width": 1400, "height": 900})
+        errs: list[str] = []
+        page.on("pageerror", lambda e: errs.append(getattr(e, "stack", None) or str(e)))
+        page.goto(f"{ui_server}/?k={TOKEN}")
+        page.wait_for_selector("#input", state="visible", timeout=20000)
+
+        page.click('.stage-tab[data-tab="memory"]')
+        page.wait_for_function(
+            "() => window.df && window.df.mg && window.df.mg.loaded && window.df.mg.nodes.length > 3",
+            timeout=60000)
+
+        rel = page.evaluate("""() => {
+            const mg = window.df.mg;
+            const i = mg.nodes.findIndex((n) => n.kind === 'file' &&
+                                                (n.meta.path || '').endsWith('.py'));
+            if (i < 0) return null;
+            window.df.mgSelect(i);
+            return mg.nodes[i].meta.path;
+        }""")
+        assert rel, "no python file node in the graph"
+        pre_expand = page.evaluate("() => window.df.mg.nodes.length")
+        page.wait_for_selector("#mgExpand", timeout=10000)
+        page.click("#mgExpand")
+        page.wait_for_function(f"() => window.df.mg.nodes.length > {pre_expand}", timeout=20000)
+
+        sym = page.evaluate("""() => {
+            const mg = window.df.mg;
+            const i = mg.nodes.findIndex((n) => ['class','function','method']
+                                                  .includes(n.kind));
+            if (i < 0) return null;
+            window.df.mgSelect(i);
+            return { id: mg.nodes[i].id, label: mg.nodes[i].label,
+                     path: mg.nodes[i].meta.path, line: mg.nodes[i].meta.line };
+        }""")
+        assert sym, "no callable symbol appeared after expanding"
+
+        page.route("**/api/memgraph/focus*", lambda route: route.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps({
+                "nodes": [
+                    {"id": "file:zz_caller.py", "kind": "file", "label": "zz_caller.py",
+                     "group": "", "weight": 1.0, "meta": {"path": "zz_caller.py"}},
+                    {"id": "sym:zz_caller.py:caller_fn:1", "kind": "function",
+                     "label": "caller_fn", "group": "zz_caller.py", "weight": 1.0,
+                     "meta": {"path": "zz_caller.py", "line": 1, "parent": "", "of": "zz_caller.py"}},
+                ],
+                "edges": [{"source": "sym:zz_caller.py:caller_fn:1", "target": sym["id"],
+                           "kind": "calls", "w": 1.0}],
+                "path": sym["path"], "truncated": False,
+            })))
+
+        before = page.evaluate("() => window.df.mg.nodes.length")
+        page.wait_for_selector("#mgFocus", timeout=10000)
+        assert page.locator("#mgFocus").inner_text().strip() == "show calls"
+        page.click("#mgFocus")
+        page.wait_for_function(f"() => window.df.mg.nodes.length > {before}", timeout=10000)
+
+        shape = page.evaluate("""() => { const mg = window.df.mg; return ({
+            n: mg.nodes.length,
+            arrays: [mg.x.length, mg.y.length, mg.vx.length, mg.deg.length,
+                     mg.heat.length, mg.attnKind.length],
+            hasCaller: mg.nodes.some((n) => n.id === 'sym:zz_caller.py:caller_fn:1'),
+            callsEdge: mg.edges.some((e) => e.kind === 'calls'),
+            badEdge: mg.edges.some((e) => e.s >= mg.nodes.length || e.t >= mg.nodes.length),
+        }); }""")
+        assert shape["hasCaller"] and shape["callsEdge"], shape
+        assert all(a == shape["n"] for a in shape["arrays"]), shape
+        assert not shape["badEdge"]
+
+        page.wait_for_selector("#mgFocus", timeout=10000)
+        assert page.locator("#mgFocus").inner_text().strip() == "hide calls"
+        page.click("#mgFocus")
+        page.wait_for_function(f"() => window.df.mg.nodes.length === {before}", timeout=10000)
+        after = page.evaluate("""() => { const mg = window.df.mg; return ({
+            n: mg.nodes.length,
+            arrays: [mg.x.length, mg.deg.length, mg.attnKind.length],
+            hasCaller: mg.nodes.some((n) => n.id === 'sym:zz_caller.py:caller_fn:1'),
+            badEdge: mg.edges.some((e) => e.s >= mg.nodes.length || e.t >= mg.nodes.length),
+        }); }""")
+        assert all(a == after["n"] for a in after["arrays"]), after
+        assert not after["hasCaller"] and not after["badEdge"]
+
+        assert not errs, errs
+        browser.close()
+
+
 @pytest.mark.skipif(not HAS_PW, reason="playwright not installed")
 def test_ui_slash_popup_and_settings_modal(ui_server):
     with sync_playwright() as pw:
@@ -3471,6 +3571,130 @@ def test_expand_file_lsp_path_refuses_to_escape_the_workspace(tmp_path, monkeypa
 
     d = expand_file(ws, "../outside/secret.py", lsp_servers_cfg={"python": ["pylsp"]})
     assert d["nodes"] == [] and not opened
+
+
+def test_focus_symbol_returns_callers_and_callees_with_correct_edge_direction(tmp_path, monkeypatch):
+    from saturday.memgraph import focus_symbol
+
+    ws = tmp_path / "ws"
+    (ws / "pkg").mkdir(parents=True)
+    (ws / "pkg" / "a.py").write_text("def spin(): pass\n", encoding="utf-8")
+
+    class FakeClient:
+        def did_open(self, *a, **k):
+            pass
+
+        def call_hierarchy(self, path, line, column):
+            return {
+                "callers": [{"name": "main", "path": str(ws / "pkg" / "main.py"),
+                            "line": 10, "kind": "function"}],
+                "callees": [{"name": "log", "path": str(ws / "pkg" / "util.py"),
+                            "line": 2, "kind": "method"}],
+            }
+
+    monkeypatch.setattr("saturday.tools.lsp.get_client", lambda *a, **k: FakeClient())
+
+    d = focus_symbol(ws, "pkg/a.py", "spin", 1, lsp_servers_cfg={"python": ["pylsp"]})
+    ids = {n["id"] for n in d["nodes"]}
+    assert "sym:pkg/main.py:main:10" in ids and "sym:pkg/util.py:log:2" in ids
+    assert "file:pkg/main.py" in ids and "file:pkg/util.py" in ids
+
+    anchor = "sym:pkg/a.py:spin:1"
+    edges = {(e["source"], e["target"]) for e in d["edges"]}
+    # a caller points AT the anchor; the anchor points AT a callee
+    assert ("sym:pkg/main.py:main:10", anchor) in edges
+    assert (anchor, "sym:pkg/util.py:log:2") in edges
+    assert all(e["kind"] == "calls" for e in d["edges"])
+
+    caller_node = next(n for n in d["nodes"] if n["id"] == "sym:pkg/main.py:main:10")
+    callee_node = next(n for n in d["nodes"] if n["id"] == "sym:pkg/util.py:log:2")
+    assert caller_node["kind"] == "function" and callee_node["kind"] == "method"
+
+
+def test_focus_symbol_drops_calls_that_resolve_outside_the_workspace(tmp_path, monkeypatch):
+    """A call into the stdlib or a dependency is real, but there is no file
+    node in this graph to attach it to - it must not fabricate one."""
+    from saturday.memgraph import focus_symbol
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "a.py").write_text("def go(): pass\n", encoding="utf-8")
+
+    class FakeClient:
+        def did_open(self, *a, **k):
+            pass
+
+        def call_hierarchy(self, path, line, column):
+            return {"callers": [], "callees": [
+                {"name": "loads", "path": "/usr/lib/python3.11/json/__init__.py",
+                 "line": 299, "kind": "function"},
+            ]}
+
+    monkeypatch.setattr("saturday.tools.lsp.get_client", lambda *a, **k: FakeClient())
+    d = focus_symbol(ws, "a.py", "go", 1, lsp_servers_cfg={"python": ["pylsp"]})
+    assert d["nodes"] == [] and d["edges"] == []
+
+
+def test_focus_symbol_dedupes_a_caller_reached_through_two_items(tmp_path, monkeypatch):
+    """Two overloaded prepareCallHierarchy items pointing back at the same
+    caller must not double the node or the edge."""
+    from saturday.memgraph import focus_symbol
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "a.py").write_text("def go(): pass\n", encoding="utf-8")
+
+    class FakeClient:
+        def did_open(self, *a, **k):
+            pass
+
+        def call_hierarchy(self, path, line, column):
+            same = {"name": "main", "path": str(ws / "main.py"), "line": 5, "kind": "function"}
+            return {"callers": [dict(same), dict(same)], "callees": []}
+
+    monkeypatch.setattr("saturday.tools.lsp.get_client", lambda *a, **k: FakeClient())
+    d = focus_symbol(ws, "a.py", "go", 1, lsp_servers_cfg={"python": ["pylsp"]})
+    assert len(d["nodes"]) == 2  # one file node, one symbol node
+    assert len(d["edges"]) == 1  # one edge, weight accumulated rather than duplicated
+    assert d["edges"][0]["w"] == 2.0
+
+
+def test_focus_symbol_without_a_configured_server_is_empty(tmp_path):
+    from saturday.memgraph import focus_symbol
+
+    d = focus_symbol(tmp_path, "a.py", "go", 1, lsp_servers_cfg={})
+    assert d == {"nodes": [], "edges": [], "path": "a.py", "truncated": False}
+
+
+def test_memgraph_focus_endpoint(tmp_path, monkeypatch):
+    cfg = tmp_path / "cfg"
+    cfg.mkdir()
+    monkeypatch.setattr("saturday.config.get_config_dir", lambda: cfg)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "a.py").write_text("def go(): pass\n", encoding="utf-8")
+
+    class FakeClient:
+        def did_open(self, *a, **k):
+            pass
+
+        def call_hierarchy(self, path, line, column):
+            return {"callers": [{"name": "main", "path": str(ws / "main.py"),
+                                 "line": 3, "kind": "function"}], "callees": []}
+
+    monkeypatch.setattr("saturday.tools.lsp.get_client", lambda *a, **k: FakeClient())
+    app = AppState(store_root=tmp_path / "s", cfg_overrides={
+        "workspace_root": str(ws), "lsp_servers": {"python": ["pylsp"]},
+    })
+    base, _ = _server(app)
+
+    status, d = _req(base, "/api/memgraph/focus?path=a.py&name=go&line=1")
+    assert status == 200, d
+    assert any(n["id"] == "sym:main.py:main:3" for n in d["nodes"])
+
+    # missing required params answers empty rather than erroring
+    status, none = _req(base, "/api/memgraph/focus?path=a.py")
+    assert status == 200 and none["nodes"] == []
 
 
 def test_browse_lists_directories_and_flags_repos(tmp_path, monkeypatch):

@@ -6645,6 +6645,7 @@ const mg = {
   heat: null, raf: 0, canvas: null, ctx: null, dpr: 1,
   labels: true, err: "", idle: 0, named: new Set(), framed: false,
   expanded: new Set(), expanding: false,
+  focused: new Set(), focusAdded: new Map(), focusing: false,
   attn: [], attnKind: null, maxStep: 0, stepView: null, follow: false,
 };
 
@@ -6688,6 +6689,7 @@ function mgAdopt(g) {
   mg.attnKind = new Int8Array(n).fill(-1);
   mg.attn = []; mg.maxStep = 0; mg.stepView = null;
   mg.expanded = new Set();
+  mg.focused = new Set(); mg.focusAdded = new Map();
   for (const e of mg.edges) { mg.deg[e.s] += e.w; mg.deg[e.t] += e.w; }
   // seed on a ring: a random cloud takes far longer to untangle than one
   // that already has every node outside every other node
@@ -6834,6 +6836,93 @@ function mgCollapse(rel) {
   mg.nodes.forEach((n, i) => { if (!drop.has(i)) { remap.set(i, nodes.length); nodes.push(n); } });
   const edges = [];
   for (const e of mg.edges) {
+    const s = remap.get(e.s), t = remap.get(e.t);
+    if (s !== undefined && t !== undefined) edges.push({ s, t, kind: e.kind, w: e.w });
+  }
+  mgReshape(nodes, edges, null);
+}
+
+async function mgFocusCalls(idx) {
+  const n = mg.nodes[idx];
+  if (!n || mg.focusing || mg.focused.has(n.id)) return;
+  const m = n.meta || {};
+  if (!m.path || !m.line) return;
+  mg.focusing = true;
+  mgStatus("looking up calls for " + n.label + "\u2026");
+  let d;
+  try {
+    d = await api("/api/memgraph/focus?sid=" + encodeURIComponent(state.sid || "") +
+                  "&path=" + encodeURIComponent(m.path) +
+                  "&name=" + encodeURIComponent(n.label) +
+                  "&line=" + encodeURIComponent(m.line) +
+                  "&column=0");
+  } catch (e) {
+    mg.focusing = false;
+    toast("Could not read calls: " + e.message, "error");
+    mgRecount();
+    return;
+  }
+  mg.focusing = false;
+  const incoming = d.nodes || [];
+  const incomingEdges = d.edges || [];
+  if (!incoming.length && !incomingEdges.length) {
+    toast("No call information for " + n.label, "info");
+    mgRecount();
+    return;
+  }
+
+  const at = new Map();
+  mg.nodes.forEach((nn, i) => at.set(nn.id, i));
+  const nodes = mg.nodes.slice();
+  const added = [];
+  for (const nn of incoming) {
+    if (at.has(nn.id)) continue;      // already on screen: never duplicate
+    at.set(nn.id, nodes.length);
+    nodes.push(nn);
+    added.push(nn.id);
+  }
+  const edges = mg.edges.slice();
+  for (const e of incomingEdges) {
+    const sI = at.get(e.source), tI = at.get(e.target);
+    if (sI === undefined || tI === undefined || sI === tI) continue;
+    edges.push({ s: sI, t: tI, kind: e.kind || "calls", w: e.w || 1 });
+  }
+
+  mg.focused.add(n.id);
+  mg.focusAdded.set(n.id, added);
+  mgReshape(nodes, edges, n.id);
+  if (d.truncated) toast(n.label + " has more calls than the view shows", "info");
+}
+
+function mgUnfocusCalls(id) {
+  if (!mg.focused.has(id)) return;
+  mg.focused.delete(id);
+  const addedIds = new Set(mg.focusAdded.get(id) || []);
+  mg.focusAdded.delete(id);
+
+  const idxOf = new Map();
+  mg.nodes.forEach((n, i) => idxOf.set(n.id, i));
+  const anchorIdx = idxOf.get(id);
+  const kept = mg.edges.filter((e) =>
+    e.kind !== "calls" || (e.s !== anchorIdx && e.t !== anchorIdx));
+
+  // a node this focus introduced is dropped only if nothing else still
+  // reaches it - another focus call, or the file's own `defines` expansion,
+  // may have latched onto the same caller/callee since it appeared
+  const deg = new Array(mg.nodes.length).fill(0);
+  for (const e of kept) { deg[e.s]++; deg[e.t]++; }
+  const drop = new Set();
+  mg.nodes.forEach((n, i) => { if (addedIds.has(n.id) && deg[i] === 0) drop.add(i); });
+
+  if (!drop.size) {
+    mgReshape(mg.nodes.slice(), kept.map((e) => ({ ...e })), id);
+    return;
+  }
+  const remap = new Map();
+  const nodes = [];
+  mg.nodes.forEach((n, i) => { if (!drop.has(i)) { remap.set(i, nodes.length); nodes.push(n); } });
+  const edges = [];
+  for (const e of kept) {
     const s = remap.get(e.s), t = remap.get(e.t);
     if (s !== undefined && t !== undefined) edges.push({ s, t, kind: e.kind, w: e.w });
   }
@@ -7298,6 +7387,10 @@ function mgDetail(i) {
     (n.kind === "file" && m.path
       ? '<button class="mg-open" id="mgExpand">' +
         (mg.expanded.has(m.path) ? "hide symbols" : "show symbols") + '</button>' : "") +
+
+    (G_SYM_LABEL[n.kind] && m.path && m.line
+      ? '<button class="mg-open" id="mgFocus">' +
+        (mg.focused.has(n.id) ? "hide calls" : "show calls") + '</button>' : "") +
     (m.path ? '<button class="mg-open" id="mgOpen">open in files</button>' : "");
   box.classList.remove("hidden");
   box.querySelectorAll(".mg-link").forEach((b) =>
@@ -7310,6 +7403,11 @@ function mgDetail(i) {
   if (ex) ex.addEventListener("click", () => {
     if (mg.expanded.has(m.path)) mgCollapse(m.path);
     else mgExpand(m.path, i);
+  });
+  const fc = $("#mgFocus");
+  if (fc) fc.addEventListener("click", () => {
+    if (mg.focused.has(n.id)) mgUnfocusCalls(n.id);
+    else mgFocusCalls(i);
   });
 }
 

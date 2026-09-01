@@ -498,3 +498,91 @@ def expand_file(workspace_root: str | Path | None, rel: str,
                       "kind": "defines", "w": 2.0})
 
     return {"nodes": nodes, "edges": edges, "path": rel, "truncated": truncated}
+
+
+# Level 2: focusing on one symbol pulls in its real callers and callees,
+# wherever they live - not just the file it happens to be open in. Requires a
+# language server: unlike a file's own symbols, call resolution has no ast
+# substitute worth having. A fuzzy file-level "mentions" edge already exists
+# for repos with none; promoting that lexical signal to symbol level would
+# assert a precision it does not have (see the module docstring).
+CALL_LIMIT = 40
+
+
+def _rel_of(path: str, workspace_root: str | Path) -> str | None:
+    """An LSP-reported absolute path back to workspace-relative, or None when
+    it truly falls outside the workspace - a stdlib or site-packages
+    definition, say. Those are real edges with nowhere to attach a node."""
+    try:
+        return Path(path).resolve().relative_to(Path(workspace_root).resolve()).as_posix()
+    except (OSError, ValueError):
+        return None
+
+
+def focus_symbol(workspace_root: str | Path | None, rel: str, name: str, line: int,
+                 column: int = 0, lsp_servers_cfg: dict | None = None,
+                 limit: int = CALL_LIMIT) -> dict:
+    """Callers and callees of one symbol, addressed by node id like
+    expand_file. `name` and `line` identify the already-displayed symbol
+    node the caller is focusing (id `sym:{rel}:{name}:{line}`) - the anchor
+    isn't re-resolved, only its neighbours are."""
+    empty = {"nodes": [], "edges": [], "path": rel, "truncated": False}
+    if not workspace_root or not rel or not name:
+        return empty
+    language = _LSP_LANGUAGE_BY_EXT.get(Path(rel).suffix.lower())
+    cmd = (lsp_servers_cfg or {}).get(language) if language else None
+    if not cmd:
+        return empty
+
+    try:
+        from saturday.tools.lsp import _resolve_in_root, get_client
+
+        path, err = _resolve_in_root(rel, str(workspace_root))
+        if err:
+            return empty
+        client = get_client(language, cmd, str(workspace_root))
+        if client is None:
+            return empty
+        text = path.read_text(encoding="utf-8", errors="replace")
+        client.did_open(str(path), text, language_id=language)
+        result = client.call_hierarchy(str(path), max(0, int(line) - 1), max(0, int(column)))
+    except Exception:
+        return empty
+
+    anchor_id = f"sym:{rel}:{name}:{line}"
+    nodes: list[dict] = []
+    seen: set[str] = set()
+    # keyed by (source, target) so a caller reached through more than one
+    # prepareCallHierarchy item accumulates weight rather than duplicating
+    # the edge - the same convention _Builder.edge() uses everywhere else
+    edge_weight: dict[tuple[str, str], float] = {}
+
+    def add(entry: dict, from_caller: bool) -> None:
+        other_rel = _rel_of(entry.get("path") or "", workspace_root)
+        if other_rel is None:
+            return
+        oid = f"sym:{other_rel}:{entry['name']}:{entry['line']}"
+        if oid not in seen:
+            seen.add(oid)
+            parent = other_rel.rsplit("/", 1)[0] if "/" in other_rel else "/"
+            nodes.append({"id": f"file:{other_rel}", "kind": "file",
+                         "label": other_rel.rsplit("/", 1)[-1], "group": parent,
+                         "weight": 1.0, "meta": {"path": other_rel}})
+            nodes.append({"id": oid, "kind": entry.get("kind") or "function",
+                         "label": entry["name"], "group": other_rel, "weight": 1.0,
+                         "meta": {"path": other_rel, "line": entry["line"],
+                                  "parent": "", "of": other_rel}})
+        key = (oid, anchor_id) if from_caller else (anchor_id, oid)
+        edge_weight[key] = edge_weight.get(key, 0.0) + 1.0
+
+    callers = (result.get("callers") or [])[:limit]
+    callees = (result.get("callees") or [])[:limit]
+    for e in callers:
+        add(e, from_caller=True)
+    for e in callees:
+        add(e, from_caller=False)
+
+    edges = [{"source": s, "target": t, "kind": "calls", "w": w}
+             for (s, t), w in edge_weight.items()]
+    truncated = len(result.get("callers") or []) > limit or len(result.get("callees") or []) > limit
+    return {"nodes": nodes, "edges": edges, "path": rel, "truncated": truncated}

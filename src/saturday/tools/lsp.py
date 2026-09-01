@@ -300,6 +300,7 @@ class LspClient:
                         "name": str(other.get("name") or ""),
                         "path": _uri_to_path(other.get("uri") or ""),
                         "line": int(start.get("line", 0)) + 1,
+                        "kind": _SYMBOL_KIND.get(other.get("kind"), "function"),
                     })
             return out
 
