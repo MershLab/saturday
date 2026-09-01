@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import time
 
-import pytest
 
 from saturday.memindex import MemoryIndex, parse_notes
 

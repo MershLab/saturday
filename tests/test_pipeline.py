@@ -1,7 +1,6 @@
 """Typed pipeline graph: validation, ordering, caching, execution."""
 from __future__ import annotations
 
-import json
 
 import pytest
 

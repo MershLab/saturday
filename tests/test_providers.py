@@ -1202,7 +1202,6 @@ def test_context_overflow_raises_through_immediately(monkeypatch):
 
 def _fake_kernel32(open_result, wait_result, last_error=0):
     """Stand in for kernel32 so the Windows branch is testable off Windows."""
-    import ctypes
 
     class K32:
         def __init__(self):
