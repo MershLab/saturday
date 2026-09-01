@@ -30,6 +30,16 @@ def test_derive_name_cannot_escape_the_skills_directory():
     survive into it."""
     assert skillhub.derive_name("https://github.com/x/saturday-skill-deploy.git") == "deploy"
     assert skillhub.derive_name("git@github.com:x/My_Skill.git") == "my_skill"
+
+    # A Windows path contains no forward slash, so splitting on "/" alone kept
+    # the whole of it and produced a 130-character folder name that then broke
+    # MAX_PATH. Both separators, and a length cap.
+    win = "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\pytest-0\\t0\\saturday-skill-deploy"
+    assert skillhub.derive_name(win) == "deploy"
+    assert skillhub.derive_name("D:\\repos\\my_skill") == "my_skill"
+    assert skillhub.derive_name("C:\\Users\\me\\skill\\") == "skill"
+    long_name = "https://h/o/" + "a" * 300
+    assert len(skillhub.derive_name(long_name)) <= skillhub.NAME_MAX
     for bad in ("https://h/x/..", "../../etc", "..", "/", "%2e%2e"):
         try:
             got = skillhub.derive_name(bad)
