@@ -3405,6 +3405,74 @@ def test_memgraph_expand_endpoint(tmp_path, monkeypatch):
     assert status == 200 and none["nodes"] == []
 
 
+def test_expand_file_prefers_a_configured_lsp_server_over_the_index(tmp_path, monkeypatch):
+    """When a server is configured for the file's language, its documentSymbol
+    wins over the index's ast-derived symbols - even when they disagree, so
+    the test can tell which path actually ran."""
+    from saturday.memgraph import expand_file
+    from saturday.tools.repo_index import build_index
+
+    (tmp_path / "a.py").write_text("def from_ast(): pass\n", encoding="utf-8")
+    idx = build_index(tmp_path, force=True)
+
+    class FakeClient:
+        def did_open(self, *a, **k):
+            pass
+
+        def document_symbol(self, path):
+            return [{"name": "from_lsp", "kind": "function", "line": 1, "children": []}]
+
+    monkeypatch.setattr("saturday.tools.lsp.get_client", lambda *a, **k: FakeClient())
+
+    d = expand_file(tmp_path, "a.py", index=idx, lsp_servers_cfg={"python": ["pylsp"]})
+    names = {n["label"] for n in d["nodes"]}
+    assert names == {"from_lsp"}
+
+
+def test_expand_file_falls_back_to_the_index_when_lsp_fails(tmp_path, monkeypatch):
+    from saturday.memgraph import expand_file
+    from saturday.tools.repo_index import build_index
+
+    (tmp_path / "a.py").write_text("def from_ast(): pass\n", encoding="utf-8")
+    idx = build_index(tmp_path, force=True)
+
+    monkeypatch.setattr("saturday.tools.lsp.get_client", lambda *a, **k: None)
+
+    d = expand_file(tmp_path, "a.py", index=idx, lsp_servers_cfg={"python": ["pylsp"]})
+    names = {n["label"] for n in d["nodes"]}
+    assert names == {"from_ast"}
+
+
+def test_expand_file_lsp_path_refuses_to_escape_the_workspace(tmp_path, monkeypatch):
+    """The LSP branch is the one path in expand_file that actually opens a
+    file - it must not follow a rel that escapes the workspace root.
+
+    Puts a real, readable file OUTSIDE the workspace so an unguarded version
+    would genuinely succeed in opening it - a target that doesn't exist would
+    pass this test for the wrong reason (a read error, not a refusal)."""
+    from saturday.memgraph import expand_file
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.py").write_text("def leaked(): pass\n", encoding="utf-8")
+
+    opened = []
+
+    class FakeClient:
+        def did_open(self, path, *a, **k):
+            opened.append(path)
+
+        def document_symbol(self, path):
+            return [{"name": "leaked", "kind": "function", "line": 1, "children": []}]
+
+    monkeypatch.setattr("saturday.tools.lsp.get_client", lambda *a, **k: FakeClient())
+
+    d = expand_file(ws, "../outside/secret.py", lsp_servers_cfg={"python": ["pylsp"]})
+    assert d["nodes"] == [] and not opened
+
+
 def test_browse_lists_directories_and_flags_repos(tmp_path, monkeypatch):
     """The folder picker's listing: directories only, git repos marked, and
     crumbs that walk back up. It is deliberately outside the ws sandbox."""

@@ -1940,8 +1940,11 @@ class Handler(BaseHTTPRequestHandler):
     def _get_memgraph_expand(self) -> None:
         """Level-1 detail: the symbols of one file, spliced into the open graph.
 
-        `path` is only ever a key into the already-built index, never opened, so
-        it needs no traversal guard - an unknown key returns an empty payload."""
+        Prefers a configured language server's documentSymbol over the index's
+        ast-derived symbols when the session's config has one for this file's
+        language (expand_file resolves and guards the path itself in that
+        case - see memgraph._lsp_symdefs); falls back to the index otherwise,
+        where `path` is only ever a dict key and is never opened."""
         from urllib.parse import parse_qs, unquote, urlparse
 
         qs = parse_qs(urlparse(self.path).query)
@@ -1955,7 +1958,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             from saturday.memgraph import expand_file
 
-            self._send_json(expand_file(ws, rel))
+            lsp_servers = dict(getattr(self.app.base_cfg, "lsp_servers", None) or {})
+            self._send_json(expand_file(ws, rel, lsp_servers_cfg=lsp_servers))
         except Exception as exc:
             self._send_json({"error": str(exc)}, 500)
 

@@ -372,32 +372,98 @@ def build_graph(workspace_root: str | Path | None = None,
 SYMBOL_LIMIT = 120
 SYMBOL_KINDS = ("class", "function", "method", "constant", "field")
 
+# Only extensions the bundled ast extractor also covers map here beyond the
+# obvious - no point offering LSP a language repo_index can't fall back for.
+_LSP_LANGUAGE_BY_EXT = {
+    ".py": "python", ".js": "javascript", ".jsx": "javascript",
+    ".ts": "typescript", ".tsx": "typescript", ".go": "go", ".rs": "rust",
+    ".java": "java", ".rb": "ruby", ".c": "c", ".h": "c",
+    ".cpp": "cpp", ".hpp": "cpp", ".cs": "csharp",
+}
+
+
+def _flatten_lsp_symbols(symbols: list[dict], parent: str = "") -> list[dict]:
+    """documentSymbol's nested {name, kind, line, children} into the same
+    flat {name, kind, line, parent} shape repo_index's ast extractor
+    produces, so the node-building loop below has one input shape regardless
+    of source."""
+    out = []
+    for s in symbols:
+        out.append({"name": s["name"], "kind": s["kind"], "line": s["line"], "parent": parent})
+        child_parent = s["name"] if s["kind"] == "class" else parent
+        out.extend(_flatten_lsp_symbols(s.get("children") or [], child_parent))
+    return out
+
+
+def _lsp_symdefs(workspace_root: str | Path, rel: str,
+                 lsp_servers_cfg: dict) -> list[dict] | None:
+    """documentSymbol for one file if a server is configured for its
+    language, else None to signal "fall back to the index". Best-effort: any
+    failure (server not installed, timeout, no server for this extension)
+    falls back the same way a missing server does everywhere else in this
+    codebase - LSP is an enhancement, never a requirement."""
+    if not lsp_servers_cfg:
+        return None
+    language = _LSP_LANGUAGE_BY_EXT.get(Path(rel).suffix.lower())
+    cmd = lsp_servers_cfg.get(language) if language else None
+    if not cmd:
+        return None
+    try:
+        from saturday.tools.lsp import _resolve_in_root, get_client
+
+        # rel is caller-controlled the same as every other memgraph path, and
+        # this is the one branch of expand_file that actually opens a file -
+        # the same guard the LSP tools use elsewhere, not a new one
+        path, err = _resolve_in_root(rel, str(workspace_root))
+        if err:
+            return None
+        client = get_client(language, cmd, str(workspace_root))
+        if client is None:
+            return None
+        text = path.read_text(encoding="utf-8", errors="replace")
+        client.did_open(str(path), text, language_id=language)
+        symbols = client.document_symbol(str(path))
+    except Exception:
+        return None
+    return _flatten_lsp_symbols(symbols) or None
+
 
 def expand_file(workspace_root: str | Path | None, rel: str,
-                index: dict | None = None, limit: int = SYMBOL_LIMIT) -> dict:
+                index: dict | None = None, limit: int = SYMBOL_LIMIT,
+                lsp_servers_cfg: dict | None = None) -> dict:
     """Symbol nodes for one file, addressed by id rather than by position.
+
+    Prefers a configured language server's documentSymbol over the index's
+    ast-derived symdefs when one is available for this file's language: LSP
+    resolves real scope and covers languages the bundled ast extractor
+    cannot touch at all. Falls back to the index silently otherwise.
 
     Returns edges as {source, target} node ids, not array offsets: the caller
     already holds a graph and has to splice these into its own numbering."""
     empty = {"nodes": [], "edges": [], "path": rel, "truncated": False}
     if not rel:
         return empty
-    idx = index
-    if idx is None:
-        if not workspace_root:
-            return empty
-        try:
-            from saturday.tools.repo_index import build_index
 
-            idx = build_index(workspace_root)
-        except Exception:
-            return empty
+    defs = None
+    if workspace_root:
+        defs = _lsp_symdefs(workspace_root, rel, lsp_servers_cfg or {})
 
-    meta = (idx.get("files") or {}).get(rel)
-    if not meta:
-        return empty
-    defs = [d for d in (meta.get("symdefs") or [])
-            if isinstance(d, dict) and d.get("name")]
+    if defs is None:
+        idx = index
+        if idx is None:
+            if not workspace_root:
+                return empty
+            try:
+                from saturday.tools.repo_index import build_index
+
+                idx = build_index(workspace_root)
+            except Exception:
+                return empty
+        meta = (idx.get("files") or {}).get(rel)
+        if not meta:
+            return empty
+        defs = [d for d in (meta.get("symdefs") or [])
+                if isinstance(d, dict) and d.get("name")]
     if not defs:
         return empty
 
