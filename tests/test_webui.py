@@ -691,16 +691,21 @@ def test_ui_send_and_streamed_reply_renders(ui_server):
                 page.on("requestfailed", lambda r, logs=logs: logs.append(f"reqfail: {r.url} {r.failure}"))
                 page.goto(f"{ui_server}/?k={TOKEN}")
                 page.wait_for_selector("#input", state="visible", timeout=20000)
+                # a retry reloads the same session, so an earlier turn is
+                # already on screen; wait for one MORE, not for any
+                before = page.locator(".turn-stats").count()
                 page.fill("#input", "hello forge")
                 page.keyboard.press("Enter")
-                page.locator(".turn-stats").first.wait_for(timeout=25000)
-                html = page.locator(".msg-assistant .md").first.inner_html()
+                page.wait_for_function(
+                    "n => document.querySelectorAll('.turn-stats').length > n",
+                    arg=before, timeout=30000)
+                html = page.locator(".msg-assistant .md").last.inner_html()
                 if "<strong" not in html:
                     err_line = page.evaluate("() => { const e = document.querySelector('.sysline.error'); return e ? e.textContent : null; }")
                     raise AssertionError(f"markdown empty; sysline={err_line!r}; html={html[:120]!r}")
                 assert 'class="codewrap"' in html, f"fenced code block missing: {html[:300]}"
                 assert 'class="inline"' in html, f"inline code missing: {html[:300]}"
-                stats = page.locator(".turn-stats").first.inner_text()
+                stats = page.locator(".turn-stats").last.inner_text()
                 assert "step" in stats and "tokens" in stats
                 browser.close()
                 return
