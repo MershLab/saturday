@@ -862,11 +862,19 @@ def ui_server(tmp_path_factory):
         for k in KEY_ENVS:
             os.environ.pop(k, None)
         app = AppState(
-            cfg_overrides={"safety_mode": "off", "workspace_root": str(Path.cwd())},
+            # a local provider needs no key, so the onboarding dialog does not
+            # open. It used to, and it takes focus, so every keystroke these
+            # tests typed went into its API-key field and nothing was ever sent
+            cfg_overrides={"safety_mode": "off", "workspace_root": str(Path.cwd()),
+                           "provider": "ollama", "model": "test-model"},
             store_root=scratch / "sessions",
             projects_store=ProjectStore(scratch / "projects.json"),
         )
-        fake = make_scripted_model([{"content": "ok reply"}] * 4)
+        # the reply has to CONTAIN the markdown these tests assert is rendered:
+        # bold, a fenced block and an inline span
+        reply = ("**bold** and `inline` code\n\n"
+                 "```python\nprint('hi')\n```\n")
+        fake = make_scripted_model([{"content": reply}] * 8)
         orig = app._new_agent
         app._new_agent = lambda cfg: _with_fake(orig(cfg), fake)
         srv = AppServer(("127.0.0.1", 0), app, token=TOKEN)
@@ -986,6 +994,15 @@ def test_ui_onboarding_wizard_shows_and_saves(ui_server, monkeypatch):
         browser, ctx, page = _fresh_page(pw, ui_server)
         # _fresh_page dismisses via session storage; re-arm it for this test
         page.evaluate("() => sessionStorage.removeItem('df_onboard_skip')")
+        # the shared fixture runs a LOCAL provider so the wizard stays out of
+        # every other test's way; this is the one test that wants it, so ask
+        # for a provider that needs a key
+        page.evaluate("""async () => await fetch('/api/config', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json',
+                      'X-Saturday-Token': new URLSearchParams(location.search).get('k') || ''},
+            body: JSON.stringify({provider: 'openai'}),
+        })""")
         page.reload()
         page.wait_for_selector("#onboardModal:not(.hidden)", timeout=10000)
         assert page.locator("#obProvider option").count() >= 10
