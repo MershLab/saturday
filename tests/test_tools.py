@@ -913,6 +913,126 @@ class FakeTransportFactory:
         self.requests = self.transport.sent
 
 
+def _answer_in_order(t, results):
+    """Reply to each request as it arrives, in the order given - enough for
+    call_hierarchy's prepare-then-fan-out sequence, and for any single-shot
+    request when given a list of one."""
+    def responder():
+        answered = 0
+        deadline = time.time() + 5
+        while time.time() < deadline and answered < len(results):
+            if len(t.requests) > answered:
+                req = t.requests[answered]
+                t.transport.server_send({"jsonrpc": "2.0", "id": req["id"], "result": results[answered]})
+                answered += 1
+            else:
+                time.sleep(0.01)
+    threading.Thread(target=responder, daemon=True).start()
+
+
+def test_lsp_document_symbol_classifies_hierarchy():
+    """A Variable's meaning comes from its parent scope: a field under a
+    class, a constant at module level, dropped entirely under a function -
+    the same rule tools/repo_index.py applies with ast, here from a real
+    resolver instead of syntax alone."""
+    t = FakeTransportFactory()
+    hierarchical = [
+        {"name": "Widget", "kind": 5, "range": {"start": {"line": 3, "character": 0}}, "children": [
+            {"name": "spin", "kind": 6, "range": {"start": {"line": 4, "character": 4}}, "children": []},
+            {"name": "count", "kind": 13, "range": {"start": {"line": 5, "character": 4}}, "children": []},
+        ]},
+        {"name": "MAX", "kind": 14, "range": {"start": {"line": 0, "character": 0}}, "children": []},
+        {"name": "helper", "kind": 12, "range": {"start": {"line": 8, "character": 0}}, "children": [
+            {"name": "local", "kind": 13, "range": {"start": {"line": 9, "character": 4}}, "children": []},
+        ]},
+    ]
+    _answer_in_order(t, [hierarchical])
+    got = t.client.document_symbol("/w/a.py")
+
+    by_name = {s["name"]: s for s in got}
+    assert by_name["Widget"]["kind"] == "class" and by_name["Widget"]["line"] == 4
+    assert by_name["MAX"]["kind"] == "constant"
+    assert by_name["helper"]["kind"] == "function"
+
+    widget_children = {c["name"]: c for c in by_name["Widget"]["children"]}
+    assert widget_children["spin"]["kind"] == "method"
+    assert widget_children["count"]["kind"] == "field"  # Variable under a class
+
+    helper_children = {c["name"]: c for c in by_name["helper"]["children"]}
+    assert "local" not in helper_children  # Variable under a function: dropped
+
+
+def test_lsp_document_symbol_flat_symbol_information():
+    """Older servers report SymbolInformation (location, no nesting) instead
+    of hierarchical DocumentSymbol; both forms must classify."""
+    t = FakeTransportFactory()
+    flat = [
+        {"name": "go", "kind": 12, "location": {"uri": "file:///w/a.py",
+                                                  "range": {"start": {"line": 1, "character": 0}}}},
+    ]
+    _answer_in_order(t, [flat])
+    got = t.client.document_symbol("/w/a.py")
+    assert got == [{"name": "go", "kind": "function", "line": 2, "children": []}]
+
+
+def test_lsp_references_normalizes_locations():
+    t = FakeTransportFactory()
+    raw = [
+        {"uri": "file:///w/a.py", "range": {"start": {"line": 4, "character": 2}}},
+        {"uri": "file:///w/b.py", "range": {"start": {"line": 0, "character": 8}}},
+    ]
+    _answer_in_order(t, [raw])
+    got = t.client.references("/w/a.py", 4, 0)
+    assert got == [
+        {"path": "w/a.py", "line": 5, "column": 2},
+        {"path": "w/b.py", "line": 1, "column": 8},
+    ]
+
+
+def test_lsp_call_hierarchy_merges_callers_and_callees():
+    t = FakeTransportFactory()
+    prepared = [{"name": "spin", "uri": "file:///w/a.py",
+                 "range": {"start": {"line": 4, "character": 4}}}]
+    incoming = [{"from": {"name": "main", "uri": "file:///w/main.py",
+                          "range": {"start": {"line": 10, "character": 0}}}}]
+    outgoing = [{"to": {"name": "log", "uri": "file:///w/util.py",
+                        "range": {"start": {"line": 2, "character": 0}}}}]
+    _answer_in_order(t, [prepared, incoming, outgoing])
+    got = t.client.call_hierarchy("/w/a.py", 4, 4)
+    assert got == {
+        "callers": [{"name": "main", "path": "w/main.py", "line": 11}],
+        "callees": [{"name": "log", "path": "w/util.py", "line": 3}],
+    }
+
+
+def test_lsp_document_symbol_drops_a_locals_under_a_top_level_function():
+    """Regression: child scope must come from the symbol's OWN kind, not from
+    whether it has a grandparent. A Variable nested under a function that is
+    itself top-level (no grandparent) was wrongly treated as module-scope and
+    kept as a constant instead of being dropped as a local."""
+    t = FakeTransportFactory()
+    raw = [
+        {"name": "helper", "kind": 12, "range": {"start": {"line": 0, "character": 0}}, "children": [
+            {"name": "scratch", "kind": 13, "range": {"start": {"line": 1, "character": 4}}, "children": []},
+        ]},
+    ]
+    _answer_in_order(t, [raw])
+    got = t.client.document_symbol("/w/a.py")
+    assert got[0]["children"] == []
+
+
+def test_lsp_document_symbol_ignores_non_symbol_kinds():
+    """A Namespace, Operator, TypeParameter etc. carry no cross-file identity
+    the graph cares about and must not appear as nodes."""
+    t = FakeTransportFactory()
+    raw = [
+        {"name": "ns", "kind": 3, "range": {"start": {"line": 0, "character": 0}}, "children": []},
+        {"name": "T", "kind": 26, "range": {"start": {"line": 0, "character": 0}}, "children": []},
+    ]
+    _answer_in_order(t, [raw])
+    assert t.client.document_symbol("/w/a.py") == []
+
+
 def test_lsp_tools_graceful_without_servers(tmp_path):
     from saturday.tools.lsp import make_lsp_tools
 

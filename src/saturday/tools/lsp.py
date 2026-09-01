@@ -23,6 +23,62 @@ class LspError(RuntimeError):
     pass
 
 
+# LSP SymbolKind (spec 3.17), narrowed to what memgraph's symbol layer
+# distinguishes. A Variable is not on this map by itself - its containing
+# scope decides class/function/method whether it counts, in _classify_symbol.
+_SYMBOL_KIND = {
+    5: "class", 6: "method", 7: "field", 8: "field", 9: "method",
+    11: "class", 12: "function", 14: "constant", 23: "class",
+}
+
+
+def _uri_to_path(uri: str) -> str:
+    return str(uri or "").replace("file:///", "").replace("file://", "")
+
+
+def _classify_symbol(raw: dict, parent_kind: str | None) -> dict | None:
+    """One LSP DocumentSymbol/SymbolInformation, normalized to memgraph's
+    {name, kind, line, children} shape, or None to drop it.
+
+    A raw kind of 13 (Variable) has no fixed meaning on its own - LSP calls a
+    module constant, a class field, and a local the same kind and leaves scope
+    to say which. That is exactly the ast-based extractor's rule in
+    tools/repo_index.py, applied here to a real resolver instead of a guess:
+    a Variable directly under a class or the module becomes a field/constant,
+    one under a function is a local and is dropped."""
+    raw_kind = raw.get("kind")
+    kind = _SYMBOL_KIND.get(raw_kind)
+    if kind is None:
+        if raw_kind == 13:  # Variable
+            if parent_kind == "class":
+                kind = "field"
+            elif parent_kind in (None, "module"):
+                kind = "constant"
+            else:
+                return None  # local: no identity outside its frame
+        else:
+            return None  # constructors folded into "method" above; anything
+            # else (namespace, string, operator, ...) is not a graph symbol
+    rng = raw.get("selectionRange") or raw.get("range")
+    if rng is None:
+        loc = raw.get("location") or {}
+        rng = loc.get("range") or {}
+    start = rng.get("start") or {}
+    out = {"name": str(raw.get("name") or ""), "kind": kind,
+           "line": int(start.get("line") or 0) + 1, "children": []}
+    if kind == "class":
+        child_scope = "class"
+    elif kind in ("function", "method"):
+        child_scope = "function"
+    else:
+        child_scope = parent_kind  # field/constant rarely nest; inherit if it does
+    for child in raw.get("children") or []:
+        c = _classify_symbol(child, child_scope)
+        if c is not None:
+            out["children"].append(c)
+    return out
+
+
 class ProcTransport:
     """Subprocess-based byte transport."""
 
@@ -183,6 +239,74 @@ class LspClient:
             out.append({"path": luri, "line": int(start.get("line", 0)) + 1,
                         "column": int(start.get("character", 0))})
         return out
+
+    def document_symbol(self, path: str) -> list[dict]:
+        """textDocument/documentSymbol, normalized into memgraph's
+        {name, kind, line, children} shape regardless of which of the two
+        LSP response forms the server sends (hierarchical DocumentSymbol,
+        or flat SymbolInformation - see _classify_symbol)."""
+        result = self._request("textDocument/documentSymbol", {
+            "textDocument": {"uri": self._to_uri(path)},
+        })
+        if not isinstance(result, list):
+            return []
+        out = []
+        for raw in result:
+            c = _classify_symbol(raw, None)
+            if c is not None:
+                out.append(c)
+        return out
+
+    def references(self, path: str, line: int, column: int,
+                   include_declaration: bool = False) -> list[dict]:
+        result = self._request("textDocument/references", {
+            "textDocument": {"uri": self._to_uri(path)},
+            "position": {"line": max(0, int(line)), "character": max(0, int(column))},
+            "context": {"includeDeclaration": bool(include_declaration)},
+        })
+        out = []
+        for loc in result or []:
+            rng = loc.get("range") or {}
+            start = rng.get("start") or {}
+            out.append({"path": _uri_to_path(loc.get("uri") or ""),
+                        "line": int(start.get("line", 0)) + 1,
+                        "column": int(start.get("character", 0))})
+        return out
+
+    def call_hierarchy(self, path: str, line: int, column: int) -> dict:
+        """Who calls this symbol, and what it calls - a two-step LSP dance
+        (prepare, then incoming/outgoing) collapsed into one round-trip call.
+
+        prepareCallHierarchy can resolve to more than one item at a position
+        (an overloaded method, say); every item is expanded and merged rather
+        than arbitrarily taking the first, since dropping one silently loses
+        real call edges."""
+        items = self._request("textDocument/prepareCallHierarchy", {
+            "textDocument": {"uri": self._to_uri(path)},
+            "position": {"line": max(0, int(line)), "character": max(0, int(column))},
+        })
+        if not isinstance(items, list):
+            items = []
+
+        def edges(method: str, key: str) -> list[dict]:
+            out = []
+            for item in items:
+                result = self._request(method, {"item": item})
+                for entry in result or []:
+                    other = entry.get(key) or {}
+                    rng = other.get("selectionRange") or other.get("range") or {}
+                    start = rng.get("start") or {}
+                    out.append({
+                        "name": str(other.get("name") or ""),
+                        "path": _uri_to_path(other.get("uri") or ""),
+                        "line": int(start.get("line", 0)) + 1,
+                    })
+            return out
+
+        return {
+            "callers": edges("callHierarchy/incomingCalls", "from"),
+            "callees": edges("callHierarchy/outgoingCalls", "to"),
+        }
 
     def close(self) -> None:
         self.transport.close()
