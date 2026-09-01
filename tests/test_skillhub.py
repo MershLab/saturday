@@ -168,3 +168,24 @@ def test_an_unrecognised_licence_is_named_not_shown_as_a_code(monkeypatch, tmp_p
 
     monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: Resp(payload))
     assert skillhub.search("")["results"][0]["license"] == "unrecognised"
+
+
+def test_a_windows_drive_letter_is_a_path_not_a_url_scheme(tmp_path, monkeypatch):
+    """urlparse reads C:\\Users\\me as a URL whose scheme is "c", so installing
+    a skill from a local folder was refused outright on Windows. No registered
+    scheme is a single character. Runs everywhere so the next such bug does not
+    have to reach a Windows runner to be found."""
+    for drive_path in ("C:\\Users\\me\\skill", "D:/repos/thing", "z:\\x"):
+        with pytest.raises(skillhub.SkillError) as exc:
+            skillhub._check_url(drive_path)
+        # refused for not existing, NOT for having a forbidden scheme
+        assert "not a local git repository" in str(exc.value), drive_path
+        assert "refusing to clone" not in str(exc.value), drive_path
+
+    # a real local repo is accepted whatever the platform spells its paths like
+    repo = _repo(tmp_path, "saturday-skill-local", {"SKILL.md": SKILL_MD})
+    skillhub._check_url(str(repo))
+
+    for bad in ("ftp://evil/x", "javascript:alert(1)", "data:text/plain,x"):
+        with pytest.raises(skillhub.SkillError, match="refusing to clone"):
+            skillhub._check_url(bad)

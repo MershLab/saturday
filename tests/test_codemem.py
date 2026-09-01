@@ -121,3 +121,22 @@ def test_doctor_names_which_retrieval_is_active(monkeypatch):
     check = next(c for c in run_checks(AgentConfig.load(), offline=True) if c["id"] == "codemem")
     assert "lexical" in check["detail"]
     assert check["status"] == "ok", "falling back is normal, not a failure"
+
+
+def test_the_binary_is_found_with_or_without_an_exe_suffix(tmp_path, monkeypatch):
+    """Windows ships an .exe, but an archive built elsewhere carries the bare
+    name. Looking only for the suffixed form reported the binary as absent."""
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    monkeypatch.setattr(codemem, "cache_dir", lambda: cache)
+    monkeypatch.setattr(codemem, "bundled_dir", lambda: tmp_path / "none")
+
+    bare = cache / "codebase-memory-mcp"
+    bare.write_text("#!/bin/sh\n", encoding="utf-8")
+    bare.chmod(0o755)
+
+    monkeypatch.setattr(codemem.os, "name", "nt")
+    assert codemem.find_binary() == bare, "a bare name must still be found on Windows"
+
+    monkeypatch.setattr(codemem.os, "name", "posix")
+    assert codemem.find_binary() == bare

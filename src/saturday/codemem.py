@@ -87,14 +87,18 @@ def find_binary() -> Path | None:
 
     PATH last on purpose: a user who installed it themselves is trusted, but a
     binary Saturday verified beats one it merely found."""
-    exe = BINARY_NAME + (".exe" if os.name == "nt" else "")
+    # Windows ships an .exe, but an archive built elsewhere may carry the bare
+    # name; accept either rather than deciding the binary is absent because of
+    # a suffix
+    names = [BINARY_NAME + ".exe", BINARY_NAME] if os.name == "nt" else [BINARY_NAME]
     for root in (bundled_dir(), cache_dir()):
-        candidate = root / exe
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return candidate
-        for nested in root.glob(f"*/{exe}"):   # archives often carry a top dir
-            if nested.is_file():
-                return nested
+        for exe in names:
+            candidate = root / exe
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return candidate
+            for nested in root.glob(f"*/{exe}"):   # archives often carry a top dir
+                if nested.is_file():
+                    return nested
     found = shutil.which(BINARY_NAME)
     return Path(found) if found else None
 
@@ -173,7 +177,11 @@ def install(progress=None, timeout: float = 180.0) -> Path:
             progress("checksum verified; extracting")
         dest = cache_dir()
         if dest.exists():
-            shutil.rmtree(dest, ignore_errors=True)
+            # ignore_errors leaves a partial tree that then looks installed;
+            # clearing read-only and retrying is what actually removes it
+            from saturday.skillhub import _rmtree
+
+            _rmtree(dest)
         _safe_extract(archive, dest)
         binary = find_binary()
         if binary is None:
