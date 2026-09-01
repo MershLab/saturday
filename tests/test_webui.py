@@ -724,6 +724,79 @@ def test_ui_send_and_streamed_reply_renders(ui_server):
     raise AssertionError(f"e2e failed after retry: {last_err}\nbrowser log:\n" + "\n".join(logs[-30:]))
 
 
+
+@pytest.mark.skipif(not HAS_PW, reason="playwright not installed")
+def test_ui_memory_graph_expands_a_file_into_symbols(ui_server):
+    """Level 1 in a real browser: a file opens into its symbols and closes again.
+
+    Drives the actual button in the detail panel rather than calling mgExpand,
+    so the panel render, the handler wiring and the array reshape all count."""
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        page = browser.new_page(viewport={"width": 1400, "height": 900})
+        errs: list[str] = []
+        page.on("pageerror", lambda e: errs.append(getattr(e, "stack", None) or str(e)))
+        page.goto(f"{ui_server}/?k={TOKEN}")
+        page.wait_for_selector("#input", state="visible", timeout=20000)
+
+        page.click('.stage-tab[data-tab="memory"]')
+        page.wait_for_function("() => window.df && window.df.mg && window.df.mg.loaded && window.df.mg.nodes.length > 3",
+                               timeout=60000)
+
+        # pick a real indexed .py file node that actually has symbols
+        rel = page.evaluate("""() => {
+            const mg = window.df.mg;
+            const i = mg.nodes.findIndex((n) => n.kind === 'file' &&
+                                                (n.meta.path || '').endsWith('.py'));
+            if (i < 0) return null;
+            window.df.mgSelect(i);
+            return mg.nodes[i].meta.path;
+        }""")
+        assert rel, "no python file node in the graph"
+
+        before = page.evaluate("() => window.df.mg.nodes.length")
+        page.wait_for_selector("#mgExpand", timeout=10000)
+        assert page.locator("#mgExpand").inner_text().strip() == "show symbols"
+        page.click("#mgExpand")
+
+        page.wait_for_function(f"() => window.df.mg.nodes.length > {before}", timeout=20000)
+        shape = page.evaluate("""() => { const mg = window.df.mg; return ({
+            n: mg.nodes.length,
+            arrays: [mg.x.length, mg.y.length, mg.vx.length, mg.deg.length,
+                     mg.heat.length, mg.attnKind.length],
+            syms: mg.nodes.filter((n) => ['class','function','method','constant','field']
+                                          .includes(n.kind)).length,
+            badEdge: mg.edges.some((e) => e.s >= mg.nodes.length || e.t >= mg.nodes.length ||
+                                          e.s < 0 || e.t < 0),
+            expanded: [...mg.expanded],
+        }); }""")
+        assert shape["syms"] > 0, shape
+        # every parallel array must have been grown, or the renderer reads past its end
+        assert all(a == shape["n"] for a in shape["arrays"]), shape
+        assert not shape["badEdge"], "an edge points outside the node list"
+        assert shape["expanded"] == [rel]
+        # the legend gains the symbol kinds only once they exist
+        assert page.locator("#mgLegend .mg-chip").count() > 5
+
+        # ...and collapsing puts it back exactly
+        page.wait_for_function("() => document.querySelector('#mgExpand')"
+                               "?.textContent.trim() === 'hide symbols'", timeout=10000)
+        page.click("#mgExpand")
+        page.wait_for_function(f"() => window.df.mg.nodes.length === {before}", timeout=20000)
+        after = page.evaluate("""() => { const mg = window.df.mg; return ({
+            arrays: [mg.x.length, mg.deg.length, mg.attnKind.length],
+            n: mg.nodes.length,
+            expanded: [...mg.expanded],
+            badEdge: mg.edges.some((e) => e.s >= mg.nodes.length || e.t >= mg.nodes.length),
+        }); }""")
+        assert all(a == after["n"] for a in after["arrays"]), after
+        assert after["expanded"] == [] and not after["badEdge"]
+
+        assert not errs, errs
+        browser.close()
+
+
+
 @pytest.mark.skipif(not HAS_PW, reason="playwright not installed")
 def test_ui_memory_graph_survives_a_wake_before_it_has_loaded(ui_server):
     """Every parallel array is null until the first fetch lands.
@@ -3250,6 +3323,86 @@ def test_memgraph_endpoint_serves_and_caches(tmp_path, monkeypatch):
     assert cached["stats"]["nodes"] == data["stats"]["nodes"]
     _, fresh = _req(base, "/api/memgraph?refresh=1")
     assert fresh["stats"]["nodes"] > data["stats"]["nodes"]
+
+
+
+EXPAND_SRC = """\
+LIMIT = 5
+
+class Engine:
+    mode = "fast"
+
+    def start(self):
+        warmup = 1
+        return warmup
+
+def helper():
+    return 2
+"""
+
+
+def test_expand_file_nests_symbols_under_their_class(tmp_path):
+    """Level 1: a file opens into its own symbols, a class into its members.
+
+    Edges come back addressed by node id, not offset, because the caller is
+    splicing them into a graph it already numbered."""
+    from saturday.memgraph import expand_file
+    from saturday.tools.repo_index import build_index
+
+    (tmp_path / "eng.py").write_text(EXPAND_SRC, encoding="utf-8")
+    idx = build_index(tmp_path, force=True)
+
+    d = expand_file(tmp_path, "eng.py", index=idx)
+    by_name = {n["label"]: n for n in d["nodes"]}
+    assert by_name["LIMIT"]["kind"] == "constant"
+    assert by_name["Engine"]["kind"] == "class"
+    assert by_name["start"]["kind"] == "method"
+    assert by_name["helper"]["kind"] == "function"
+    assert by_name["mode"]["kind"] == "field"
+    # a local never becomes a node
+    assert "warmup" not in by_name
+
+    # every node says which file it came from, so collapse can find them again
+    assert all(n["meta"]["of"] == "eng.py" for n in d["nodes"])
+
+    edges = {(e["source"], e["target"]) for e in d["edges"]}
+    # the method hangs off its class, not off the file
+    assert (by_name["Engine"]["id"], by_name["start"]["id"]) in edges
+    assert (by_name["mode"]["id"] in {t for _, t in edges})
+    # a module-level function hangs off the file itself
+    assert ("file:eng.py", by_name["helper"]["id"]) in edges
+    assert all(e["kind"] == "defines" for e in d["edges"])
+
+
+def test_expand_file_is_empty_for_paths_it_does_not_know(tmp_path):
+    from saturday.memgraph import expand_file
+    from saturday.tools.repo_index import build_index
+
+    (tmp_path / "eng.py").write_text(EXPAND_SRC, encoding="utf-8")
+    idx = build_index(tmp_path, force=True)
+    for bad in ("", "nope.py", "../../etc/passwd"):
+        d = expand_file(tmp_path, bad, index=idx)
+        assert d["nodes"] == [] and d["edges"] == []
+
+
+def test_memgraph_expand_endpoint(tmp_path, monkeypatch):
+    cfg = tmp_path / "cfg"
+    cfg.mkdir()
+    monkeypatch.setattr("saturday.config.get_config_dir", lambda: cfg)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "eng.py").write_text(EXPAND_SRC, encoding="utf-8")
+
+    app = AppState(store_root=tmp_path / "s", cfg_overrides={"workspace_root": str(ws)})
+    base, _ = _server(app)
+
+    status, d = _req(base, "/api/memgraph/expand?path=eng.py")
+    assert status == 200, d
+    assert {n["label"] for n in d["nodes"]} >= {"Engine", "start", "helper", "LIMIT"}
+
+    # an unknown path answers empty rather than 404ing the view
+    status, none = _req(base, "/api/memgraph/expand?path=missing.py")
+    assert status == 200 and none["nodes"] == []
 
 
 def test_browse_lists_directories_and_flags_repos(tmp_path, monkeypatch):

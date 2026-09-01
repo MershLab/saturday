@@ -6620,8 +6620,20 @@ const G_COLOR = {
   session: [196, 132, 255],
   fact:    [255, 168,  84],
   skill:   [ 96, 240, 190],
+  // level-1 symbols: their own family, so an expanded file reads as a cluster
+  // of one colour group rather than more of the same blue
+  class:    [255, 130, 180],
+  function: [160, 230, 110],
+  method:   [125, 195,  90],
+  constant: [240, 220, 120],
+  field:    [175, 190, 215],
 };
 const G_KIND_LABEL = { file: "files", dir: "folders", session: "chats", fact: "facts", skill: "skills" };
+// kept out of G_KIND_LABEL so the legend does not carry five permanently empty
+// chips; they join it only once a file has actually been expanded
+const G_SYM_LABEL = { class: "classes", function: "functions", method: "methods",
+                      constant: "constants", field: "fields" };
+const G_SYM_KINDS = Object.keys(G_SYM_LABEL);
 
 const mg = {
   on: false, loaded: false, loading: false,
@@ -6632,6 +6644,7 @@ const mg = {
   hidden: new Set(), query: "", match: null,
   heat: null, raf: 0, canvas: null, ctx: null, dpr: 1,
   labels: true, err: "", idle: 0, named: new Set(), framed: false,
+  expanded: new Set(), expanding: false,
   attn: [], attnKind: null, maxStep: 0, stepView: null, follow: false,
 };
 
@@ -6674,6 +6687,7 @@ function mgAdopt(g) {
   mg.heat = new Float32Array(n);
   mg.attnKind = new Int8Array(n).fill(-1);
   mg.attn = []; mg.maxStep = 0; mg.stepView = null;
+  mg.expanded = new Set();
   for (const e of mg.edges) { mg.deg[e.s] += e.w; mg.deg[e.t] += e.w; }
   // seed on a ring: a random cloud takes far longer to untangle than one
   // that already has every node outside every other node
@@ -6695,6 +6709,135 @@ function mgAdopt(g) {
   mgFit();
   mgStats(g.stats || {});
   mgTick();
+}
+
+/* --- level of detail: a file expands into its symbols ----------------- */
+
+// Rebuild every parallel array for a new node list while keeping whatever the
+// layout has already settled. Nodes are matched by id, not position, so this
+// serves both growing (expand) and shrinking (collapse) without either caller
+// having to reason about index drift.
+function mgReshape(nodes, edges, seedId) {
+  const oldIds = mg.nodes.map((n) => n.id);
+  const prev = new Map();
+  for (let i = 0; i < oldIds.length; i++) prev.set(oldIds[i], [mg.x[i], mg.y[i], mg.attnKind[i]]);
+
+  const n = nodes.length;
+  const x = new Float32Array(n), y = new Float32Array(n);
+  const vx = new Float32Array(n), vy = new Float32Array(n);
+  const fixed = new Uint8Array(n), deg = new Float32Array(n);
+  const heat = new Float32Array(n), attnKind = new Int8Array(n).fill(-1);
+  const seed = seedId ? prev.get(seedId) : null;
+  const at = new Map();
+  for (let i = 0; i < n; i++) at.set(nodes[i].id, i);
+
+  for (let i = 0; i < n; i++) {
+    const p = prev.get(nodes[i].id);
+    if (p) {
+      x[i] = p[0]; y[i] = p[1]; attnKind[i] = p[2];
+    } else if (seed) {
+      // born in a tight ring around the file they came from, so the eye keeps
+      // the thing it clicked instead of watching new nodes fly in from a rim
+      const a = i * 2.399963, r = 26 + 9 * Math.sqrt(i + 1);
+      x[i] = seed[0] + r * Math.cos(a);
+      y[i] = seed[1] + r * Math.sin(a);
+    } else {
+      const R = 40 * Math.sqrt(n), a = i * 2.399963, r = R * Math.sqrt((i + 0.5) / n);
+      x[i] = r * Math.cos(a); y[i] = r * Math.sin(a);
+    }
+  }
+
+  const selId = mg.sel >= 0 ? oldIds[mg.sel] : null;
+  mg.nodes = nodes; mg.edges = edges;
+  mg.x = x; mg.y = y; mg.vx = vx; mg.vy = vy;
+  mg.fixed = fixed; mg.deg = deg; mg.heat = heat; mg.attnKind = attnKind;
+  for (const e of mg.edges) { mg.deg[e.s] += e.w; mg.deg[e.t] += e.w; }
+
+  // the attention overlay stores node offsets; re-point them or drop the ones
+  // whose node is gone, rather than leaving them aimed at whatever moved in
+  mg.attn = mg.attn
+    .map((a) => { const ni = at.get(oldIds[a.i]); return ni === undefined ? null : { ...a, i: ni }; })
+    .filter(Boolean);
+
+  mg.hover = -1; mg.drag = -1;
+  mg.sel = selId !== null && at.has(selId) ? at.get(selId) : -1;
+  mg.named = new Set(
+    Array.from(mg.nodes.keys()).sort((a, b) => mg.deg[b] - mg.deg[a]).slice(0, 28)
+  );
+  mg.alpha = Math.max(mg.alpha, 0.55);
+  mgRecount();
+  mgDetail(mg.sel);
+  mgWake();
+}
+
+function mgRecount() {
+  const kinds = {};
+  for (const n of mg.nodes) kinds[n.kind] = (kinds[n.kind] || 0) + 1;
+  mgStats({ nodes: mg.nodes.length, edges: mg.edges.length, kinds });
+}
+
+async function mgExpand(rel, anchorIdx) {
+  if (!rel || mg.expanding || mg.expanded.has(rel)) return;
+  mg.expanding = true;
+  mgStatus("reading " + rel + "\u2026");
+  let d;
+  try {
+    d = await api("/api/memgraph/expand?sid=" + encodeURIComponent(state.sid || "") +
+                  "&path=" + encodeURIComponent(rel));
+  } catch (e) {
+    mg.expanding = false;
+    toast("Could not read symbols: " + e.message, "error");
+    mgRecount();
+    return;
+  }
+  mg.expanding = false;
+  const incoming = d.nodes || [];
+  if (!incoming.length) {
+    toast("No symbols indexed for " + rel, "info");
+    mgRecount();
+    return;
+  }
+
+  const at = new Map();
+  mg.nodes.forEach((n, i) => at.set(n.id, i));
+  const nodes = mg.nodes.slice();
+  for (const n of incoming) {
+    if (at.has(n.id)) continue;          // already on screen: never duplicate
+    at.set(n.id, nodes.length);
+    nodes.push(n);
+  }
+  const edges = mg.edges.slice();
+  for (const e of (d.edges || [])) {
+    const sI = at.get(e.source), tI = at.get(e.target);
+    // an edge whose file end is missing is dropped rather than mis-attached
+    if (sI === undefined || tI === undefined || sI === tI) continue;
+    edges.push({ s: sI, t: tI, kind: e.kind || "defines", w: e.w || 1 });
+  }
+
+  mg.expanded.add(rel);
+  const seedId = anchorIdx >= 0 && mg.nodes[anchorIdx] ? mg.nodes[anchorIdx].id : "file:" + rel;
+  mgReshape(nodes, edges, seedId);
+  if (d.truncated) toast(rel + " has more symbols than the view shows", "info");
+}
+
+function mgCollapse(rel) {
+  if (!rel || !mg.expanded.has(rel)) return;
+  const drop = new Set();
+  mg.nodes.forEach((n, i) => {
+    if (G_SYM_LABEL[n.kind] && (n.meta || {}).of === rel) drop.add(i);
+  });
+  mg.expanded.delete(rel);
+  if (!drop.size) { mgRecount(); return; }
+
+  const remap = new Map();
+  const nodes = [];
+  mg.nodes.forEach((n, i) => { if (!drop.has(i)) { remap.set(i, nodes.length); nodes.push(n); } });
+  const edges = [];
+  for (const e of mg.edges) {
+    const s = remap.get(e.s), t = remap.get(e.t);
+    if (s !== undefined && t !== undefined) edges.push({ s, t, kind: e.kind, w: e.w });
+  }
+  mgReshape(nodes, edges, null);
 }
 
 /* --- Barnes-Hut quadtree --------------------------------------------- */
@@ -7114,6 +7257,10 @@ function mgTip(i, px, py) {
   if (n.kind === "dir") bits.push(m.path || "");
   if (n.kind === "session") bits.push(m.turns + " turns", m.files + " files touched");
   if (n.kind === "fact") bits.push(m.text || "");
+  if (G_SYM_LABEL[n.kind]) {
+    bits.push(n.kind, (m.path || "") + ":" + (m.line || 0));
+    if (m.parent) bits.push("in " + m.parent);
+  }
   t.innerHTML = '<b>' + escHtml(n.label) + '</b><span>' +
                 escHtml(bits.filter(Boolean).join("  ·  ")) + '</span>';
   t.style.left = Math.round(px + 14) + "px";
@@ -7141,12 +7288,17 @@ function mgDetail(i) {
     escHtml(n.label) + '<button class="mg-x" id="mgClose" title="close">×</button></header>' +
     (m.path ? '<p class="mono">' + escHtml(m.path) + '</p>' : "") +
     (m.text ? '<p>' + escHtml(m.text) + '</p>' : "") +
+    (G_SYM_LABEL[n.kind]
+      ? '<p class="mono">' + escHtml(n.kind + " \u00b7 line " + (m.line || 0) +
+        (m.parent ? " \u00b7 in " + m.parent : "")) + '</p>' : "") +
     (m.symbols && m.symbols.length
       ? '<p class="mg-syms mono">' + m.symbols.map(escHtml).join("  ") + '</p>' : "") +
     '<div class="mg-links-h">' + links.length + ' connection' + (links.length === 1 ? "" : "s") + '</div>' +
     '<div class="mg-links">' + rows + '</div>' +
     (n.kind === "file" && m.path
-      ? '<button class="mg-open" id="mgOpen">open in files</button>' : "");
+      ? '<button class="mg-open" id="mgExpand">' +
+        (mg.expanded.has(m.path) ? "hide symbols" : "show symbols") + '</button>' : "") +
+    (m.path ? '<button class="mg-open" id="mgOpen">open in files</button>' : "");
   box.classList.remove("hidden");
   box.querySelectorAll(".mg-link").forEach((b) =>
     b.addEventListener("click", () => { mg.sel = +b.dataset.i; mgDetail(mg.sel); mgWake(); }));
@@ -7154,6 +7306,11 @@ function mgDetail(i) {
   if (x) x.addEventListener("click", () => { mg.sel = -1; mgDetail(-1); mgWake(); });
   const op = $("#mgOpen");
   if (op) op.addEventListener("click", () => { stageShow("files"); openWsFile(m.path); });
+  const ex = $("#mgExpand");
+  if (ex) ex.addEventListener("click", () => {
+    if (mg.expanded.has(m.path)) mgCollapse(m.path);
+    else mgExpand(m.path, i);
+  });
 }
 
 function mgStatus(text) {
@@ -7165,12 +7322,13 @@ function mgStats(stats) {
   const kinds = stats.kinds || {};
   const wrap = $("#mgLegend");
   if (wrap) {
-    wrap.innerHTML = Object.keys(G_KIND_LABEL).map((k) => {
+    const keys = Object.keys(G_KIND_LABEL).concat(G_SYM_KINDS.filter((k) => kinds[k]));
+    wrap.innerHTML = keys.map((k) => {
       const n = kinds[k] || 0;
       return '<button class="mg-chip' + (n ? "" : " empty") +
         (mg.hidden.has(k) ? " off" : "") + '" data-kind="' + k + '">' +
         '<i class="mg-dot" style="background:' + mgRGBA(k, 1) + '"></i>' +
-        G_KIND_LABEL[k] + '<em>' + n + '</em></button>';
+        (G_KIND_LABEL[k] || G_SYM_LABEL[k]) + '<em>' + n + '</em></button>';
     }).join("");
     wrap.querySelectorAll(".mg-chip").forEach((b) => b.addEventListener("click", () => {
       const k = b.dataset.kind;

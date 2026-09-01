@@ -363,3 +363,72 @@ def build_graph(workspace_root: str | Path | None = None,
         counts[n["kind"]] = counts.get(n["kind"], 0) + 1
     out["stats"] = {"nodes": len(out["nodes"]), "edges": len(out["edges"]), "kinds": counts}
     return out
+
+
+# Level 1 of the graph's level of detail. The default picture stays structural -
+# folders, files, chats, facts, skills - because 1,400 callables against 110
+# structural nodes drowns the folders the layout exists to show. Symbols arrive
+# only for the one file a reader opened, the way an editor outline does.
+SYMBOL_LIMIT = 120
+SYMBOL_KINDS = ("class", "function", "method", "constant", "field")
+
+
+def expand_file(workspace_root: str | Path | None, rel: str,
+                index: dict | None = None, limit: int = SYMBOL_LIMIT) -> dict:
+    """Symbol nodes for one file, addressed by id rather than by position.
+
+    Returns edges as {source, target} node ids, not array offsets: the caller
+    already holds a graph and has to splice these into its own numbering."""
+    empty = {"nodes": [], "edges": [], "path": rel, "truncated": False}
+    if not rel:
+        return empty
+    idx = index
+    if idx is None:
+        if not workspace_root:
+            return empty
+        try:
+            from saturday.tools.repo_index import build_index
+
+            idx = build_index(workspace_root)
+        except Exception:
+            return empty
+
+    meta = (idx.get("files") or {}).get(rel)
+    if not meta:
+        return empty
+    defs = [d for d in (meta.get("symdefs") or [])
+            if isinstance(d, dict) and d.get("name")]
+    if not defs:
+        return empty
+
+    truncated = len(defs) > limit
+    defs = defs[:limit]
+
+    file_id = f"file:{rel}"
+    nodes: list[dict] = []
+    edges: list[dict] = []
+    # a class has to be seen before its methods can nest under it; symdefs is
+    # already ordered by line, and a class always precedes its own body
+    class_ids: dict[str, str] = {}
+
+    for d in defs:
+        kind = str(d.get("kind") or "function")
+        if kind not in SYMBOL_KINDS:
+            continue
+        name, line = str(d["name"]), int(d.get("line") or 0)
+        parent = str(d.get("parent") or "")
+        nid = f"sym:{rel}:{name}:{line}"
+        if kind == "class":
+            class_ids.setdefault(name, nid)
+        nodes.append({
+            "id": nid, "kind": kind, "label": name, "group": rel,
+            "weight": 2.0 if kind == "class" else 1.0,
+            "meta": {"path": rel, "line": line, "parent": parent, "of": rel},
+        })
+        # nest under the enclosing class when it is in this same file, so a
+        # class expands as a cluster instead of a flat spray off the file
+        owner = class_ids.get(parent) if parent else None
+        edges.append({"source": owner or file_id, "target": nid,
+                      "kind": "defines", "w": 2.0})
+
+    return {"nodes": nodes, "edges": edges, "path": rel, "truncated": truncated}

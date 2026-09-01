@@ -1937,6 +1937,28 @@ class Handler(BaseHTTPRequestHandler):
             self.app.memgraph_cache[key] = (time.time(), graph)
         self._send_json(graph)
 
+    def _get_memgraph_expand(self) -> None:
+        """Level-1 detail: the symbols of one file, spliced into the open graph.
+
+        `path` is only ever a key into the already-built index, never opened, so
+        it needs no traversal guard - an unknown key returns an empty payload."""
+        from urllib.parse import parse_qs, unquote, urlparse
+
+        qs = parse_qs(urlparse(self.path).query)
+        sid = unquote((qs.get("sid") or [""])[0])
+        rel = unquote((qs.get("path") or [""])[0]).strip().replace("\\", "/")
+        ws = self.app.session_workspace(sid) or self.app.base_cfg.workspace_root
+        empty = {"nodes": [], "edges": [], "path": rel, "truncated": False}
+        if not rel or not ws:
+            self._send_json(empty)
+            return
+        try:
+            from saturday.memgraph import expand_file
+
+            self._send_json(expand_file(ws, rel))
+        except Exception as exc:
+            self._send_json({"error": str(exc)}, 500)
+
     def _get_browse(self) -> None:
         """Directory listing for the folder picker.
 
@@ -3126,6 +3148,7 @@ _GET_ROUTES = [
     ("/api/context", "_get_context"),
     ("/api/journal", "_get_journal"),
     ("/api/memgraph", "_get_memgraph"),
+    ("/api/memgraph/expand", "_get_memgraph_expand"),
     ("/api/browse", "_get_browse"),
     ("/api/mcp", "_get_mcp"),
     ("/api/audit", "_get_audit"),
