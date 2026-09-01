@@ -1,5 +1,6 @@
 """Merged from: tests/test_webui_core.py, tests/test_webui_e2e.py, tests/test_webui_newui.py, tests/test_frontend_wiring.py, tests/test_competitive_ui.py, tests/test_webui_projects.py, tests/test_settings.py, tests/test_desktop_window.py."""
 from __future__ import annotations
+import re
 import os
 import sys
 import threading
@@ -3945,3 +3946,20 @@ def test_qt_permission_patch_is_silent_without_qt(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "PyQt6.QtWebEngineCore", None)
     webui_mod._patch_qt_permission_policy()  # must not raise
+
+
+def test_localstorage_arrays_survive_a_stored_null():
+    """A stored "null" parses to None, not a list, and .length on it throws.
+
+    persistDetachedFlags writes the value straight back, so once the key holds
+    "null" it stays that way and the setInterval throws on every tick.
+    """
+    js = (ASSETS / "app.js").read_text(encoding="utf-8")
+
+    assert "function lsArray(" in js
+    for key in ("df_pins", "df_recent", "df_favmodels", "df_projpins",
+                "df_detached", "df_finished"):
+        assert 'lsArray("%s")' % key in js, key
+
+    bare = re.findall(r"JSON\.parse\(localStorage\.getItem\([^)]*\)[^)]*\)", js)
+    assert len(bare) == 1, bare  # only the one inside lsArray itself

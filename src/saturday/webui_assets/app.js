@@ -31,6 +31,13 @@ async function api(path, opts = {}) {
   return r.json();
 }
 
+function lsArray(key) {
+  try {
+    const v = JSON.parse(localStorage.getItem(key) || "[]");
+    return Array.isArray(v) ? v : [];
+  } catch { return []; }
+}
+
 const state = {
   sid: null,
   busy: false,
@@ -46,7 +53,7 @@ const state = {
   lastUser: "",
   tokBySid: {},
   costBySid: {},
-  pins: JSON.parse(localStorage.getItem("df_pins") || "[]"),
+  pins: lsArray("df_pins"),
   filter: "",
   stepNow: 0,
   ctxPrompt: 0,
@@ -2573,7 +2580,7 @@ function openKebab() {
 
 function openModelMenu() {
   const m = $("#modelMenu");
-  const recents = JSON.parse(localStorage.getItem("df_recent") || "[]");
+  const recents = lsArray("df_recent");
   const favs = favModels();
   m.replaceChildren();
   const mkRow = (label, model) => {
@@ -2627,7 +2634,7 @@ function openModelMenu() {
 
 function rememberModel(model) {
   if (!model) return;
-  let rec = JSON.parse(localStorage.getItem("df_recent") || "[]");
+  let rec = lsArray("df_recent");
   rec = [model].concat(rec.filter((x) => x !== model)).slice(0, 6);
   localStorage.setItem("df_recent", JSON.stringify(rec));
 }
@@ -5369,7 +5376,7 @@ async function compareRestore() {
 
 /* ----------------------------------------------------------- model favorites */
 
-function favModels() { return JSON.parse(localStorage.getItem("df_favmodels") || "[]"); }
+function favModels() { return lsArray("df_favmodels"); }
 
 function cycleFavoriteModel() {
   const favs = favModels();
@@ -5450,7 +5457,7 @@ async function openWsFile(path) {
 let projEditing = null;
 let projFilesDraft = [];
 let projColorDraft = "";
-state.projPins = JSON.parse(localStorage.getItem("df_projpins") || "[]");
+state.projPins = lsArray("df_projpins");
 
 function projPinned(id) { return state.projPins.includes(id); }
 function toggleProjPin(id) {
@@ -5992,8 +5999,8 @@ function restoreDraft() {
 
 let detachedSids = [];
 let finishedSids = [];
-try { detachedSids = JSON.parse(localStorage.getItem("df_detached") || "[]"); } catch {}
-try { finishedSids = JSON.parse(localStorage.getItem("df_finished") || "[]"); } catch {}
+detachedSids = lsArray("df_detached");
+finishedSids = lsArray("df_finished");
 
 function persistDetachedFlags() {
   try {
