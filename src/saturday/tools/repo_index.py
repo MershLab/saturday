@@ -41,25 +41,88 @@ def _terms(text: str) -> list[str]:
     return out
 
 
-def _py_symbols(raw: str) -> list[str]:
-    """Defined def/class names in a Python file via stdlib ast (best effort).
+# Records are plain JSON-serializable dicts with these keys and nothing else,
+# so the index can be held by a file, a table, or anything in between without
+# the extractor knowing which. Fields: name, kind, line, parent.
+SYMBOL_KINDS = ("function", "method", "class", "constant", "field")
 
-    Symbol definitions are the strongest lexical signal for code retrieval —
-    a query for `parse_hermes_tool_calls` should rank the file that DEFINES it
-    above files that merely mention it. Syntax-error files yield nothing."""
+
+def _py_symdefs(raw: str) -> list[dict]:
+    """Defined symbols in a Python file, with kind, line and enclosing scope.
+
+    Walks the tree rather than ast.walk() because the parent scope is the whole
+    point: it is what separates a module constant from a local. A binding under
+    a Module or ClassDef has an identity other files can reach, so it is kept;
+    one under a function is a local and is dropped. Locals outnumber everything
+    else roughly two to one and nothing can ever link to them.
+
+    Descends through if/try/with so conditionally defined names are still found.
+    Syntax-error files yield nothing."""
     try:
         import ast
 
         tree = ast.parse(raw)
     except Exception:
         return []
-    names: list[str] = []
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            names.append(node.name)
-            if len(names) >= MAX_SYMBOLS_PER_FILE:
-                break
-    return names
+
+    out: list[dict] = []
+
+    def emit(name: str, kind: str, line: int, parent: str) -> bool:
+        out.append({"name": name, "kind": kind, "line": line, "parent": parent})
+        return len(out) < MAX_SYMBOLS_PER_FILE
+
+    def bound_names(node) -> list[str]:
+        targets = [node.target] if isinstance(node, ast.AnnAssign) else list(node.targets)
+        names = []
+        for t in targets:
+            # only bare names have a stable cross-file identity; a.b = 1 and
+            # d["k"] = 1 do not define anything another file can reference
+            if isinstance(t, ast.Name):
+                names.append(t.id)
+            elif isinstance(t, (ast.Tuple, ast.List)):
+                names.extend(e.id for e in t.elts if isinstance(e, ast.Name))
+        return names
+
+    def visit(node, parent_name: str, scope: str) -> bool:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                kind = "method" if scope == "class" else "function"
+                if not emit(child.name, kind, child.lineno, parent_name):
+                    return False
+                if not visit(child, child.name, "function"):
+                    return False
+            elif isinstance(child, ast.ClassDef):
+                if not emit(child.name, "class", child.lineno, parent_name):
+                    return False
+                if not visit(child, child.name, "class"):
+                    return False
+            elif isinstance(child, (ast.Assign, ast.AnnAssign)):
+                if scope == "function":
+                    continue  # a local: no identity outside its frame
+                kind = "field" if scope == "class" else "constant"
+                for name in bound_names(child):
+                    if not emit(name, kind, child.lineno, parent_name):
+                        return False
+            elif not visit(child, parent_name, scope):
+                return False
+        return True
+
+    visit(tree, "", "module")
+    out.sort(key=lambda d: (d["line"], d["name"]))
+    return out
+
+
+def _py_symbols(raw: str) -> list[str]:
+    """Defined def/class names in a Python file via stdlib ast (best effort).
+
+    Symbol definitions are the strongest lexical signal for code retrieval —
+    a query for `parse_hermes_tool_calls` should rank the file that DEFINES it
+    above files that merely mention it. Syntax-error files yield nothing.
+
+    Callables only: constants and fields are recorded in symdefs but kept out
+    of this list, which feeds search boosting and the graph's ambiguity check."""
+    return [d["name"] for d in _py_symdefs(raw)
+            if d["kind"] in ("function", "method", "class")]
 
 
 def _index_path(workspace_root: str | Path) -> Path:
@@ -122,7 +185,7 @@ def build_index(workspace_root: str | Path, force: bool = False) -> dict:
         # explicit symbols list — pre-symbol caches must re-index once to get
         # symbol boosting instead of silently staying unboosted forever
         cacheable = prev is not None and prev.get("mtime") == mtime and prev.get("terms")
-        if is_py and "symbols" not in (prev or {}):
+        if is_py and not {"symbols", "symdefs"} <= set(prev or {}):
             cacheable = False
         if cacheable:
             continue  # cached terms survive into the merged postings below
@@ -141,7 +204,11 @@ def build_index(workspace_root: str | Path, force: bool = False) -> dict:
         if is_py:
             # precompute split symbol terms so search_index never re-splits
             # per query; explicit [] keeps legacy caches cacheable
-            known[rel]["symbols"] = symbols = sorted(set(_py_symbols(raw)))
+            symdefs = _py_symdefs(raw)
+            known[rel]["symdefs"] = symdefs
+            known[rel]["symbols"] = symbols = sorted(
+                {d["name"] for d in symdefs
+                 if d["kind"] in ("function", "method", "class")})
             known[rel]["symbol_terms"] = sorted(_symbol_term_set({"symbols": symbols}))
     # drop vanished files (their cached terms go with them)
     for rel in list(known.keys()):

@@ -1425,6 +1425,80 @@ def test_repo_index_symbols_survive_incremental_rebuild(tmp_path):
     assert any(h["path"] == "a.py" for h in hits)
 
 
+
+SYMDEF_SRC = """\
+MAX_ROWS = 10
+LEFT, RIGHT = 1, 2
+
+class Widget:
+    kind = "spinner"
+
+    def spin(self):
+        local_total = 1
+        return local_total
+
+def helper():
+    scratch = 2
+    return scratch
+
+if True:
+    LATE_BOUND = 3
+
+obj.attr = 4
+lookup["k"] = 5
+"""
+
+
+def test_py_symdefs_records_kind_line_and_scope():
+    from saturday.tools.repo_index import _py_symdefs
+
+    got = {d["name"]: d for d in _py_symdefs(SYMDEF_SRC)}
+
+    assert got["MAX_ROWS"]["kind"] == "constant" and got["MAX_ROWS"]["parent"] == ""
+    assert got["Widget"]["kind"] == "class"
+    assert got["kind"]["kind"] == "field" and got["kind"]["parent"] == "Widget"
+    assert got["spin"]["kind"] == "method" and got["spin"]["parent"] == "Widget"
+    assert got["helper"]["kind"] == "function" and got["helper"]["parent"] == ""
+    # tuple unpacking binds both names
+    assert got["LEFT"]["kind"] == "constant" and got["RIGHT"]["kind"] == "constant"
+    # descends into if/try so conditionally defined names are not lost
+    assert got["LATE_BOUND"]["kind"] == "constant"
+
+    # locals have no identity outside their frame and must never be recorded
+    assert "local_total" not in got and "scratch" not in got
+    # nor do attribute or subscript targets, which define nothing referenceable
+    assert "attr" not in got and "k" not in got
+
+    assert got["spin"]["line"] > got["Widget"]["line"]
+
+
+def test_py_symbols_stays_callables_only():
+    """symbols feeds search boosting and the graph's ambiguity check; widening
+    it to constants would silently change both."""
+    from saturday.tools.repo_index import _py_symbols
+
+    names = set(_py_symbols(SYMDEF_SRC))
+    assert names == {"Widget", "spin", "helper"}
+
+
+def test_repo_index_persists_symdefs_and_reindexes_flat_caches(tmp_path):
+    from saturday.tools.repo_index import build_index
+
+    (tmp_path / "a.py").write_text(SYMDEF_SRC, encoding="utf-8")
+    idx = build_index(tmp_path, force=True)
+    rec = idx["files"]["a.py"]
+    assert {d["name"] for d in rec["symdefs"]} >= {"MAX_ROWS", "Widget", "spin"}
+    # plain dicts only: the record has to survive any backing store
+    assert all(set(d) == {"name", "kind", "line", "parent"} for d in rec["symdefs"])
+
+    # a cache written before symdefs existed must re-index rather than stay flat
+    del rec["symdefs"]
+    (tmp_path / ".saturday" / "repo_index.json").write_text(
+        json.dumps(idx), encoding="utf-8")
+    again = build_index(tmp_path)
+    assert again["files"]["a.py"].get("symdefs")
+
+
 # ------------------------------------------------------------------- grep
 
 def test_grep_skips_binary_files(tmp_path):
