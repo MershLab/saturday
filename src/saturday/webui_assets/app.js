@@ -6635,6 +6635,11 @@ const mg = {
   attn: [], attnKind: null, maxStep: 0, stepView: null, follow: false,
 };
 
+// the app runs inside an IIFE, so nothing above is reachable from the console
+// or a browser test; window.df already carries `state` for exactly this reason
+window.df.mg = mg;
+window.df.mgSelect = (i) => { mg.sel = i; mgDetail(i); mgWake(); };
+
 function mgRGBA(kind, a) {
   const c = G_COLOR[kind] || G_COLOR.file;
   return "rgba(" + c[0] + "," + c[1] + "," + c[2] + "," + a + ")";
@@ -6983,7 +6988,10 @@ function mgDraw() {
 function mgTick() {
   cancelAnimationFrame(mg.raf);
   const frame = () => {
-    if (!mg.on) return;
+    // the loop can be woken by a mousemove or a resize while the first fetch is
+    // still out, and every parallel array is null until mgAdopt runs. Stop
+    // rather than spin: mgAdopt calls mgTick again once there is a graph.
+    if (!mg.on || !mg.heat) return;
     let busy = false;
     for (let s = 0; s < 2 && mg.alpha > 0.002; s++) { mgStep(); busy = true; }
     // attention decays toward its tier floor rather than to nothing: what the
@@ -7010,7 +7018,7 @@ function mgTick() {
 
 function mgWake() {
   mg.idle = 0;
-  if (!mg.raf && mg.on) mgTick();
+  if (!mg.raf && mg.on && mg.heat) mgTick();
 }
 
 /* --- picking + interaction -------------------------------------------- */

@@ -725,6 +725,36 @@ def test_ui_send_and_streamed_reply_renders(ui_server):
 
 
 @pytest.mark.skipif(not HAS_PW, reason="playwright not installed")
+def test_ui_memory_graph_survives_a_wake_before_it_has_loaded(ui_server):
+    """Every parallel array is null until the first fetch lands.
+
+    A mousemove or a resize in that window started the render loop anyway, and
+    then each frame threw `Cannot read properties of null (reading 'length')` -
+    once per animation frame, with no user action to explain it."""
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        page = browser.new_page(viewport={"width": 1400, "height": 900})
+        errs: list[str] = []
+        page.on("pageerror", lambda e: errs.append(getattr(e, "stack", None) or str(e)))
+        page.goto(f"{ui_server}/?k={TOKEN}")
+        page.wait_for_selector("#input", state="visible", timeout=20000)
+        page.click('.stage-tab[data-tab="memory"]')
+        page.wait_for_function(
+            "() => window.df && window.df.mg && window.df.mg.loaded", timeout=60000)
+
+        # put it back the way it is between mgOpen() and the fetch returning,
+        # then wake it exactly as moving the mouse over the canvas does
+        page.evaluate("() => { const m = window.df.mg;"
+                      " m.heat = null; m.raf = 0; m.on = true; }")
+        box = page.locator("#mgCanvas").bounding_box()
+        page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+        page.wait_for_timeout(400)
+
+        assert not errs, errs
+        browser.close()
+
+
+@pytest.mark.skipif(not HAS_PW, reason="playwright not installed")
 def test_ui_slash_popup_and_settings_modal(ui_server):
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True)
