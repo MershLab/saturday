@@ -2705,3 +2705,11 @@ body.mode-assistant #composerModes { display: none; }
 }
 .skill-foot .mono { font-size: 10px; color: var(--faint, var(--dim)); opacity: .8; }
 .skill-foot .mini-btn { margin-left: auto; }
+
+.agent-caution {
+  width: 15px; height: 15px; flex: 0 0 15px; cursor: help;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid color-mix(in srgb, var(--warn) 55%, transparent);
+  border-radius: 50%; color: var(--warn);
+  font-family: var(--mono); font-size: 9.5px; line-height: 1;
+}

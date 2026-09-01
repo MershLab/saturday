@@ -1354,6 +1354,7 @@ class Handler(BaseHTTPRequestHandler):
                 "agent": c.agent, "tier": c.tier, "tier_name": routing.TIER_NAMES[c.tier],
                 "installed": c.installed, "enabled": c.enabled,
                 "success": c.ema_success if c.n else None, "runs": c.n,
+                "caution": _agent_caution(c.agent),
             }
             for c in routing.candidates(kind)
         ]
@@ -3198,6 +3199,17 @@ def _install_attention_sink(rt) -> None:
 
     rt._attn_sink = sink
     attention.add_sink(sink)
+
+
+def _agent_caution(name: str) -> str:
+    """Any warning attached to this delegate, shown where it is chosen."""
+    try:
+        from saturday.tools.external_agent import all_agents
+
+        spec = all_agents().get(name)
+        return getattr(spec, "caution", "") or "" if spec else ""
+    except Exception:
+        return ""
 
 
 def _pipeline_agent_runner(cfg_overrides: dict):
