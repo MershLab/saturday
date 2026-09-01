@@ -234,6 +234,27 @@ def _v_fallback_models(patch, st, key):
     return cleaned
 
 
+def _v_str_list(max_items: int, max_len: int):
+    """Generic list-of-strings validator: comma-string or list in, deduped
+    and length-capped list out. Unlike disabled_tools this checks no fixed
+    vocabulary - the block-lists name providers/models/app categories the
+    settings pane has no closed list of."""
+    def v(patch, st, key):
+        if key not in patch:
+            return _CFG_SKIP
+        raw = _coerce_str_list(patch[key])
+        if not isinstance(raw, list) or not all(isinstance(m, str) for m in raw):
+            raise ValueError(f"{key} must be a list or comma-separated string")
+        cleaned = []
+        for m in raw[:max_items]:
+            m = m.strip()[:max_len]
+            if m and m not in cleaned:
+                cleaned.append(m)
+        return cleaned
+
+    return v
+
+
 def _v_disabled_tools(patch, st, key):
     if key not in patch:
         return _CFG_SKIP
@@ -363,6 +384,16 @@ _CONFIG_FIELDS = [
     ("compact_above_tokens", _b_int_range_opt(0, 10_000_000)),
     ("stream", _v_bool),
     ("shell_allow_network", _v_bool),
+    # unattended-runaway guards and the block-lists: previously config.json
+    # or CLI-flag only, now reachable from the settings pane too
+    ("max_wall_seconds", _b_int_range(0, 86400)),
+    ("max_run_cost_usd", _b_float_range(0, 1000)),
+    ("injection_guard", _v_bool),
+    ("persist_approvals", _v_bool),
+    ("blocked_apps", _v_str_list(32, 40)),
+    ("blocked_providers", _v_str_list(16, 40)),
+    ("blocked_models", _v_str_list(32, 120)),
+    ("memory_nudge_interval", _b_int_range(0, 500)),
 ]
 
 # Settings that stay project-owned on per-session cfg clones (re-derived from
@@ -378,7 +409,14 @@ _SHARED_CONFIG_FIELDS = tuple(k for k, _ in _CONFIG_FIELDS if k not in _PROJECT_
 # change (auth_scopes wires the registry, verify_command is baked into the
 # file tools, lsp_servers into the LSP tools, memory_max_chars into
 # WorkingMemory).
-_REBUILD_CONFIG_FIELDS = frozenset({"auth_scopes", "verify_command", "lsp_servers", "memory_max_chars"})
+# blocked_apps and persist_approvals are baked into ApprovalPolicy at Agent
+# construction time (see Agent.__init__), not read live per run like the
+# rest of this session's new fields - a live runtime needs rebuilding to
+# pick either one up.
+_REBUILD_CONFIG_FIELDS = frozenset({
+    "auth_scopes", "verify_command", "lsp_servers", "memory_max_chars",
+    "blocked_apps", "persist_approvals",
+})
 
 
 # ---------------------------------------------------------------------------
@@ -848,6 +886,14 @@ class AppState:
             "auto_title_sessions": bool(getattr(cfg, "auto_title_sessions", True)),
             "suggest_followups": bool(getattr(cfg, "suggest_followups", True)),
             "lsp_servers": dict(getattr(cfg, "lsp_servers", {}) or {}),
+            "max_wall_seconds": int(getattr(cfg, "max_wall_seconds", 0) or 0),
+            "max_run_cost_usd": float(getattr(cfg, "max_run_cost_usd", 0.0) or 0.0),
+            "injection_guard": bool(getattr(cfg, "injection_guard", True)),
+            "persist_approvals": bool(getattr(cfg, "persist_approvals", True)),
+            "blocked_apps": list(getattr(cfg, "blocked_apps", []) or []),
+            "blocked_providers": list(getattr(cfg, "blocked_providers", []) or []),
+            "blocked_models": list(getattr(cfg, "blocked_models", []) or []),
+            "memory_nudge_interval": int(getattr(cfg, "memory_nudge_interval", 0) or 0),
             "warnings": warnings,
             "projects": projects,
             "config_dir": str(CONFIG_DIR),

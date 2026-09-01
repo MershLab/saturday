@@ -446,6 +446,11 @@
           </label>
           <span class="field-hint pad-hint">DROP DATABASE/TABLE, rm&nbsp;-rf, git reset --hard, DELETE/UPDATE without WHERE and friends ask for confirmation even when safety is off; database files referenced by destructive commands are auto-backed-up to .saturday/backup first</span>
           <label class="toggle">
+            <input id="cfgInjectionGuard" type="checkbox">
+            <span>Prompt-injection guard</span>
+          </label>
+          <span class="field-hint pad-hint">Flags instructions found inside tool output (a fetched page, a file, an MCP result) that try to redirect the agent, so untrusted content cannot silently steer it</span>
+          <label class="toggle">
             <input id="cfgKeepReasoning" type="checkbox">
             <span>Keep &lt;think&gt; reasoning in chat history</span>
           </label>
@@ -459,6 +464,16 @@
             <span class="field-label">Max tokens per run (spend cap)</span>
             <input id="cfgMaxRunTokens" type="number" min="0" max="10000000" step="1000" placeholder="0 = unlimited">
             <span class="field-hint">The run stops with a budget notice once cumulative tokens reach this. 0 disables the cap.</span>
+          </div>
+          <div class="field" style="margin-top:12px">
+            <span class="field-label">Max cost per run</span>
+            <input id="cfgMaxRunCost" type="number" min="0" max="1000" step="0.5" placeholder="0 = unlimited">
+            <span class="field-hint">Dollar-denominated sibling of the token cap above; the run stops once estimated spend reaches this. 0 disables it.</span>
+          </div>
+          <div class="field" style="margin-top:12px">
+            <span class="field-label">Max wall-clock time per run</span>
+            <input id="cfgMaxWallSeconds" type="number" min="0" max="86400" step="60" placeholder="seconds, 0 = unlimited">
+            <span class="field-hint">Runaway guard for unattended runs &mdash; aborts once a run has been going this long, independent of token or cost spend.</span>
           </div>
           <div class="field" style="margin-top:14px">
             <span class="field-label">Auto-delegation &mdash; spend the cheapest thing that works</span>
@@ -485,10 +500,30 @@
             <button id="btnAddFreeModels" class="btn-sub" type="button">Add selected to auto-delegation</button>
             <span class="field-hint">Free models cost nothing to run, so they sit at the bottom of the cost ladder and get tried first.</span>
           </div>
+          <label class="toggle" style="margin-top:14px">
+            <input id="cfgPersistApprovals" type="checkbox">
+            <span>Load saved approval rules on start</span>
+          </label>
+          <span class="field-hint pad-hint">Off starts every session with a clean policy, ignoring approvals.json &mdash; rules saved below still get written, just not loaded back in</span>
           <div class="field" style="margin-top:12px">
             <span class="field-label">Saved command rules ("always allow")</span>
             <div id="approvalRules"></div>
             <span class="field-hint">Persisted across sessions in approvals.json; compound commands never match a rule, and hardline/guardrail protections outrank them</span>
+          </div>
+          <div class="field" style="margin-top:14px">
+            <span class="field-label">Blocked app categories</span>
+            <input id="cfgBlockedApps" type="text" class="mono" spellcheck="false" autocomplete="off" placeholder="comma,separated,categories">
+            <span class="field-hint">Matched against what a computer-use action targets; defaults to crypto, trading, wallet, exchange</span>
+          </div>
+          <div class="field" style="margin-top:12px">
+            <span class="field-label">Blocked providers</span>
+            <input id="cfgBlockedProviders" type="text" class="mono" spellcheck="false" autocomplete="off" placeholder="comma,separated,providers">
+            <span class="field-hint">A data-policy floor: these providers are refused even if a fallback chain would otherwise reach them</span>
+          </div>
+          <div class="field" style="margin-top:12px">
+            <span class="field-label">Blocked models</span>
+            <input id="cfgBlockedModels" type="text" class="mono" spellcheck="false" autocomplete="off" placeholder="comma,separated,model-ids">
+            <span class="field-hint">Same floor as blocked providers, at model granularity</span>
           </div>
           <div class="field" style="margin-top:14px">
             <span class="field-label">Tool toggles</span>
@@ -614,6 +649,11 @@
             <span class="field-label">Post-edit verify command</span>
             <input id="cfgVerifyCmd" type="text" placeholder="e.g. python -m pytest -q  ({path} substitutes the file)">
             <span class="field-hint">Runs after every successful file write/edit; output is shown to the agent so it self-corrects. Empty = off.</span>
+          </div>
+          <div class="field">
+            <span class="field-label">Memory nudge interval</span>
+            <input id="cfgMemoryNudge" type="number" min="0" max="500" step="1" placeholder="steps, 0 = off">
+            <span class="field-hint">Re-surfaces the "write this down" reminder every N loop steps on a long run, so a real finding doesn't outlive the run it was found in. 0 disables it.</span>
           </div>
           <div class="field">
             <span class="field-label">Backup</span>

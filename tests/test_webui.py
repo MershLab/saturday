@@ -1365,6 +1365,64 @@ def test_ui_provenance_and_verify_settings_roundtrip(ui_server):
 
 
 
+@pytest.mark.skipif(not HAS_PW, reason="playwright not installed")
+def test_ui_budget_guard_and_blocklist_settings_roundtrip(ui_server):
+    """The budget guards, injection guard, persist-approvals and the three
+    block-lists: previously config.json/CLI only, save from the Safety pane
+    and survive a reopen, same contract as every other settings field."""
+    with sync_playwright() as pw:
+        browser, ctx, page = _fresh_page(pw, ui_server)
+        try:
+            page.click("#kebabBtn")
+            page.locator('#kebabMenu button[data-act="settings"]').click()
+            page.wait_for_selector("#settingsModal:not(.hidden)", timeout=5000)
+            page.locator('#setNav button[data-sec="safety"]').click()
+            page.wait_for_selector('.set-pane[data-sec="safety"].on', timeout=5000)
+
+            page.fill("#cfgMaxRunCost", "3.5")
+            page.fill("#cfgMaxWallSeconds", "600")
+            page.uncheck("#cfgInjectionGuard")
+            page.uncheck("#cfgPersistApprovals")
+            page.fill("#cfgBlockedApps", "gambling, adult")
+            page.fill("#cfgBlockedProviders", "openai")
+            page.fill("#cfgBlockedModels", "gpt-4")
+
+            page.locator('#setNav button[data-sec="data"]').click()
+            page.wait_for_selector('.set-pane[data-sec="data"].on', timeout=5000)
+            page.fill("#cfgMemoryNudge", "25")
+
+            page.click("#settingsSave")
+            page.wait_for_function(
+                "() => window.df.state.info && window.df.state.info.max_wall_seconds === 600",
+                timeout=8000,
+            )
+            info = page.evaluate("() => window.df.state.info")
+            assert info["max_run_cost_usd"] == 3.5
+            assert info["injection_guard"] is False
+            assert info["persist_approvals"] is False
+            assert info["blocked_apps"] == ["gambling", "adult"]
+            assert info["blocked_providers"] == ["openai"]
+            assert info["blocked_models"] == ["gpt-4"]
+            assert info["memory_nudge_interval"] == 25
+
+            # reopen: every control reflects what was actually persisted
+            page.click("#kebabBtn")
+            page.locator('#kebabMenu button[data-act="settings"]').click()
+            page.wait_for_selector("#settingsModal:not(.hidden)", timeout=5000)
+            page.locator('#setNav button[data-sec="safety"]').click()
+            page.wait_for_selector('.set-pane[data-sec="safety"].on', timeout=5000)
+            assert page.input_value("#cfgMaxRunCost") == "3.5"
+            assert page.input_value("#cfgMaxWallSeconds") == "600"
+            assert not page.is_checked("#cfgInjectionGuard")
+            assert not page.is_checked("#cfgPersistApprovals")
+            assert page.input_value("#cfgBlockedApps") == "gambling, adult"
+            assert page.input_value("#cfgBlockedModels") == "gpt-4"
+        finally:
+            js_errs = getattr(ctx, "_df_errs", [])
+            browser.close()
+        assert not js_errs, f"js errors: {js_errs}"
+
+
 # --- from tests/test_frontend_wiring.py ---
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -2762,6 +2820,88 @@ def make_app_settings(tmp_path: Path, turns=None) -> AppState:
 
     app._new_agent = patched
     return app
+
+
+def test_budget_and_blocklist_settings_roundtrip(tmp_path: Path):
+    """max_wall_seconds/max_run_cost_usd/injection_guard/memory_nudge_interval
+    and the three block-lists: previously config.json or CLI-flag only, now
+    reachable from the settings pane like everything else."""
+    app = make_app_settings(tmp_path)
+    with _ServerSettings(app) as srv:
+        status, data = req(srv.base, "/api/config", "POST", {
+            "max_wall_seconds": 1800,
+            "max_run_cost_usd": 2.5,
+            "injection_guard": False,
+            "memory_nudge_interval": 12,
+            "blocked_providers": "openai, anthropic",
+            "blocked_models": ["gpt-4", "gpt-4", "  claude-3  "],
+        })
+        assert status == 200, data
+        assert data["max_wall_seconds"] == 1800
+        assert data["max_run_cost_usd"] == 2.5
+        assert data["injection_guard"] is False
+        assert data["memory_nudge_interval"] == 12
+        assert data["blocked_providers"] == ["openai", "anthropic"]
+        # duplicates dropped, whitespace trimmed - same discipline as
+        # fallback_models/disabled_tools
+        assert data["blocked_models"] == ["gpt-4", "claude-3"]
+
+        assert app.base_cfg.max_wall_seconds == 1800
+        assert app.base_cfg.max_run_cost_usd == 2.5
+        assert app.base_cfg.injection_guard is False
+        assert app.base_cfg.blocked_providers == ["openai", "anthropic"]
+
+        # a re-read of /api/state reflects the same persisted values, not
+        # just the POST response
+        _, state = req(srv.base, "/api/state")
+        assert state["max_wall_seconds"] == 1800
+        assert state["blocked_models"] == ["gpt-4", "claude-3"]
+
+
+def test_budget_settings_reject_out_of_range_values(tmp_path: Path):
+    app = make_app_settings(tmp_path)
+    with _ServerSettings(app) as srv:
+        status, data = req(srv.base, "/api/config", "POST", {"max_wall_seconds": -5})
+        assert status == 200, data
+        # out of range: silently skipped like every other _b_int_range field,
+        # not written - the default survives
+        assert app.base_cfg.max_wall_seconds == 0
+
+        status, data = req(srv.base, "/api/config", "POST", {"max_run_cost_usd": 5000})
+        assert app.base_cfg.max_run_cost_usd == 0.0
+
+
+def test_blocked_apps_and_persist_approvals_rebuild_live_runtimes(tmp_path: Path):
+    """Unlike the run-time-read fields, these two are baked into
+    ApprovalPolicy at Agent construction - a live session's runtime must be
+    rebuilt to pick up a change, the same guarantee lsp_servers/auth_scopes
+    already carry."""
+    app = make_app_settings(tmp_path)
+    with _ServerSettings(app) as srv:
+        _, d = req(srv.base, "/api/projects", "POST", {"name": "P"})
+        pid = d["project"]["id"]
+        payload = json.dumps({"text": "hi", "project_id": pid}).encode()
+        r = urllib.request.Request(srv.base + "/api/chat", data=payload, method="POST")
+        r.add_header("X-Saturday-Token", TOKEN)
+        r.add_header("Content-Type", "application/json")
+        with urllib.request.urlopen(r, timeout=60) as resp:
+            sid = json.loads(resp.readline().decode())["sid"]
+
+        # _rebuild_runtime_agent skips a busy runtime and defers to its next
+        # natural rebuild - the run has to actually finish first, not just
+        # have started, or the config patch below silently no-ops
+        deadline = time.time() + 10
+        while app.runtime_for(sid).busy and time.time() < deadline:
+            time.sleep(0.05)
+        assert not app.runtime_for(sid).busy, "run never finished"
+
+        req(srv.base, "/api/config", "POST", {"blocked_apps": ["crypto", "gambling"]})
+        agent = app.runtime_for(sid).agent
+        assert agent.cfg.blocked_apps == ["crypto", "gambling"]
+        assert set(agent.approval_policy.blocked_apps) >= {"crypto", "gambling"}
+
+        req(srv.base, "/api/config", "POST", {"persist_approvals": False})
+        assert app.runtime_for(sid).agent.cfg.persist_approvals is False
 
 
 def test_state_payload_has_settings_fields(tmp_path: Path):

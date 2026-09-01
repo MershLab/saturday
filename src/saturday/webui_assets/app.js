@@ -3417,6 +3417,14 @@ function openSettings() {
   populateToolToggles(info);
   if ($("#cfgSandboxed")) $("#cfgSandboxed").checked = info.sandboxed === true;
   if ($("#cfgMaxRunTokens")) $("#cfgMaxRunTokens").value = info.max_run_tokens || 0;
+  if ($("#cfgMaxRunCost")) $("#cfgMaxRunCost").value = info.max_run_cost_usd || 0;
+  if ($("#cfgMaxWallSeconds")) $("#cfgMaxWallSeconds").value = info.max_wall_seconds || 0;
+  if ($("#cfgInjectionGuard")) $("#cfgInjectionGuard").checked = info.injection_guard !== false;
+  if ($("#cfgPersistApprovals")) $("#cfgPersistApprovals").checked = info.persist_approvals !== false;
+  if ($("#cfgBlockedApps")) $("#cfgBlockedApps").value = (info.blocked_apps || []).join(", ");
+  if ($("#cfgBlockedProviders")) $("#cfgBlockedProviders").value = (info.blocked_providers || []).join(", ");
+  if ($("#cfgBlockedModels")) $("#cfgBlockedModels").value = (info.blocked_models || []).join(", ");
+  if ($("#cfgMemoryNudge")) $("#cfgMemoryNudge").value = info.memory_nudge_interval || 0;
   if ($("#cfgProvenance")) $("#cfgProvenance").value = info.provenance_marking || "metadata";
   if ($("#cfgVerifyCmd")) $("#cfgVerifyCmd").value = info.verify_command || "";
   if ($("#cfgKeepReasoning")) $("#cfgKeepReasoning").checked = info.keep_reasoning_in_history === true;
@@ -3779,6 +3787,14 @@ async function saveSettings() {  const patch = {
     assistant_user_title: $("#cfgAssistantTitle") ? $("#cfgAssistantTitle").value.trim() : "",
     sandboxed: $("#cfgSandboxed") ? $("#cfgSandboxed").checked : false,
     max_run_tokens: parseInt($("#cfgMaxRunTokens") && $("#cfgMaxRunTokens").value || "0", 10) || 0,
+    max_run_cost_usd: parseFloat($("#cfgMaxRunCost") && $("#cfgMaxRunCost").value || "0") || 0,
+    max_wall_seconds: parseInt($("#cfgMaxWallSeconds") && $("#cfgMaxWallSeconds").value || "0", 10) || 0,
+    injection_guard: !$("#cfgInjectionGuard") || $("#cfgInjectionGuard").checked,
+    persist_approvals: !$("#cfgPersistApprovals") || $("#cfgPersistApprovals").checked,
+    blocked_apps: $("#cfgBlockedApps") ? $("#cfgBlockedApps").value : "",
+    blocked_providers: $("#cfgBlockedProviders") ? $("#cfgBlockedProviders").value : "",
+    blocked_models: $("#cfgBlockedModels") ? $("#cfgBlockedModels").value : "",
+    memory_nudge_interval: parseInt($("#cfgMemoryNudge") && $("#cfgMemoryNudge").value || "0", 10) || 0,
     provenance_marking: $("#cfgProvenance") ? $("#cfgProvenance").value : "metadata",
     verify_command: $("#cfgVerifyCmd") ? $("#cfgVerifyCmd").value.trim() : "",
     keep_reasoning_in_history: !$("#cfgKeepReasoning") || $("#cfgKeepReasoning").checked,
