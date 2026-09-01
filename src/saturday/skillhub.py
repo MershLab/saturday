@@ -32,6 +32,8 @@ TOPIC = "saturday-skill"
 SEARCH_URL = "https://api.github.com/search/repositories"
 ALLOWED_SCHEMES = ("https", "http", "git", "ssh")
 _NAME_RE = re.compile(r"[^a-z0-9_-]+")
+# a folder name, not a sentence: long ones break MAX_PATH on Windows
+NAME_MAX = 48
 
 
 class SkillError(Exception):
@@ -44,10 +46,13 @@ def derive_name(url: str) -> str:
     The name becomes a directory under the skills root, so anything that could
     climb out of it - separators, dots, empty - is rejected rather than
     cleaned into something surprising."""
-    tail = url.rstrip("/").rsplit("/", 1)[-1]
+    # split on BOTH separators: a Windows path has no forward slash, so
+    # splitting on "/" alone kept the whole of C:\Users\...\skill and turned
+    # it into one 130-character folder name that then broke MAX_PATH
+    tail = re.split(r"[/\\]", url.rstrip("/\\"))[-1]
     tail = re.sub(r"\.git$", "", tail)
     tail = re.sub(r"^saturday[-_]skill[-_]?", "", tail, flags=re.IGNORECASE)
-    name = _NAME_RE.sub("-", tail.lower()).strip("-")
+    name = _NAME_RE.sub("-", tail.lower()).strip("-")[:NAME_MAX].strip("-")
     if not name or name in (".", ".."):
         raise SkillError(f"cannot derive a skill name from {url!r}")
     return name
