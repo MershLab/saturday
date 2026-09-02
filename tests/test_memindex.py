@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import time
 
+import pytest
 
 from saturday.memindex import MemoryIndex, parse_notes
 
@@ -188,6 +189,79 @@ def test_memory_graph_still_lists_facts_if_the_index_fails(tmp_path, monkeypatch
     g = build_graph(None)
     assert [n["label"] for n in g["nodes"] if n["kind"] == "fact"] == \
         ["a note that must still show up"]
+
+
+def test_add_clusters_groups_a_real_graph_into_communities():
+    """_add_clusters is the memgraph-side integration point for the vendored
+    graphify clustering pass (THIRD_PARTY_NOTICES.md) - this proves the
+    plain-dict node/edge shape memgraph actually produces round-trips
+    through it correctly, not just that memcluster.cluster() itself works
+    on an nx.Graph someone hand-builds."""
+    pytest.importorskip("networkx", reason="graph extra (networkx) not installed")
+    from saturday.memgraph import _add_clusters
+
+    # two dense, disjoint groups plus one isolated node - the isolated node
+    # must still get its own community, not vanish
+    out = {
+        "nodes": [
+            {"id": f"n{i}", "kind": "code", "label": f"n{i}.py", "group": "code", "weight": 1.0, "meta": {}}
+            for i in range(7)
+        ],
+        "edges": [
+            {"s": 0, "t": 1, "kind": "mentions", "w": 1.0},
+            {"s": 1, "t": 2, "kind": "mentions", "w": 1.0},
+            {"s": 0, "t": 2, "kind": "mentions", "w": 1.0},
+            {"s": 3, "t": 4, "kind": "mentions", "w": 1.0},
+            {"s": 4, "t": 5, "kind": "mentions", "w": 1.0},
+            {"s": 3, "t": 5, "kind": "mentions", "w": 1.0},
+        ],
+    }
+    _add_clusters(out)
+    assert "communities" in out
+    by_id = {n["id"]: n["community"] for n in out["nodes"]}
+    assert by_id["n0"] == by_id["n1"] == by_id["n2"]
+    assert by_id["n3"] == by_id["n4"] == by_id["n5"]
+    assert by_id["n0"] != by_id["n3"]
+    assert "n6" in by_id  # the isolated node still gets a community, not dropped
+
+
+def test_add_clusters_is_a_noop_without_the_graph_extra(monkeypatch):
+    """Same optional-extra pattern as browser/desktop: absent networkx must
+    not break the graph, just skip the community pass."""
+    import sys
+
+    monkeypatch.setitem(sys.modules, "networkx", None)
+    from saturday.memgraph import _add_clusters
+
+    out = {
+        "nodes": [{"id": "n0", "kind": "code", "label": "n0.py", "group": "code", "weight": 1.0, "meta": {}}],
+        "edges": [],
+    }
+    _add_clusters(out)
+    assert "communities" not in out
+    assert "community" not in out["nodes"][0]
+
+
+def test_add_clusters_swallows_a_clustering_failure(monkeypatch):
+    """Clustering is a nice-to-have on top of a real graph - a bug in it
+    must never take the graph itself down."""
+    pytest.importorskip("networkx", reason="graph extra (networkx) not installed")
+    import saturday.memcluster as memcluster
+    from saturday.memgraph import _add_clusters
+
+    def boom(*a, **k):
+        raise RuntimeError("simulated clustering failure")
+
+    monkeypatch.setattr(memcluster, "cluster", boom)
+    out = {
+        "nodes": [
+            {"id": "n0", "kind": "code", "label": "n0.py", "group": "code", "weight": 1.0, "meta": {}},
+            {"id": "n1", "kind": "code", "label": "n1.py", "group": "code", "weight": 1.0, "meta": {}},
+        ],
+        "edges": [{"s": 0, "t": 1, "kind": "mentions", "w": 1.0}],
+    }
+    _add_clusters(out)  # must not raise
+    assert "communities" not in out
 
 
 def test_staleness_is_verified_against_the_workspace_not_guessed_from_age(tmp_path):

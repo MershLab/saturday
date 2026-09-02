@@ -2375,6 +2375,7 @@ body.mode-assistant #composerModes { display: none; }
 .mg-x:hover { color: var(--text); }
 .mg-detail p { margin: 0; color: var(--dim); line-height: 1.5; word-break: break-word; }
 .mg-detail p.mono { font-family: var(--mono); font-size: 10.5px; }
+.mg-detail p.mg-community { color: var(--accent-hi); }
 .mg-syms { font-size: 10.5px !important; opacity: .8; }
 .mg-links-h {
   font-family: var(--mono); font-size: 10px; color: var(--dim);

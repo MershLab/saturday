@@ -829,6 +829,48 @@ def test_ui_memory_graph_survives_a_wake_before_it_has_loaded(ui_server):
 
 
 @pytest.mark.skipif(not HAS_PW, reason="playwright not installed")
+def test_ui_memory_graph_shows_the_cluster_a_node_belongs_to(ui_server):
+    """The vendored graphify clustering pass (THIRD_PARTY_NOTICES.md) is a
+    no-op without the optional graph extra (networkx) - skip rather than
+    fail when it isn't installed, since that's a legitimate environment,
+    not a bug. When it is installed, this repo's own real memory graph
+    (workspace_root is Path.cwd() in this fixture) genuinely clusters, so
+    this checks the real thing, not a synthetic fixture graph."""
+    try:
+        import networkx  # noqa: F401
+    except ImportError:
+        pytest.skip("graph extra (networkx) not installed")
+
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        page = browser.new_page(viewport={"width": 1400, "height": 900})
+        errs: list[str] = []
+        page.on("pageerror", lambda e: errs.append(getattr(e, "stack", None) or str(e)))
+        page.goto(f"{ui_server}/?k={TOKEN}")
+        page.wait_for_selector("#input", state="visible", timeout=20000)
+
+        page.click('.stage-tab[data-tab="memory"]')
+        page.wait_for_function(
+            "() => window.df && window.df.mg && window.df.mg.loaded && window.df.mg.nodes.length > 3",
+            timeout=60000)
+
+        found = page.evaluate("""() => {
+            const mg = window.df.mg;
+            const i = mg.nodes.findIndex((n) => n.community !== undefined);
+            if (i < 0) return false;
+            window.df.mgSelect(i);
+            return true;
+        }""")
+        assert found, "no clustered node found - clustering did not run"
+        page.wait_for_selector("#mgDetail .mg-community", timeout=10000)
+        text = page.locator("#mgDetail .mg-community").inner_text()
+        assert "cluster:" in text
+
+        assert not errs, errs
+        browser.close()
+
+
+@pytest.mark.skipif(not HAS_PW, reason="playwright not installed")
 def test_ui_memory_graph_focuses_and_unfocuses_calls(ui_server):
     """Level 2 in a real browser: pulling in a symbol's callers/callees and
     releasing them again must never leave a parallel array short - the exact

@@ -6717,6 +6717,8 @@ function mgAdopt(g) {
   const n = g.nodes.length;
   mg.nodes = g.nodes;
   mg.edges = g.edges;
+  mg.communities = {};
+  for (const c of g.communities || []) mg.communities[c.id] = c;
   mg.loaded = true;
   mg.x = new Float32Array(n); mg.y = new Float32Array(n);
   mg.vx = new Float32Array(n); mg.vy = new Float32Array(n);
@@ -7414,6 +7416,9 @@ function mgDetail(i) {
     escHtml(n.label) + '<button class="mg-x" id="mgClose" title="close">×</button></header>' +
     (m.path ? '<p class="mono">' + escHtml(m.path) + '</p>' : "") +
     (m.text ? '<p>' + escHtml(m.text) + '</p>' : "") +
+    (n.community !== undefined && mg.communities[n.community]
+      ? '<p class="mg-community mono">cluster: ' + escHtml(mg.communities[n.community].label) +
+        ' (' + mg.communities[n.community].size + ')</p>' : "") +
     (G_SYM_LABEL[n.kind]
       ? '<p class="mono">' + escHtml(n.kind + " \u00b7 line " + (m.line || 0) +
         (m.parent ? " \u00b7 in " + m.parent : "")) + '</p>' : "") +
