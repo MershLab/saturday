@@ -1733,7 +1733,14 @@ class Handler(BaseHTTPRequestHandler):
                 p.unlink()
             except OSError:
                 pass
-        self._send_json({"ok": True, "removed": removed})
+        # the button promises "sessions, checkpoints and projects" - every
+        # session is already gone by this point, so there is nothing left to
+        # untag; delete each project the same way _delete_project does
+        projects_removed = 0
+        for proj in app.projects.list():
+            if app.projects.delete(proj.id):
+                projects_removed += 1
+        self._send_json({"ok": True, "removed": removed, "projects_removed": projects_removed})
 
     def _delete_session(self, sid: str) -> None:
         app = self.app

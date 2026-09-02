@@ -3891,7 +3891,8 @@ async function clearAllData() {
     await loadProjects();
     await loadSessions();
     newChat();
-    toast("Cleared " + (out.removed || 0) + " session(s)", "ok");
+    const projNote = out.projects_removed ? " and " + out.projects_removed + " project(s)" : "";
+    toast("Cleared " + (out.removed || 0) + " session(s)" + projNote, "ok");
   } catch (e) { toast(e.message, "err"); }
 }
 

@@ -2992,6 +2992,9 @@ def test_reveal_targets_and_validation(tmp_path: Path, monkeypatch):
 
 
 def test_clear_all_sessions_endpoint(tmp_path: Path):
+    """The Settings > Data pane button and its own confirm dialog both
+    promise "sessions, checkpoints and projects" - projects must actually
+    go, not just survive as an orphaned registry the UI still lists."""
     app = make_app_settings(tmp_path)
     with _ServerSettings(app) as srv:
         sids = [app.store.create({"task": f"s{i}", "surface": "app"}) for i in range(2)]
@@ -2999,11 +3002,18 @@ def test_clear_all_sessions_endpoint(tmp_path: Path):
             app.store.append(sid, {"type": "messages", "messages": [{"role": "user", "content": "hi"}]})
         assert len(app.store.list_sessions()) == 2
         app.runtime_for(sids[0])
+        _, d = req(srv.base, "/api/projects", "POST", {"name": "P1"})
+        pid1 = d["project"]["id"]
+        req(srv.base, "/api/projects", "POST", {"name": "P2"})
+        assert len(app.projects.list()) == 2
 
         status, data = req(srv.base, "/api/sessions/all", "DELETE")
         assert status == 200 and data["removed"] == 2
+        assert data["projects_removed"] == 2
         assert app.store.list_sessions() == []
         assert app.runtimes == {}
+        assert app.projects.list() == []
+        assert app.projects.get(pid1) is None
         for sid in sids:
             assert not app.store._path(sid).exists()
             assert not app.store._path(sid).with_suffix(".checkpoint.json").exists()
