@@ -2725,6 +2725,55 @@ class Handler(BaseHTTPRequestHandler):
         ]
         self._send_json({"ok": True, "schedules": rows, "watcher": SCHEDULE_WATCHER_ON})
 
+    # -- external trigger: kick off a run without chat or the scheduler -----------
+
+    def _post_trigger(self, payload: dict) -> None:
+        """A third way in, beside chat and cron: something outside Saturday
+        (a CI step, another service, a cron job Saturday doesn't own) POSTs a
+        task here and gets a session id back immediately. The run itself is a
+        real detached process, not a thread inside this server - same
+        contract 'saturday run --detach' already uses (log under
+        .saturday/bg/<id>.log, resumable via 'saturday chat --resume <id>',
+        visible to 'saturday sessions'), so a webhook-started run is
+        indistinguishable from one a person started by hand once it's
+        running. This does not change WHO can reach Saturday - it goes
+        through the same _guard() token/Origin check as every other POST
+        route - only what a caller who is already allowed to reach it can
+        ask for."""
+        task = str(payload.get("task") or "").strip()
+        if not task:
+            self._send_json({"error": "task is required"}, 400)
+            return
+        session_id = str(payload.get("session") or "").strip() or time.strftime("hook-%Y%m%d-%H%M%S")
+        log_dir = Path(".saturday") / "bg"
+        try:
+            log_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            self._send_json({"error": f"could not prepare log directory: {exc}"}, 500)
+            return
+        log_path = (log_dir / f"{session_id}.log").resolve()
+        argv = [sys.executable, "-m", "saturday", "run", task, "--session", session_id]
+        model = str(payload.get("model") or "").strip()
+        provider = str(payload.get("provider") or "").strip()
+        if model:
+            argv += ["--model", model]
+        if provider:
+            argv += ["--provider", provider]
+        try:
+            with open(log_path, "ab") as log_fh:
+                proc = subprocess.Popen(
+                    argv,
+                    stdout=log_fh,
+                    stderr=subprocess.STDOUT,
+                    stdin=subprocess.DEVNULL,
+                    cwd=getattr(self.app.base_cfg, "workspace_root", None) or None,
+                    close_fds=True,
+                )
+        except OSError as exc:
+            self._send_json({"error": f"could not start run: {exc}"}, 500)
+            return
+        self._send_json({"ok": True, "session_id": session_id, "pid": proc.pid, "log": str(log_path)})
+
     # -- custom slash commands (prompt library) ------------------------------------
 
     def _post_commands(self, payload: dict) -> None:
@@ -3265,6 +3314,7 @@ _GET_ROUTES = [
     ("/api/file", "_send_image_file"),
 ]
 _POST_ROUTES = {
+    "/api/trigger": "_post_trigger",
     "/api/trust": "_post_trust",
     "/api/plan": "_post_plan",
     "/api/branch": "_post_branch",

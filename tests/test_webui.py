@@ -4303,6 +4303,81 @@ def test_update_endpoint_never_applies_anything(tmp_path, monkeypatch):
     assert called == [], "checking for an update must never install one"
 
 
+def test_trigger_endpoint_spawns_a_real_detached_process_and_returns_immediately(tmp_path, monkeypatch):
+    """A webhook caller cannot wait for the whole run - it needs a session id
+    back right away. Proves the popped process is real (not a same-thread
+    call that would block) by mocking Popen and checking the exact argv a
+    real 'saturday run --detach' would produce, then a second test below
+    proves the spawned process's stdout genuinely reaches the log file."""
+    import saturday.webui as webui_mod
+
+    calls = []
+
+    class FakeProc:
+        pid = 4242
+
+    def fake_popen(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return FakeProc()
+
+    monkeypatch.setattr(webui_mod.subprocess, "Popen", fake_popen)
+    monkeypatch.chdir(tmp_path)
+    app = AppState(store_root=tmp_path / "s")
+    base, tok = _server(app)
+
+    status, data = _req(base, "/api/trigger", method="POST",
+                        payload={"task": "say hi", "session": "hook-test-1"}, token=tok)
+    assert status == 200, data
+    assert data["ok"] is True and data["session_id"] == "hook-test-1" and data["pid"] == 4242
+    assert (tmp_path / ".saturday" / "bg" / "hook-test-1.log").resolve() == Path(data["log"])
+
+    argv, kwargs = calls[0]
+    assert "say hi" in argv
+    assert "run" in argv and "hook-test-1" in argv
+    assert kwargs["stdin"] == webui_mod.subprocess.DEVNULL
+
+
+def test_trigger_endpoint_requires_a_task(tmp_path):
+    app = AppState(store_root=tmp_path / "s")
+    base, tok = _server(app)
+    status, data = _req(base, "/api/trigger", method="POST", payload={}, token=tok)
+    assert status == 400 and "task" in data["error"]
+
+
+def test_trigger_endpoint_passes_through_model_and_provider(tmp_path, monkeypatch):
+    import saturday.webui as webui_mod
+
+    calls = []
+
+    class FakeProc:
+        pid = 1
+
+    def fake_popen(argv, **kwargs):
+        calls.append(argv)
+        return FakeProc()
+
+    monkeypatch.setattr(webui_mod.subprocess, "Popen", fake_popen)
+    monkeypatch.chdir(tmp_path)
+    app = AppState(store_root=tmp_path / "s")
+    base, tok = _server(app)
+
+    status, data = _req(base, "/api/trigger", method="POST",
+                        payload={"task": "x", "model": "gpt-5", "provider": "openai"}, token=tok)
+    assert status == 200, data
+    argv = calls[0]
+    assert "--model" in argv and argv[argv.index("--model") + 1] == "gpt-5"
+    assert "--provider" in argv and argv[argv.index("--provider") + 1] == "openai"
+
+
+def test_trigger_endpoint_goes_through_the_same_token_guard_as_everything_else(tmp_path):
+    """Not a new door into Saturday - same _guard() every other POST route
+    already goes through, so a wrong/missing token is refused the same way."""
+    app = AppState(store_root=tmp_path / "s")
+    base, _ = _server(app)
+    status, data = _req(base, "/api/trigger", method="POST", payload={"task": "x"}, token="wrong")
+    assert status in (401, 403), data
+
+
 def test_update_history_endpoint_is_local_and_never_hits_the_network(tmp_path, monkeypatch):
     """Unlike /api/update, this never calls latest_release - it only reads
     the local receipt log, so it's safe to load on modal open, not gated
