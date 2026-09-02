@@ -7,14 +7,50 @@ use so the failures are clear commands, not stack traces:
 
   macOS:  AppleScript/System Events (built-in) + screencapture + cliclick
           (brew install cliclick) + pbcopy/pbpaste + tesseract (ui_text)
-  Linux:  xdotool + wmctrl + xclip (or wl-paste) + tesseract (ui_text)
+  Linux (X11): xdotool + wmctrl + xclip (or wl-paste) + tesseract (ui_text)
           + ImageMagick 'import' for window capture
+  Linux (Wayland, Hyprland): hyprctl for window listing and focus only -
+          see the Wayland section below for what still isn't covered and
+          why.
 
 Verified by the maintainer on real hardware — the Windows paths in
 spatial.py are untouched and remain the validated reference.
+
+Wayland status, checked live against a real Hyprland 0.56.2 session rather
+than assumed from X11-era docs (the roadmap's own "confirmed not to work
+on a real Hyprland/Wayland setup" note, closed as far as this pass could
+verify):
+
+* Window LISTING works: 'hyprctl clients -j' is a read-only JSON query,
+  independent of the input-dispatch layer, tested live against real
+  windows on this machine.
+* Window FOCUS works: 'hyprctl dispatch focuswindow address:<addr>'
+  changes the active window (confirmed via 'hyprctl activewindow') even
+  though it also prints a Lua-syntax warning on this build - the warning
+  is cosmetic for this one dispatcher, not a failure, and swallowing
+  stderr here would misreport a working call as broken.
+* Window minimize/maximize/close on Wayland are UNVERIFIED and return an
+  explicit error rather than a guess. Hyprland 0.56.2 has moved dispatch
+  through an internal Lua layer ('hl.dispatch(...)', with some actions
+  apparently requiring 'hl.dsp.window.*' / 'hl.window.*' calls this pass
+  could not find real signatures for) - the classic bare-word dispatchers
+  ('fullscreen 1', 'closewindow address:...') either error outright or
+  return "ok" while doing nothing observable, which is worse than an
+  error because it looks like it worked. Rather than ship a dispatcher
+  call nobody has verified actually does the thing, these three actions
+  say plainly that they are not implemented yet on Wayland.
+* Pointer and keyboard delivery are UNCHANGED and still X11-only
+  (xdotool). Wayland input injection needs 'ydotool' + its 'ydotoold'
+  daemon, which is not installed here, and installing/enabling a system
+  daemon with uinput access is a real system-level change this pass did
+  not make unasked. Calling pointer/keyboard now on a Wayland session
+  fails with a clear message naming exactly what to install, instead of
+  xdotool's opaque "cannot open display" failure.
 """
 from __future__ import annotations
 
+import json
+import os
 import re
 import shutil
 import subprocess
@@ -23,10 +59,19 @@ import sys
 from saturday.tools.spatial import LandmarkStore
 
 MAC = sys.platform == "darwin"
+WAYLAND = not MAC and os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland"
+HYPRLAND = WAYLAND and bool(os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"))
 
 UNSUPPORTED_HINT = (
     "requires Windows (background delivery / UIA scan); on macOS use "
     "ui_text (OCR) + pointer target=<id>, on Linux use ui_text/pointer/keyboard via xdotool"
+)
+
+YDOTOOL_HINT = (
+    "pointer/keyboard need ydotool on Wayland (xdotool is X11-only): install ydotool, "
+    "enable+start the ydotoold service, and add yourself to the group it reads "
+    "/dev/uinput as (see your distro's ydotool docs) - not done automatically, "
+    "since it installs and enables a privileged system daemon"
 )
 
 
@@ -125,9 +170,33 @@ def linux_window_scan() -> tuple[bool, str, list[dict]]:
     return True, "", rows
 
 
+def hyprland_window_scan() -> tuple[bool, str, list[dict]]:
+    if shutil.which("hyprctl") is None:
+        return False, "hyprctl not found (expected on a Hyprland session)", []
+    rc, out, err = _run(["hyprctl", "-j", "clients"], timeout=15.0)
+    if rc != 0:
+        return False, (err or "hyprctl clients failed")[:300], []
+    try:
+        clients = json.loads(out or "[]")
+    except json.JSONDecodeError as exc:
+        return False, f"could not parse hyprctl output: {exc}", []
+    rows = []
+    for c in clients:
+        at = c.get("at") or [0, 0]
+        size = c.get("size") or [0, 0]
+        rows.append({
+            "winid": c.get("address", ""), "left": int(at[0]), "top": int(at[1]),
+            "width": int(size[0]), "height": int(size[1]), "title": c.get("title", ""),
+            "class": c.get("class", ""),
+        })
+    return True, "", rows
+
+
 def scan_windows() -> tuple[bool, str, list[dict]]:
     if MAC:
         return mac_window_scan()
+    if HYPRLAND:
+        return hyprland_window_scan()
     return linux_window_scan()
 
 
@@ -182,6 +251,27 @@ def window_tool(self, args: dict) -> tuple[bool, str]:
         else:  # close
             script = f'tell application "System Events" to tell process "{proc}" to perform action "AXClose" of window "{winname}"'
         rc, _, err = _run(["osascript", "-e", script], timeout=20.0)
+    elif HYPRLAND:
+        wid = row["winid"]
+        if action != "focus":
+            return False, (
+                f"{action} not implemented on Wayland/Hyprland yet: window listing and focus "
+                "work, minimize/maximize/restore/close do not - Hyprland 0.56.2 routes dispatch "
+                "through a Lua layer this pass could not find verified call signatures for, and "
+                "shipping a guess that silently no-ops would be worse than this message"
+            )
+        # focuswindow's exit code is unreliable on this build (nonzero even
+        # when it worked) - verify the real effect instead of trusting rc.
+        _run(["hyprctl", "dispatch", "focuswindow", f"address:{wid}"], timeout=10.0)
+        rc2, out2, _ = _run(["hyprctl", "-j", "activewindow"], timeout=10.0)
+        focused_addr = ""
+        if rc2 == 0:
+            try:
+                focused_addr = (json.loads(out2 or "{}") or {}).get("address", "")
+            except json.JSONDecodeError:
+                pass
+        rc = 0 if focused_addr == wid else 1
+        err = "" if rc == 0 else "focuswindow did not change the active window"
     else:
         wid = row["winid"]
         if action == "focus":
@@ -215,6 +305,8 @@ def pointer_tool(self, args: dict) -> tuple[bool, str]:
     delivery = str(args.get("delivery") or ("background" if window_q else "foreground")).lower()
     if delivery == "background" and window_q:
         return False, "background delivery requires Windows (the macOS/Linux backends are foreground-only)"
+    if WAYLAND and shutil.which("ydotool") is None:
+        return False, YDOTOOL_HINT
     if action == "move":
         x, y = int(args.get("x") or 0), int(args.get("y") or 0)
         if MAC:
@@ -326,6 +418,8 @@ def keyboard_tool(self, args: dict) -> tuple[bool, str]:
             sent += len(chunk)
         return True, f"typed {len(text)} chars ok"
     if shutil.which("xdotool") is None:
+        if WAYLAND and shutil.which("ydotool") is None:
+            return False, YDOTOOL_HINT
         return False, "xdotool not found (required for keyboard on Linux)"
     spec = str(args.get("key") or "")
     sym = translate_linux_key(spec)

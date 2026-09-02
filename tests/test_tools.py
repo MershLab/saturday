@@ -800,6 +800,132 @@ def test_linux_combo_translates_to_xdotool():
     assert translate_linux_key("Ctrl+Nope") is None
 
 
+# -- Wayland/Hyprland: window listing and focus are real, actions are not --
+
+
+def _fake_run(mapping):
+    """Route subprocess.run by argv prefix to a canned CompletedProcess."""
+    import subprocess as _sp
+
+    def run(argv, **kwargs):
+        for prefix, result in mapping.items():
+            if tuple(argv[: len(prefix)]) == prefix:
+                rc, out, err = result
+                return _sp.CompletedProcess(argv, rc, out, err)
+        raise AssertionError(f"unmocked subprocess.run call: {argv}")
+
+    return run
+
+
+def _fake_run_tuples(mapping):
+    """Route spatial_unix._run (argv) -> (rc, out, err) by argv prefix."""
+
+    def run(argv, timeout=20.0):
+        for prefix, result in mapping.items():
+            if tuple(argv[: len(prefix)]) == prefix:
+                return result
+        raise AssertionError(f"unmocked _run call: {argv}")
+
+    return run
+
+
+def test_hyprland_window_scan_parses_real_json_shape(monkeypatch):
+    import saturday.tools.spatial_unix as su
+
+    clients_json = (
+        '[{"address":"0xabc","at":[12,38],"size":[1896,1030],'
+        '"title":"a real title","class":"Alacritty"}]'
+    )
+    monkeypatch.setattr(su.shutil, "which", lambda name: "/usr/bin/hyprctl" if name == "hyprctl" else None)
+    monkeypatch.setattr(su.subprocess, "run", _fake_run({("hyprctl", "-j", "clients"): (0, clients_json, "")}))
+
+    ok, err, rows = su.hyprland_window_scan()
+    assert ok and err == ""
+    assert rows == [{"winid": "0xabc", "left": 12, "top": 38, "width": 1896,
+                      "height": 1030, "title": "a real title", "class": "Alacritty"}]
+
+
+def test_hyprland_window_scan_reports_missing_binary(monkeypatch):
+    import saturday.tools.spatial_unix as su
+
+    monkeypatch.setattr(su.shutil, "which", lambda name: None)
+    ok, err, rows = su.hyprland_window_scan()
+    assert not ok and "hyprctl not found" in err and rows == []
+
+
+def test_scan_windows_routes_to_hyprland_when_on_hyprland(monkeypatch):
+    import saturday.tools.spatial_unix as su
+
+    monkeypatch.setattr(su, "MAC", False)
+    monkeypatch.setattr(su, "HYPRLAND", True)
+    called = []
+    monkeypatch.setattr(su, "hyprland_window_scan", lambda: called.append(1) or (True, "", []))
+    monkeypatch.setattr(su, "linux_window_scan", lambda: (_ for _ in ()).throw(AssertionError("should not run")))
+    su.scan_windows()
+    assert called == [1]
+
+
+def test_window_tool_focus_verifies_the_real_effect_not_the_exit_code(monkeypatch):
+    """focuswindow's exit code is unreliable on this Hyprland build - the fix
+    checks hyprctl activewindow instead of trusting rc, so this proves that
+    check actually gates the result rather than always reporting success."""
+    import saturday.tools.spatial_unix as su
+
+    monkeypatch.setattr(su, "MAC", False)
+    monkeypatch.setattr(su, "HYPRLAND", True)
+    monkeypatch.setattr(su, "_resolve_window", lambda q: (True, "", {"winid": "0xabc", "title": "t"}))
+
+    # dispatch "succeeds" (rc 0) but the active window never actually changed
+    monkeypatch.setattr(su, "_run", _fake_run_tuples({
+        ("hyprctl", "dispatch", "focuswindow"): (0, "", ""),
+        ("hyprctl", "-j", "activewindow"): (0, '{"address":"0xdifferent"}', ""),
+    }))
+    ok, msg = su.window_tool(None, {"action": "focus", "query": "t"})
+    assert not ok and "did not change the active window" in msg
+
+    # now the active window really is the target
+    monkeypatch.setattr(su, "_run", _fake_run_tuples({
+        ("hyprctl", "dispatch", "focuswindow"): (0, "", ""),
+        ("hyprctl", "-j", "activewindow"): (0, '{"address":"0xabc"}', ""),
+    }))
+    ok, msg = su.window_tool(None, {"action": "focus", "query": "t"})
+    assert ok and "focus" in msg
+
+
+def test_window_tool_minimize_on_hyprland_says_so_instead_of_guessing(monkeypatch):
+    import saturday.tools.spatial_unix as su
+
+    monkeypatch.setattr(su, "MAC", False)
+    monkeypatch.setattr(su, "HYPRLAND", True)
+    monkeypatch.setattr(su, "_resolve_window", lambda q: (True, "", {"winid": "0xabc", "title": "t"}))
+
+    ok, msg = su.window_tool(None, {"action": "minimize", "query": "t"})
+    assert not ok
+    assert "not implemented on Wayland/Hyprland" in msg
+
+
+def test_pointer_and_key_action_fail_clearly_without_ydotool_on_wayland(monkeypatch):
+    """pointer_tool's xdotool calls are all hardcoded (no test-injection point),
+    so it gets a blanket check. keyboard's `type` action goes through the
+    same injectable self._run_ps other platforms use for mockable chunked
+    typing (see test_keyboard_long_text_chunked_under_command_limit) - adding
+    a blanket check there would break that contract, so only the hardcoded
+    `key` action (real xdotool, not injectable) gets the Wayland-aware
+    message; `type` keeps falling through to whatever runner it's given,
+    unchanged from before this pass."""
+    import saturday.tools.spatial_unix as su
+
+    monkeypatch.setattr(su, "MAC", False)
+    monkeypatch.setattr(su, "WAYLAND", True)
+    monkeypatch.setattr(su.shutil, "which", lambda name: None)
+
+    ok, msg = su.pointer_tool(None, {"action": "move", "x": 1, "y": 1})
+    assert not ok and "ydotool" in msg and "ydotoold" in msg
+
+    ok, msg = su.keyboard_tool(None, {"action": "key", "key": "Ctrl+S"})
+    assert not ok and "ydotool" in msg and "ydotoold" in msg
+
+
 
 # ---- merged from test_parity_round2.py ----
 def test_hooks_file_blocks_tool_call(tmp_path, monkeypatch):
