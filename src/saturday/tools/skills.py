@@ -127,6 +127,39 @@ class SkillLoadTool(Tool):
         return ok, msg
 
 
+class SkillInstallTool(Tool):
+    name = "skill_install"
+    description = (
+        "Install a skill by cloning its git repo into the skills directory, the same "
+        "place skill_save writes to. Its SKILL.md becomes visible to skill_load and shows "
+        "up in every future prompt afterward, same as any other installed skill - a search "
+        "result is a lead, not an endorsement, since nobody has reviewed its instructions."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "url": {"type": "string", "description": "git clone URL, or a local path to a git repo"},
+            "name": {"type": "string", "description": "folder name override (default: derived from the URL)"},
+            "force": {"type": "boolean", "description": "replace an existing skill with this name"},
+        },
+        "required": ["url"],
+    }
+
+    def run(self, args: dict) -> tuple[bool, str]:
+        url = str(args.get("url") or "").strip()
+        if not url:
+            return False, "url required"
+        name = str(args.get("name") or "").strip() or None
+        force = bool(args.get("force", False))
+        from saturday import skillhub
+
+        try:
+            out = skillhub.install(url, name=name, force=force)
+        except skillhub.SkillError as exc:
+            return False, str(exc)
+        return True, f"installed {out['name']} -> {out['path']}"
+
+
 class SkillsIndexTool(Tool):
     name = "skills_index"
     description = "List all saved skills with their ids and descriptions."
@@ -144,7 +177,7 @@ class SkillsIndexTool(Tool):
 
 def build_skill_tools() -> tuple[SkillStore, list[Tool]]:
     store = SkillStore()
-    return store, [SkillSaveTool(store), SkillLoadTool(store), SkillsIndexTool(store)]
+    return store, [SkillSaveTool(store), SkillLoadTool(store), SkillsIndexTool(store), SkillInstallTool()]
 
 
 SHORTLIST_SIZE = 5

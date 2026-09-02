@@ -18,7 +18,7 @@ import pytest
 from saturday.agent.loop import AgentLoop
 from saturday.plugins import install_plugins, learning_plugin
 from saturday.tools import web as webmod
-from saturday.tools.skills import SkillLoadTool, SkillStore, skills_prompt_block
+from saturday.tools.skills import SkillInstallTool, SkillLoadTool, SkillStore, skills_prompt_block
 from saturday.tools.vision import ViewImageTool
 from saturday.tools.web import BrowserTool, WebSearchTool, extract_readable
 import saturday.tools.ocr as ocr
@@ -594,6 +594,35 @@ def test_skills_prompt_block_shortlists_pinned_first_and_tails_the_rest(tmp_path
     assert "Also installed:" in block
     # a shortlist of 5 leaves 2 of the other 6 in the tail
     assert block.count("skill-") == 7  # nothing is dropped, only reordered
+
+
+def test_skill_install_tool_clones_a_real_repo_and_appears_in_the_store(tmp_path, monkeypatch):
+    import subprocess
+
+    monkeypatch.setattr("saturday.tools.skills.skills_dir", lambda: tmp_path / "skills")
+    src = tmp_path / "saturday-skill-deploy"
+    src.mkdir()
+    (src / "SKILL.md").write_text(
+        "---\nname: deploy\ndescription: how to deploy the thing\n---\n\nsteps\n", encoding="utf-8"
+    )
+    for cmd in (["init", "-q", "-b", "main"], ["add", "-A"],
+                ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "i"]):
+        subprocess.run(["git", *cmd], cwd=src, check=True, capture_output=True)
+
+    tool = SkillInstallTool()
+    ok, msg = tool.run({"url": str(src)})
+    assert ok and "deploy" in msg
+
+    store = SkillStore()
+    assert ("deploy", "how to deploy the thing") in store.index()
+
+
+def test_skill_install_tool_reports_a_real_failure(tmp_path, monkeypatch):
+    monkeypatch.setattr("saturday.tools.skills.skills_dir", lambda: tmp_path / "skills")
+    tool = SkillInstallTool()
+    ok, msg = tool.run({"url": "ftp://not-allowed/x"})
+    assert not ok
+    assert "refusing" in msg or "not" in msg
 
 
 def test_cli_skill_pin_bury_unpin(capsys):
