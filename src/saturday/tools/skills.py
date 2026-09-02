@@ -118,6 +118,12 @@ class SkillLoadTool(Tool):
                 attention.emit(attention.SKILL, name, attention.USED, 1.0, desc)
             except Exception:
                 pass
+            try:
+                from saturday import skill_stats
+
+                skill_stats.record_used(name)
+            except Exception:
+                pass
         return ok, msg
 
 
@@ -141,7 +147,10 @@ def build_skill_tools() -> tuple[SkillStore, list[Tool]]:
     return store, [SkillSaveTool(store), SkillLoadTool(store), SkillsIndexTool(store)]
 
 
-def skills_prompt_block(store: SkillStore) -> str:
+SHORTLIST_SIZE = 5
+
+
+def skills_prompt_block(store: SkillStore, task_text: str = "") -> str:
     entries = store.index()
     if not entries:
         return (
@@ -151,19 +160,32 @@ def skills_prompt_block(store: SkillStore) -> str:
     try:
         from saturday import attention
 
-        # nothing here is ranked - every skill in the prompt is offered
-        # unordered, so each is `considered` with no score rather than a
-        # fabricated one. skill_load above is where a real `used` comes from.
-        # This is the observation step the skill's own ranking design needs
-        # before any ranking can be built on top of it.
         for n, d in entries:
             attention.emit(attention.SKILL, n, attention.CONSIDERED, 0.0, d)
     except Exception:
         pass
-    listing = "\n".join(f"- {n}: {d}" for n, d in entries)
-    return (
-        "# Saved skills\n"
-        f"{listing}\n"
+    try:
+        from saturday import skill_stats
+
+        for n, _ in entries:
+            skill_stats.record_considered(n)
+        ranked = skill_stats.rank(entries, task_text)
+    except Exception:
+        # ranking must never take the skill list down with it
+        ranked = [{"name": n, "description": d, "reason": "", "pin": 0} for n, d in entries]
+
+    shortlist = [r for r in ranked if r["pin"] >= 0][:SHORTLIST_SIZE]
+    shortlist_names = {r["name"] for r in shortlist}
+    rest = [r for r in ranked if r["name"] not in shortlist_names]
+
+    lines = ["# Saved skills", "Most likely relevant here"]
+    for i, r in enumerate(shortlist, 1):
+        reason = f"   {r['reason']}" if r["reason"] else ""
+        lines.append(f"{i}. {r['name']}: {r['description']}{reason}")
+    if rest:
+        lines.append("Also installed: " + ", ".join(r["name"] for r in rest))
+    lines.append(
         "Prefer loading a matching skill before reinventing a procedure; "
         "improve it with `skill_save` (same id) after discovering better steps."
     )
+    return "\n".join(lines)

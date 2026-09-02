@@ -1177,6 +1177,19 @@ def cmd_skill(args: argparse.Namespace) -> int:
                     _print(f"{name}: not installed")
                     rc = 1
             return rc
+
+        if action in ("pin", "bury", "unpin"):
+            from saturday import skill_stats
+
+            names = getattr(args, "args", []) or []
+            if not names:
+                _print(f"usage: saturday skill {action} <name>")
+                return 2
+            value = {"pin": 1, "bury": -1, "unpin": 0}[action]
+            for name in names:
+                skill_stats.set_pin(name, value)
+                _print(f"{name}: {action}ned" if action != "bury" else f"{name}: buried")
+            return 0
     except skillhub.SkillError as exc:
         _print(str(exc))
         return 1
@@ -1673,7 +1686,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_skill = sub.add_parser("skill", help="install, search and manage skills")
     p_skill.add_argument("action", nargs="?", default="list",
-                         choices=["list", "search", "install", "update", "remove"])
+                         choices=["list", "search", "install", "update", "remove", "pin", "bury", "unpin"])
     p_skill.add_argument("args", nargs="*", help="query, git URL or skill name")
     p_skill.add_argument("--limit", type=int, default=10)
     p_skill.add_argument("--force", action="store_true", help="install: replace an existing skill")

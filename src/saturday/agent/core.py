@@ -353,7 +353,7 @@ class Agent:
         profile = self.cfg.profile()
         return profile.name != "ollama" or "hermes" not in (self.cfg.model or "").lower()
 
-    def system_prompt(self, registry: ToolRegistry) -> str:
+    def system_prompt(self, registry: ToolRegistry, task_text: str = "") -> str:
         from saturday.prompts.system import build_system_prompt_parts
         from saturday.tools.memory import load_memory_block
         from saturday.tools.skills import SkillStore, skills_prompt_block
@@ -364,7 +364,7 @@ class Agent:
             b
             for b in [
                 load_memory_block(scope=getattr(self, "memory_scope", None)),
-                skills_prompt_block(SkillStore()),
+                skills_prompt_block(SkillStore(), task_text),
             ]
             if b
         )
@@ -588,7 +588,7 @@ class Agent:
         )
         # resume calibration: prior runs' EMA + last reported prompt size
         loop.set_meter_state(getattr(self, "_meter_state", None))
-        sysprompt = self.system_prompt(registry)
+        sysprompt = self.system_prompt(registry, task_text=task)
         sid = session_id or self.session_store.create({"task": task})
         if on_session_id is not None:
             on_session_id(sid)

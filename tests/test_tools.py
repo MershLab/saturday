@@ -471,7 +471,7 @@ def test_skill_store_roundtrip(tmp_path, monkeypatch):
     assert not ok and "too large" in _
 
     block = skills_prompt_block(store)
-    assert "- my-skill:" in block
+    assert "1. my-skill:" in block
 
 
 def test_skill_store_reads_hermes_agentskills_format(tmp_path, monkeypatch):
@@ -513,9 +513,9 @@ def test_skills_prompt_block_empty_store():
 
 
 def test_skills_prompt_block_publishes_every_skill_as_considered(tmp_path, monkeypatch):
-    """Nothing here is ranked yet - every skill shown to the agent is
-    `considered` with no score, the observation the skill-ranking design
-    needs to exist before any real ranking can be built on top of it."""
+    """The attention emission itself always carries no score - `considered`
+    just means "shown", regardless of how skill_stats.rank later orders the
+    text listing built from those same skills."""
     from saturday import attention
 
     monkeypatch.setattr("saturday.tools.skills.skills_dir", lambda: tmp_path / "skills")
@@ -561,6 +561,63 @@ def test_skill_load_publishes_a_used_event_only_on_success(tmp_path, monkeypatch
     assert e["region"] == "skill" and e["node"] == "deploy-vllm"
     assert e["kind"] == "used" and e["score"] == 1.0
     assert e["label"] == "spin up a vllm server"
+
+
+def test_skill_load_records_a_real_use_a_miss_records_nothing(tmp_path, monkeypatch):
+    from saturday import skill_stats
+
+    monkeypatch.setattr("saturday.tools.skills.skills_dir", lambda: tmp_path / "skills")
+    store = SkillStore()
+    store.save("deploy-vllm", "spin up a vllm server", "steps")
+    tool = SkillLoadTool(store)
+
+    tool.run({"name": "deploy-vllm"})
+    tool.run({"name": "no-such-skill"})
+
+    assert skill_stats.stats("deploy-vllm")["used"] == 1
+    assert skill_stats.stats("no-such-skill")["used"] == 0
+
+
+def test_skills_prompt_block_shortlists_pinned_first_and_tails_the_rest(tmp_path, monkeypatch):
+    from saturday import skill_stats
+
+    monkeypatch.setattr("saturday.tools.skills.skills_dir", lambda: tmp_path / "skills")
+    store = SkillStore()
+    for i in range(7):
+        store.save(f"skill-{i}", f"does thing number {i}", "steps")
+    skill_stats.set_pin("skill-6", 1)
+
+    block = skills_prompt_block(store)
+    assert "Most likely relevant here" in block
+    assert block.index("skill-6") < block.index("Also installed")
+    assert "1. skill-6:" in block
+    assert "Also installed:" in block
+    # a shortlist of 5 leaves 2 of the other 6 in the tail
+    assert block.count("skill-") == 7  # nothing is dropped, only reordered
+
+
+def test_cli_skill_pin_bury_unpin(capsys):
+    import argparse
+
+    from saturday import cli as cli_mod
+    from saturday import skill_stats
+
+    ns = argparse.Namespace(action="pin", args=["deploy-vllm"])
+    assert cli_mod.cmd_skill(ns) == 0
+    assert skill_stats.stats("deploy-vllm")["pin"] == 1
+    assert "pinned" in capsys.readouterr().out
+
+    ns = argparse.Namespace(action="bury", args=["deploy-vllm"])
+    assert cli_mod.cmd_skill(ns) == 0
+    assert skill_stats.stats("deploy-vllm")["pin"] == -1
+    assert "buried" in capsys.readouterr().out
+
+    ns = argparse.Namespace(action="unpin", args=["deploy-vllm"])
+    assert cli_mod.cmd_skill(ns) == 0
+    assert skill_stats.stats("deploy-vllm")["pin"] == 0
+
+    ns = argparse.Namespace(action="pin", args=[])
+    assert cli_mod.cmd_skill(ns) == 2
 
 
 def test_view_image_registry_image_transfer(tmp_path):
