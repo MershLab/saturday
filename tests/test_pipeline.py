@@ -245,6 +245,9 @@ def test_the_default_runner_delegates_to_a_named_external_agent(monkeypatch):
     called = {}
 
     class FakeTool:
+        def __init__(self, **kwargs):
+            pass
+
         def run(self, args):
             called.update(args)
             return True, "the delegate answered"
@@ -259,6 +262,9 @@ def test_the_default_runner_delegates_to_a_named_external_agent(monkeypatch):
 
 def test_a_failing_delegate_falls_through_rather_than_answering_with_an_error(monkeypatch):
     class FakeTool:
+        def __init__(self, **kwargs):
+            pass
+
         def run(self, args):
             return False, "codex is not installed"
 

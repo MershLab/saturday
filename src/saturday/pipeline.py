@@ -466,7 +466,9 @@ def make_runner(cfg_overrides: dict | None = None):
                 from saturday.tools.external_agent import ExternalAgentTool, all_agents
 
                 if agent_id in all_agents():
-                    ok, out = ExternalAgentTool().run({"agent": agent_id, "prompt": prompt})
+                    ws = overrides_base.get("workspace_root")
+                    tool = ExternalAgentTool(workspace_root_fn=(lambda w=ws: w) if ws else None)
+                    ok, out = tool.run({"agent": agent_id, "prompt": prompt})
                     if ok:
                         return out
                     # a delegate that is missing or failing must not sink the

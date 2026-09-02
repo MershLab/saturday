@@ -46,7 +46,17 @@ def _claude_code_argv(binary: str, prompt: str) -> list[str]:
 
 
 def _codex_argv(binary: str, prompt: str) -> list[str]:
-    return [binary, "exec", prompt]
+    # Verified live (codex-cli 0.149.1): `exec` alone already runs with
+    # approval:never, so it never blocks on a missing tty - but its default
+    # sandbox is read-only, and a task that needs to write just apologizes
+    # and exits 0. That is a silent no-op a caller reading only the return
+    # code would record as success. workspace-write is the minimum privilege
+    # that lets a delegated task actually do anything (confined to the
+    # workdir, /tmp and $TMPDIR - not danger-full-access).
+    # --skip-git-repo-check: codex refuses to run at all in a directory it
+    # has not been separately trusted in interactively, and Saturday's
+    # workspace_root is not guaranteed to be one.
+    return [binary, "exec", "--skip-git-repo-check", "--sandbox", "workspace-write", prompt]
 
 
 def _cursor_argv(binary: str, prompt: str) -> list[str]:
@@ -58,7 +68,11 @@ def _antigravity_argv(binary: str, prompt: str) -> list[str]:
 
 
 def _opencode_argv(binary: str, prompt: str) -> list[str]:
-    return [binary, "run", prompt]
+    # --auto: without it, `run` can sit on a permission prompt with no tty to
+    # answer it - the same failure shape codex's sandbox default has, per
+    # opencode's own --help ("auto-approve permissions that are not
+    # explicitly denied").
+    return [binary, "run", "--auto", prompt]
 
 
 AGENTS: dict[str, ExternalAgentSpec] = {
@@ -181,11 +195,16 @@ class ExternalAgentTool(Tool):
         "required": ["agent", "prompt"],
     }
 
-    def __init__(self, installer=None, provider_runner=None) -> None:
+    def __init__(self, installer=None, provider_runner=None, workspace_root_fn=None) -> None:
         # injection point for tests; real default shells out for real
         self._installer = installer or self._default_install
         # (provider, model, prompt) -> (ok, text); None disables provider-backed agents
         self._provider_runner = provider_runner
+        # binary delegates otherwise inherit Saturday's own process cwd,
+        # which has nothing to do with the task's actual workspace - None
+        # means "wherever Saturday's process happens to be", same as before
+        # this was wired, for any caller that has no workspace to offer
+        self._workspace_root_fn = workspace_root_fn
         self._agents = all_agents()
         names = ["auto"] + list(self._agents)
         self.parameters = {**type(self).parameters}
@@ -277,8 +296,14 @@ class ExternalAgentTool(Tool):
                 return False, f"install reported success but {spec.binaries[0]} still isn't on PATH"
 
         argv = spec.build_argv(binary, prompt)
+        cwd = None
+        if self._workspace_root_fn is not None:
+            try:
+                cwd = self._workspace_root_fn() or None
+            except Exception:
+                cwd = None
         try:
-            r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+            r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, cwd=cwd)
         except subprocess.TimeoutExpired:
             return False, f"{agent_id} timed out after {timeout}s"
         except (OSError, subprocess.SubprocessError) as exc:

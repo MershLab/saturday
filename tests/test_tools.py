@@ -3145,6 +3145,103 @@ def test_external_agent_runs_when_already_installed(monkeypatch):
     assert captured["argv"] == ["/usr/bin/claude", "-p", "fix the bug"]
 
 
+def test_external_agent_codex_argv_avoids_the_silent_readonly_no_op(monkeypatch):
+    """Verified live against codex-cli 0.149.1: `codex exec <prompt>` with no
+    extra flags exits 0 and just apologizes it can't write, for any task that
+    needs to touch a file - a caller reading only the return code records
+    that as success. --sandbox workspace-write is what actually lets it act;
+    --skip-git-repo-check is needed because codex refuses to run at all in a
+    directory it was not separately trusted in interactively, and Saturday's
+    workspace_root is never guaranteed to be one."""
+    from saturday.tools import external_agent as ea
+
+    monkeypatch.setattr(ea.shutil, "which", lambda name: f"/usr/bin/{name}")
+    captured = {}
+
+    def fake_run(argv, **kwargs):
+        captured["argv"] = argv
+
+        class R:
+            returncode = 0
+            stdout = "done"
+            stderr = ""
+
+        return R()
+
+    monkeypatch.setattr(ea.subprocess, "run", fake_run)
+    ok, _ = ea.ExternalAgentTool().run({"agent": "codex", "prompt": "add a test"})
+    assert ok
+    assert captured["argv"] == [
+        "/usr/bin/codex", "exec", "--skip-git-repo-check",
+        "--sandbox", "workspace-write", "add a test",
+    ]
+
+
+def test_external_agent_opencode_argv_avoids_hanging_on_a_permission_prompt(monkeypatch):
+    """Verified against opencode's own --help: `run` without --auto can sit
+    on a permission prompt with no tty to answer it - a subprocess spawned
+    with capture_output has no tty at all, so that is a hang until Saturday's
+    timeout, not a fast, clear failure."""
+    from saturday.tools import external_agent as ea
+
+    monkeypatch.setattr(ea.shutil, "which", lambda name: f"/usr/bin/{name}")
+    captured = {}
+
+    def fake_run(argv, **kwargs):
+        captured["argv"] = argv
+
+        class R:
+            returncode = 0
+            stdout = "done"
+            stderr = ""
+
+        return R()
+
+    monkeypatch.setattr(ea.subprocess, "run", fake_run)
+    ok, _ = ea.ExternalAgentTool().run({"agent": "opencode", "prompt": "add a test"})
+    assert ok
+    assert captured["argv"] == ["/usr/bin/opencode", "run", "--auto", "add a test"]
+
+
+def test_external_agent_runs_in_the_tasks_own_workspace_not_saturdays_cwd(monkeypatch):
+    """A binary delegate otherwise inherits whatever directory Saturday's own
+    process happens to be running in - unrelated to the task it was actually
+    asked to work on. workspace_root_fn is how a caller supplies the real
+    one; None (the untouched default) preserves the old behaviour exactly
+    for any caller that genuinely has no workspace to offer."""
+    from saturday.tools import external_agent as ea
+
+    monkeypatch.setattr(ea.shutil, "which", lambda name: f"/usr/bin/{name}")
+    captured = {}
+
+    def fake_run(argv, **kwargs):
+        captured["cwd"] = kwargs.get("cwd")
+
+        class R:
+            returncode = 0
+            stdout = "done"
+            stderr = ""
+
+        return R()
+
+    monkeypatch.setattr(ea.subprocess, "run", fake_run)
+
+    tool = ea.ExternalAgentTool(workspace_root_fn=lambda: "/home/user/project")
+    tool.run({"agent": "codex", "prompt": "hi"})
+    assert captured["cwd"] == "/home/user/project"
+
+    captured.clear()
+    ea.ExternalAgentTool().run({"agent": "codex", "prompt": "hi"})
+    assert captured["cwd"] is None
+
+    # a workspace_root_fn that raises must not sink the delegated call
+    captured.clear()
+    def boom():
+        raise RuntimeError("no project resolved")
+    ea.ExternalAgentTool(workspace_root_fn=boom).run({"agent": "codex", "prompt": "hi"})
+    assert captured["cwd"] is None
+
+
 def test_external_agent_nonzero_exit_surfaces_stderr(monkeypatch):
     from saturday.tools import external_agent as ea
 
@@ -3182,6 +3279,18 @@ def test_external_agent_registered_in_core_plugin():
 
     names = {t.name for t in core_plugin().tools}
     assert "external_agent" in names
+
+
+def test_external_agent_from_core_plugin_resolves_the_configured_workspace(tmp_path):
+    """core_plugin wires workspace_root_fn so a binary delegate spawned from
+    a real run lands in the task's own workspace, not wherever Saturday's
+    process happens to be - the tool alone cannot know this on its own."""
+    from saturday.config import AgentConfig
+    from saturday.plugins import core_plugin
+
+    cfg = AgentConfig.load({"workspace_root": str(tmp_path)})
+    tool = next(t for t in core_plugin(cfg).tools if t.name == "external_agent")
+    assert tool._workspace_root_fn() == str(tmp_path)
 
 
 def test_gemini_alias_resolves_to_antigravity():
