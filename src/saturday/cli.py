@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from saturday.config import PROVIDERS, AgentConfig, save_config
@@ -1380,6 +1381,19 @@ def cmd_schedule(args: argparse.Namespace) -> int:
 def cmd_update(args: argparse.Namespace) -> int:
     from saturday import update as upd
 
+    if getattr(args, "history", False):
+        receipts = upd.read_receipts()
+        if not receipts:
+            _print("no update attempts recorded yet")
+            return 0
+        for r in receipts:
+            ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(r.get("time", 0)))
+            status = "ok" if r.get("ok") else "FAILED"
+            _print(f"{ts}  {r.get('from')} -> {r.get('to')}  [{r.get('channel')}]  {status}")
+            if not r.get("ok") and r.get("detail"):
+                _print(f"           {r['detail'][:200]}")
+        return 0
+
     cur = upd.current_version()
     rel = upd.latest_release()
     if rel is None:
@@ -1759,6 +1773,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_update = sub.add_parser("update", help="check for and apply updates")
     p_update.add_argument("--apply", action="store_true", help="actually perform the update (default: check only)")
     p_update.add_argument("--no-relaunch", dest="relaunch", action="store_false", default=True, help="don't automatically restart after a successful in-place update")
+    p_update.add_argument("--history", action="store_true", help="show past update attempts instead of checking for a new one")
     p_update.set_defaults(fn=cmd_update)
 
     p_verify = sub.add_parser("verify", help="run the project's test suites (pytest/npm/cargo/go/make)")

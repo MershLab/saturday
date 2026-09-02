@@ -2344,6 +2344,15 @@ class Handler(BaseHTTPRequestHandler):
             "url": rel.get("url") or "",
         })
 
+    def _get_update_history(self) -> None:
+        """Past update attempts. Purely local (the JSONL receipt log), so
+        unlike _get_update this never touches the network and is safe to
+        load automatically when the About pane opens, not gated behind a
+        button."""
+        from saturday import update as upd
+
+        self._send_json({"receipts": upd.read_receipts()})
+
     def _get_memory(self) -> None:
         """Search the memory index, or return its graph.
 
@@ -3244,6 +3253,7 @@ _GET_ROUTES = [
     ("/api/tools", "_get_tools"),
     ("/api/doctor", "_get_doctor"),
     ("/api/update", "_get_update"),
+    ("/api/update/history", "_get_update_history"),
     ("/api/memory", "_get_memory"),
     ("/api/codemem", "_get_codemem"),
     ("/api/skills", "_get_skills"),

@@ -3448,6 +3448,7 @@ function openSettings() {
   renderUsage(info.usage || { turns: 0, total_tokens: 0, days: [], models: [] });
   loadMcp(false);
   loadCodemem();
+  loadUpdateHistory();
   loadSkills();
   loadBrowse();
   settingsShow("general");
@@ -4345,6 +4346,25 @@ async function pipeSave() {
   } catch (e) {
     pipeHint(e.message, true);
   } finally { btn.disabled = false; }
+}
+
+async function loadUpdateHistory() {
+  const wrap = $("#updHistory");
+  if (!wrap) return;
+  let d;
+  try { d = await api("/api/update/history"); } catch { wrap.replaceChildren(); return; }
+  const receipts = d.receipts || [];
+  wrap.replaceChildren();
+  if (!receipts.length) return;
+  wrap.appendChild(el("div", "upd-history-h", "recent updates"));
+  for (const r of receipts) {
+    const row = el("div", "upd-history-row");
+    row.appendChild(el("span", "upd-dot " + (r.ok ? "ok" : "warn")));
+    const when = new Date((r.time || 0) * 1000).toLocaleString();
+    row.appendChild(el("span", "mono", `${r.from} → ${r.to}`));
+    row.appendChild(el("span", "upd-history-when", when));
+    wrap.appendChild(row);
+  }
 }
 
 /* ---------------------------------------------------------------- update */

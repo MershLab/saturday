@@ -1566,6 +1566,49 @@ def test_record_receipt_writes_jsonl(tmp_path, monkeypatch):
     assert entry["from"] == "0.9.0" and entry["to"] == "0.9.1" and entry["ok"] is True
 
 
+def test_read_receipts_newest_first_and_limit(tmp_path, monkeypatch):
+    from saturday import update as upd
+    import saturday.config as cfgmod
+
+    monkeypatch.setattr(cfgmod, "CONFIG_DIR", tmp_path / "home")
+    for i in range(3):
+        upd.record_receipt(from_version=f"0.9.{i}", to_version=f"0.9.{i + 1}", channel="pip", ok=True, detail="")
+    got = upd.read_receipts()
+    assert [r["from"] for r in got] == ["0.9.2", "0.9.1", "0.9.0"]
+    assert upd.read_receipts(limit=1) == [got[0]]
+
+
+def test_read_receipts_no_log_yet_returns_empty(tmp_path, monkeypatch):
+    from saturday import update as upd
+    import saturday.config as cfgmod
+
+    monkeypatch.setattr(cfgmod, "CONFIG_DIR", tmp_path / "home")
+    assert upd.read_receipts() == []
+
+
+def test_cmd_update_history_prints_receipts(tmp_path, monkeypatch, capsys):
+    import saturday.cli as cli
+    from saturday import update as upd
+    import saturday.config as cfgmod
+
+    monkeypatch.setattr(cfgmod, "CONFIG_DIR", tmp_path / "home")
+    upd.record_receipt(from_version="0.9.0", to_version="0.9.1", channel="pip", ok=False, detail="boom")
+    args = Namespace(history=True)
+    assert cli.cmd_update(args) == 0
+    out = capsys.readouterr().out
+    assert "0.9.0 -> 0.9.1" in out and "FAILED" in out and "boom" in out
+
+
+def test_cmd_update_history_when_empty(tmp_path, monkeypatch, capsys):
+    import saturday.cli as cli
+    import saturday.config as cfgmod
+
+    monkeypatch.setattr(cfgmod, "CONFIG_DIR", tmp_path / "home")
+    args = Namespace(history=True)
+    assert cli.cmd_update(args) == 0
+    assert "no update attempts recorded" in capsys.readouterr().out
+
+
 def test_perform_update_pip_success_and_failure(monkeypatch):
     from saturday import update as upd
 

@@ -4303,6 +4303,33 @@ def test_update_endpoint_never_applies_anything(tmp_path, monkeypatch):
     assert called == [], "checking for an update must never install one"
 
 
+def test_update_history_endpoint_is_local_and_never_hits_the_network(tmp_path, monkeypatch):
+    """Unlike /api/update, this never calls latest_release - it only reads
+    the local receipt log, so it's safe to load on modal open, not gated
+    behind a button."""
+    import saturday.update as upd
+
+    def boom(*a, **k):
+        raise AssertionError("update history must never call latest_release")
+
+    monkeypatch.setattr(upd, "latest_release", boom)
+    upd.record_receipt(from_version="0.9.0", to_version="0.9.1", channel="pip", ok=True, detail="")
+    app = AppState(store_root=tmp_path / "s")
+    base, _ = _server(app)
+
+    status, data = _req(base, "/api/update/history")
+    assert status == 200
+    assert len(data["receipts"]) == 1
+    assert data["receipts"][0]["from"] == "0.9.0" and data["receipts"][0]["to"] == "0.9.1"
+
+
+def test_update_history_endpoint_empty_when_nothing_recorded(tmp_path):
+    app = AppState(store_root=tmp_path / "s")
+    base, _ = _server(app)
+    status, data = _req(base, "/api/update/history")
+    assert status == 200 and data["receipts"] == []
+
+
 def test_memory_endpoint_searches_and_returns_the_graph(tmp_path, monkeypatch):
     cfg = tmp_path / "cfg"
     cfg.mkdir()

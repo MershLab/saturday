@@ -182,6 +182,32 @@ def record_receipt(*, from_version: str, to_version: str, channel: str, ok: bool
         f.write(json.dumps(entry) + "\n")
 
 
+def read_receipts(limit: int = 20) -> list[dict[str, Any]]:
+    """Most recent update attempts, newest first. Written by record_receipt,
+    never read back until now - the log existed but there was no way to see
+    it short of opening the JSONL file by hand."""
+    from saturday.config import get_config_dir
+
+    path = get_config_dir() / "update-log.jsonl"
+    if not path.is_file():
+        return []
+    out: list[dict[str, Any]] = []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    for line in reversed(lines):
+        if not line.strip():
+            continue
+        try:
+            out.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+        if len(out) >= limit:
+            break
+    return out
+
+
 def relaunch() -> None:
     """Re-exec this process with the same args - the freshly-installed
     version takes over in place; nobody has to notice a new version landed
