@@ -1731,6 +1731,8 @@ def test_scan_files_excludes_skip_dirs(tmp_path):
     (tmp_path / ".next" / "static" / "chunks" / "bundle.js").write_text("x = 1\n")
     (tmp_path / "backend" / "target" / "debug").mkdir(parents=True)
     (tmp_path / "backend" / "target" / "debug" / "build.rs").write_text("x = 1\n")
+    (tmp_path / ".cargo" / "registry" / "src" / "arrayvec-0.7.6").mkdir(parents=True)
+    (tmp_path / ".cargo" / "registry" / "src" / "arrayvec-0.7.6" / "lib.rs").write_text("x = 1\n")
 
     found = {p.name for p in _scan_files(tmp_path)}
     assert found == {"real.py"}

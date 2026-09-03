@@ -20,7 +20,7 @@ INDEX_NAME = "repo_index.json"
 SKIP_DIRS = {
     ".git", ".saturday", "__pycache__", "node_modules", ".venv", "venv", "dist", "build",
     ".pytest_cache", ".next", ".nuxt", "target", "vendor", ".tox", ".mypy_cache",
-    ".ruff_cache", ".cache", "coverage",
+    ".ruff_cache", ".cache", "coverage", ".cargo", ".rustup", ".gradle", ".m2",
 }
 CODE_EXTS = {
     ".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".rb", ".c", ".h",

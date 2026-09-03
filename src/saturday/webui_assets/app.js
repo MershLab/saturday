@@ -5780,7 +5780,7 @@ let atFilesCache = { key: "", files: [], at: 0 };
 const WS_SKIP_DIRS = new Set([
   ".git", ".saturday", "__pycache__", "node_modules", ".venv", "venv", "dist", "build",
   ".pytest_cache", ".next", ".nuxt", "target", "vendor", ".tox", ".mypy_cache",
-  ".ruff_cache", ".cache", "coverage",
+  ".ruff_cache", ".cache", "coverage", ".cargo", ".rustup", ".gradle", ".m2",
 ]);
 
 async function workspaceFiles() {
