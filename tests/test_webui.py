@@ -826,6 +826,49 @@ def test_ui_memory_graph_expands_a_file_into_symbols(ui_server):
 
 
 @pytest.mark.skipif(not HAS_PW, reason="playwright not installed")
+def test_ui_memory_graph_search_refits_the_view_to_the_matches(ui_server):
+    """Real bug: searching narrowed mg.match but mgFit() never ran again, so
+    on a graph much bigger than the matched subset the view stayed fitted to
+    everything - the matches rendered as a near-invisible speck in an empty
+    frame, which read as 'nothing shows up' even though data loaded fine."""
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        page = browser.new_page(viewport={"width": 1400, "height": 900})
+        errs: list[str] = []
+        page.on("pageerror", lambda e: errs.append(getattr(e, "stack", None) or str(e)))
+        page.goto(f"{ui_server}/?k={TOKEN}")
+        page.wait_for_selector("#input", state="visible", timeout=20000)
+
+        page.click('.stage-tab[data-tab="memory"]')
+        page.wait_for_function("() => window.df && window.df.mg && window.df.mg.loaded && window.df.mg.nodes.length > 3",
+                               timeout=60000)
+
+        # deterministic, not physics-timing-dependent: drive mgFit() directly
+        # with a real match set rather than typing into #mgSearch and racing
+        # the animation loop that keeps nudging positions afterward
+        result = page.evaluate("""() => {
+            const mg = window.df.mg;
+            mg.match = null;
+            window.df.mgFit();
+            const kFull = mg.view.k;
+
+            // nodes 0/1/2 sit near the origin under the initial spiral layout,
+            // so restricting to them is a real, much tighter subset of a graph
+            // spread across a far larger area
+            mg.match = new Set([0, 1, 2]);
+            window.df.mgFit();
+            const kMatch = mg.view.k;
+            return { kFull, kMatch, n: mg.nodes.length };
+        }""")
+        assert result["n"] > 20, "test needs a graph big enough for the two fits to differ"
+        assert result["kMatch"] > result["kFull"], \
+            f"fitting a small match set should zoom in tighter than fitting the whole graph: {result}"
+
+        assert not errs, errs
+        browser.close()
+
+
+@pytest.mark.skipif(not HAS_PW, reason="playwright not installed")
 def test_ui_memory_graph_survives_a_wake_before_it_has_loaded(ui_server):
     """Every parallel array is null until the first fetch lands.
 
@@ -2151,6 +2194,21 @@ def test_stream_tail_live_only_when_idle(tmp_path):
 
 
 ASSETS = Path(__file__).parent.parent / "src" / "saturday" / "webui_assets"
+
+
+def test_ws_skip_dirs_mirrors_repo_index_skip_dirs():
+    """The two lists drifted for real - repo_index.SKIP_DIRS was missing
+    .next/target/vendor/etc that WS_SKIP_DIRS already had, which is how a
+    Next.js build directory ended up indexed as source. Keep them equal."""
+    import re
+
+    from saturday.tools.repo_index import SKIP_DIRS
+
+    js = (ASSETS / "app.js").read_text(encoding="utf-8")
+    m = re.search(r"const WS_SKIP_DIRS = new Set\(\[(.*?)\]\);", js, re.S)
+    assert m, "WS_SKIP_DIRS not found in app.js"
+    js_dirs = set(re.findall(r'"([^"]+)"', m.group(1)))
+    assert js_dirs == SKIP_DIRS
 
 
 def test_round5_dropdowns_anchor_to_their_trigger():

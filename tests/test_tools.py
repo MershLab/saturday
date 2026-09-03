@@ -1715,6 +1715,53 @@ def test_symbol_terms_precomputed_at_index_time(tmp_path):
     assert hits[0]["path"] == "s.py"
 
 
+def test_scan_files_excludes_skip_dirs(tmp_path):
+    """Real case: .next/static/chunks/*.js from a Next.js build got indexed
+    as ordinary source before .next was added to SKIP_DIRS - a generated
+    55k-line bundle, not code anyone wrote."""
+    from saturday.tools.repo_index import _scan_files
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "real.py").write_text("x = 1\n")
+    (tmp_path / "node_modules" / "pkg" / "sub").mkdir(parents=True)
+    (tmp_path / "node_modules" / "pkg" / "sub" / "vendored.py").write_text("x = 1\n")
+    (tmp_path / ".git" / "objects").mkdir(parents=True)
+    (tmp_path / ".git" / "objects" / "not-code.py").write_text("x = 1\n")
+    (tmp_path / ".next" / "static" / "chunks").mkdir(parents=True)
+    (tmp_path / ".next" / "static" / "chunks" / "bundle.js").write_text("x = 1\n")
+    (tmp_path / "backend" / "target" / "debug").mkdir(parents=True)
+    (tmp_path / "backend" / "target" / "debug" / "build.rs").write_text("x = 1\n")
+
+    found = {p.name for p in _scan_files(tmp_path)}
+    assert found == {"real.py"}
+
+
+def test_scan_files_prunes_skip_dirs_instead_of_just_filtering(tmp_path, monkeypatch):
+    """The whole point of walking with os.walk over rglob: SKIP_DIRS must never
+    even be descended into, not just have their results discarded afterward -
+    on a real monorepo that difference is the entire performance bug."""
+    import os as os_mod
+
+    from saturday.tools import repo_index
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "real.py").write_text("x = 1\n")
+    (tmp_path / "node_modules" / "pkg").mkdir(parents=True)
+    (tmp_path / "node_modules" / "pkg" / "vendored.py").write_text("x = 1\n")
+
+    visited_dirpaths = []
+    real_walk = os_mod.walk
+
+    def spying_walk(root, *a, **kw):
+        for dirpath, dirnames, filenames in real_walk(root, *a, **kw):
+            visited_dirpaths.append(dirpath)
+            yield dirpath, dirnames, filenames
+
+    monkeypatch.setattr(repo_index.os, "walk", spying_walk)
+    repo_index._scan_files(tmp_path)
+    assert not any("node_modules" in d for d in visited_dirpaths), visited_dirpaths
+
+
 # ------------------------------------------------------------------ app --no-token
 
 def test_cmd_app_no_token_maps_to_empty_not_none(monkeypatch):

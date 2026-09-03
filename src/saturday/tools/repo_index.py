@@ -11,12 +11,17 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import time
 from pathlib import Path
 
 INDEX_NAME = "repo_index.json"
-SKIP_DIRS = {".git", ".saturday", "__pycache__", "node_modules", ".venv", "venv", "dist", "build", ".pytest_cache"}
+SKIP_DIRS = {
+    ".git", ".saturday", "__pycache__", "node_modules", ".venv", "venv", "dist", "build",
+    ".pytest_cache", ".next", ".nuxt", "target", "vendor", ".tox", ".mypy_cache",
+    ".ruff_cache", ".cache", "coverage",
+}
 CODE_EXTS = {
     ".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".rb", ".c", ".h",
     ".cpp", ".hpp", ".cs", ".md", ".txt", ".json", ".yaml", ".yml", ".toml", ".sh",
@@ -130,24 +135,27 @@ def _index_path(workspace_root: str | Path) -> Path:
 
 
 def _scan_files(root: Path) -> list[Path]:
+    """os.walk, not Path.rglob: rglob yields every entry under root before any
+    filtering runs, so it still descends into node_modules/.next/.git/etc and
+    can spend most of its time enumerating files that were always going to be
+    skipped. os.walk lets SKIP_DIRS prune dirnames in place, so those trees
+    are never entered at all - the difference is an order of magnitude on a
+    real JS/Python monorepo."""
     files: list[Path] = []
-    for p in root.rglob("*"):
-        if len(files) >= MAX_FILES:
-            break
-        try:
-            rel_parts = p.relative_to(root).parts
-        except ValueError:
-            continue
-        if any(part in SKIP_DIRS for part in rel_parts[:-1]):
-            continue
-        if not p.is_file() or p.suffix.lower() not in CODE_EXTS:
-            continue
-        try:
-            if p.stat().st_size > MAX_FILE_BYTES:
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS)
+        for name in sorted(filenames):
+            if len(files) >= MAX_FILES:
+                return files
+            p = Path(dirpath) / name
+            if p.suffix.lower() not in CODE_EXTS:
                 continue
-            files.append(p)
-        except OSError:
-            continue
+            try:
+                if not p.is_file() or p.stat().st_size > MAX_FILE_BYTES:
+                    continue
+                files.append(p)
+            except OSError:
+                continue
     return files
 
 

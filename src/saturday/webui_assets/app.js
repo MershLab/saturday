@@ -5778,8 +5778,9 @@ let atFilesCache = { key: "", files: [], at: 0 };
 // build artefacts and vendored trees are noise in both Quick Open and an
 // @-mention; this mirrors repo_index.SKIP_DIRS on the Python side
 const WS_SKIP_DIRS = new Set([
-  "__pycache__", "node_modules", ".venv", "venv", "dist", "build",
-  ".pytest_cache", ".mypy_cache", ".ruff_cache", "target", ".next", "coverage",
+  ".git", ".saturday", "__pycache__", "node_modules", ".venv", "venv", "dist", "build",
+  ".pytest_cache", ".next", ".nuxt", "target", "vendor", ".tox", ".mypy_cache",
+  ".ruff_cache", ".cache", "coverage",
 ]);
 
 async function workspaceFiles() {
@@ -6756,6 +6757,7 @@ const mg = {
 // or a browser test; window.df already carries `state` for exactly this reason
 window.df.mg = mg;
 window.df.mgSelect = (i) => { mg.sel = i; mgDetail(i); mgWake(); };
+window.df.mgFit = mgFit;
 
 function mgRGBA(kind, a) {
   const c = G_COLOR[kind] || G_COLOR.file;
@@ -7194,6 +7196,10 @@ function mgFit() {
   let minx = Infinity, miny = Infinity, maxx = -Infinity, maxy = -Infinity;
   for (let i = 0; i < mg.nodes.length; i++) {
     if (mg.hidden.has(mg.nodes[i].kind)) continue;
+    // a search narrows what's ON SCREEN too - fitting to the full graph while
+    // only a handful of nodes are visible leaves them a near-invisible speck
+    // in a huge empty frame, which reads as "nothing renders"
+    if (mg.match && !mg.match.has(i)) continue;
     minx = Math.min(minx, mg.x[i]); maxx = Math.max(maxx, mg.x[i]);
     miny = Math.min(miny, mg.y[i]); maxy = Math.max(maxy, mg.y[i]);
   }
@@ -7614,7 +7620,7 @@ async function mgSearchMemory(q) {
 
 function mgSearch(q) {
   mg.query = q.trim().toLowerCase();
-  if (!mg.query) { mg.match = null; mgWake(); return; }
+  if (!mg.query) { mg.match = null; mgFit(); mgWake(); return; }
   const hit = new Set();
   for (let i = 0; i < mg.nodes.length; i++) {
     const n = mg.nodes[i];
@@ -7628,6 +7634,7 @@ function mgSearch(q) {
     if (hit.has(e.t)) grown.add(e.s);
   }
   mg.match = grown;
+  mgFit();
   mgWake();
 }
 
