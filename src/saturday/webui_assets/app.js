@@ -5942,6 +5942,56 @@ async function skillsPopRender() {
   }
 }
 
+/* --- what's remembered, at the same reach - assistant mode hides the ---
+   full graph entirely, so this is the only place to see it without
+   switching modes */
+
+function closeMemoryPop() { $("#memoryPop").classList.add("hidden"); }
+
+async function toggleMemoryPop() {
+  const pop = $("#memoryPop");
+  if (!pop.classList.contains("hidden")) { closeMemoryPop(); return; }
+  pop.classList.remove("hidden");
+  await memoryPopRender();
+}
+
+async function memoryPopRender() {
+  const pop = $("#memoryPop");
+  pop.replaceChildren(el("div", "hint", "Loading…"));
+  let data;
+  try { data = await api("/api/memory?sid=" + encodeURIComponent(state.sid || "")); }
+  catch { pop.replaceChildren(el("div", "hint", "Could not load memory.")); return; }
+  const nodes = (data.nodes || []).slice().sort((a, b) => (b.salience || 0) - (a.salience || 0));
+  pop.replaceChildren();
+  const head = el("div", "tree-head");
+  head.appendChild(el("span", "hint", nodes.length + " remembered"));
+  const full = el("button", "btn-sub", "See full graph…");
+  full.addEventListener("click", async () => {
+    closeMemoryPop();
+    if (isAssistant()) {
+      try {
+        const out = await api("/api/config", { method: "POST", body: JSON.stringify({ persona_mode: "agent" }) });
+        state.info = out;
+        applyModeFlavor();
+      } catch (err) { toast(err.message, "err"); return; }
+    }
+    stageShow("memory", false);
+  });
+  head.appendChild(full);
+  pop.appendChild(head);
+  if (!nodes.length) {
+    pop.appendChild(el("div", "hint", "Nothing remembered yet."));
+    return;
+  }
+  for (const n of nodes.slice(0, 30)) {
+    const row = el("div", "skills-pop-row");
+    row.appendChild(el("div", "skills-pop-name mono", n.slug));
+    const text = String(n.text || "");
+    row.appendChild(el("div", "skills-pop-desc", text.length > 160 ? text.slice(0, 160) + "…" : text));
+    pop.appendChild(row);
+  }
+}
+
 function atPick(file) {
   const input = $("#input");
   const pos = input.selectionStart || 0;
@@ -6367,6 +6417,7 @@ function bindEvents() {
     if (!e.target.closest("#projPickMenu") && !e.target.closest("#kebabMenu")) $("#projPickMenu").classList.add("hidden");
     if (!e.target.closest("#atPop") && !e.target.closest("#input")) closeAt();
     if (!e.target.closest("#skillsPop") && !e.target.closest("#skillsBtn")) closeSkillsPop();
+    if (!e.target.closest("#memoryPop") && !e.target.closest("#memoryBtn")) closeMemoryPop();
   });
 
   $("#newProjBtn").addEventListener("click", () => openProjModal(null));
@@ -6606,6 +6657,7 @@ function bindEvents() {
   // so a click in the gap before /api/state resolves isn't silently dropped
   $("#treeBtn").addEventListener("click", toggleTree);
   $("#skillsBtn").addEventListener("click", (e) => { e.stopPropagation(); toggleSkillsPop(); });
+  $("#memoryBtn").addEventListener("click", (e) => { e.stopPropagation(); toggleMemoryPop(); });
 }
 function buildSuggestions(items) {
   const input = $("#input");

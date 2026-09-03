@@ -1481,6 +1481,39 @@ def test_ui_skills_popover_reachable_from_the_composer(ui_server):
 
 
 @pytest.mark.skipif(not HAS_PW, reason="playwright not installed")
+def test_ui_memory_popover_reachable_from_the_composer(ui_server):
+    """Real gap found live: assistant mode hides the Memory tab entirely, and
+    there was no other way to see what's remembered - "where can you see the
+    memory" was the exact question that surfaced it."""
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        page = browser.new_page(viewport={"width": 1400, "height": 900})
+        errs: list[str] = []
+        page.on("pageerror", lambda e: errs.append(getattr(e, "stack", None) or str(e)))
+        page.goto(f"{ui_server}/?k={TOKEN}")
+        page.wait_for_selector("#input", state="visible", timeout=20000)
+
+        assert not page.locator("#memoryPop").is_visible()
+        page.click("#memoryBtn")
+        page.wait_for_selector("#memoryPop:not(.hidden)", timeout=5000)
+        page.wait_for_function(
+            "() => document.querySelector('#memoryPop').textContent.includes('remembered')",
+            timeout=10000,
+        )
+        # this fixture's scratch MEMORY.md is empty - real content is covered
+        # by the endpoint tests; this proves the wiring end to end
+        assert "Nothing remembered yet" in page.locator("#memoryPop").inner_text()
+
+        # "See full graph..." switches to the real Memory tab, not a dead end
+        page.click("#memoryPop >> text=See full graph")
+        page.wait_for_function("() => window.df.mg && window.df.mg.loaded", timeout=20000)
+        assert "on" in page.locator('.stage-tab[data-tab="memory"]').get_attribute("class").split()
+
+        assert not errs, errs
+        browser.close()
+
+
+@pytest.mark.skipif(not HAS_PW, reason="playwright not installed")
 def test_ui_provenance_and_verify_settings_roundtrip(ui_server):
     """R1 features are operable from the Settings > Data pane end-to-end."""
     with sync_playwright() as pw:
