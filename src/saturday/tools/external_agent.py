@@ -35,6 +35,9 @@ class ExternalAgentSpec:
     # user may do with their own account is between them and their vendor; the
     # least Saturday can do is not let them find out afterwards.
     caution: str = ""
+    # user-registered (agents.json), not one of the ones built into this file -
+    # the CLI and Settings use this to decide what can be removed
+    custom: bool = False
 
     @property
     def is_provider(self) -> bool:
@@ -147,6 +150,7 @@ def load_custom_agents() -> dict[str, ExternalAgentSpec]:
                 build_argv=_templated_argv([]),
                 provider=str(cfg["provider"]), model=str(cfg.get("model") or ""),
                 tier=int(cfg["tier"]) if cfg.get("tier") is not None else None,
+                custom=True,
             )
             continue
         binaries = cfg.get("binaries") or [name]
@@ -159,9 +163,62 @@ def load_custom_agents() -> dict[str, ExternalAgentSpec]:
             id=str(name),
             binaries=tuple(str(b) for b in binaries),
             install_hint=str(cfg.get("install_hint") or ""),
+            custom=True,
             build_argv=_templated_argv(args),
         )
     return out
+
+
+def _read_agents_json() -> dict:
+    from saturday.config import get_config_dir
+
+    path = get_config_dir() / "agents.json"
+    if not path.is_file():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def save_custom_agent(
+    name: str, binaries: list[str], args: list[str] | None = None, install_hint: str = ""
+) -> None:
+    """Register a CLI Saturday doesn't already know about, without hand-editing
+    agents.json - this is the same file `load_custom_agents()` reads, so it
+    shows up everywhere a built-in agent does (routing, `saturday agents`,
+    Settings) the moment it's saved."""
+    from saturday.config import get_config_dir
+
+    name = name.strip()
+    if not name:
+        raise ValueError("agent name is required")
+    binaries = [b.strip() for b in binaries if b.strip()]
+    if not binaries:
+        raise ValueError("at least one binary name is required")
+    raw = _read_agents_json()
+    raw[name] = {
+        "binaries": binaries,
+        "args": args or ["-p", "{prompt}"],
+        "install_hint": install_hint,
+    }
+    path = get_config_dir() / "agents.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(raw, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def remove_custom_agent(name: str) -> bool:
+    """True if an agent named `name` was actually removed."""
+    from saturday.config import get_config_dir
+
+    raw = _read_agents_json()
+    if name not in raw:
+        return False
+    del raw[name]
+    path = get_config_dir() / "agents.json"
+    path.write_text(json.dumps(raw, indent=2, sort_keys=True), encoding="utf-8")
+    return True
 
 
 def all_agents() -> dict[str, ExternalAgentSpec]:

@@ -3499,8 +3499,47 @@ async function loadAgents() {
       ? Math.round(a.success * 100) + "% over " + a.runs + " run" + (a.runs === 1 ? "" : "s")
       : (a.installed ? "not used yet" : "not installed");
     row.appendChild(el("span", "agent-stat", stat));
+    if (a.custom) {
+      const rm = el("button", "agent-remove", "×");
+      rm.type = "button";
+      rm.title = "Remove " + a.agent;
+      rm.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        try {
+          await api("/api/agents", { method: "POST", body: JSON.stringify({ action: "remove", name: a.agent }) });
+          loadAgents();
+        } catch (err) { toast(err.message, "err"); }
+      });
+      row.appendChild(rm);
+    }
     wrap.appendChild(row);
   }
+}
+
+function toggleAddAgentForm() {
+  const f = $("#addAgentForm");
+  if (!f) return;
+  f.classList.toggle("hidden");
+  if (!f.classList.contains("hidden")) $("#addAgentName").focus();
+}
+
+async function submitAddAgent() {
+  const name = $("#addAgentName").value.trim();
+  const binaries = $("#addAgentBinary").value.trim();
+  const installHint = $("#addAgentInstallHint").value.trim();
+  if (!name || !binaries) { toast("Name and binary are required", "err"); return; }
+  try {
+    await api("/api/agents", {
+      method: "POST",
+      body: JSON.stringify({ action: "add", name, binaries: binaries.split(","), install_hint: installHint }),
+    });
+    $("#addAgentName").value = "";
+    $("#addAgentBinary").value = "";
+    $("#addAgentInstallHint").value = "";
+    $("#addAgentForm").classList.add("hidden");
+    loadAgents();
+    toast("Added " + name, "ok");
+  } catch (err) { toast(err.message, "err"); }
 }
 
 async function loadModels() {
@@ -3579,6 +3618,10 @@ function wireRemoteUi() {
 function wireAgentsUi() {
   const refresh = $("#btnRefreshAgents");
   if (refresh) refresh.addEventListener("click", loadAgents);
+  const addToggle = $("#btnAddAgent");
+  if (addToggle) addToggle.addEventListener("click", toggleAddAgentForm);
+  const addSubmit = $("#addAgentSubmit");
+  if (addSubmit) addSubmit.addEventListener("click", submitAddAgent);
   const browse = $("#btnBrowseModels");
   if (browse) browse.addEventListener("click", () => {
     $("#modelBrowser").classList.toggle("hidden");

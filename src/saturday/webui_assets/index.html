@@ -368,6 +368,22 @@
             <input id="cfgFallback" type="text" class="mono" spellcheck="false" autocomplete="off" placeholder="comma,separated,model-ids">
             <span class="field-hint">Tried in order when the primary model errors or rate-limits</span>
           </label>
+          <div class="field" style="margin-top:14px">
+            <span class="field-label">Other agents on this machine</span>
+            <div id="agentsList" class="agents-list"></div>
+            <div class="agents-actions">
+              <button id="btnRefreshAgents" class="btn-sub" type="button">Refresh</button>
+              <button id="btnAddAgent" class="btn-sub" type="button">Add a CLI agent&hellip;</button>
+              <button id="btnBrowseModels" class="btn-sub" type="button">Browse models&hellip;</button>
+            </div>
+            <div id="addAgentForm" class="add-agent-form hidden">
+              <input id="addAgentName" type="text" placeholder="name, e.g. aider" spellcheck="false" autocomplete="off">
+              <input id="addAgentBinary" type="text" class="mono" placeholder="binary on PATH, e.g. aider" spellcheck="false" autocomplete="off">
+              <input id="addAgentInstallHint" type="text" placeholder="install hint (optional)" spellcheck="false" autocomplete="off">
+              <button id="addAgentSubmit" class="btn-sub" type="button">Add</button>
+            </div>
+            <span class="field-hint">Not just Claude Code and Codex &mdash; any CLI agent installed on this machine is detected the same way once it's registered here; the built-ins (claude-code, codex, cursor, opencode, gemini) already are. Being installed is not permission to spend it &mdash; turn one on to let <code>agent=auto</code> delegate a subtask to it. Cheapest tier runs first and escalates on failure.</span>
+          </div>
           <details class="adv">
             <summary>Advanced</summary>
             <label class="field">
@@ -474,15 +490,6 @@
             <span class="field-label">Max wall-clock time per run</span>
             <input id="cfgMaxWallSeconds" type="number" min="0" max="86400" step="60" placeholder="seconds, 0 = unlimited">
             <span class="field-hint">Runaway guard for unattended runs &mdash; aborts once a run has been going this long, independent of token or cost spend.</span>
-          </div>
-          <div class="field" style="margin-top:14px">
-            <span class="field-label">Auto-delegation &mdash; spend the cheapest thing that works</span>
-            <div id="agentsList" class="agents-list"></div>
-            <div class="agents-actions">
-              <button id="btnRefreshAgents" class="btn-sub" type="button">Refresh</button>
-              <button id="btnBrowseModels" class="btn-sub" type="button">Browse models&hellip;</button>
-            </div>
-            <span class="field-hint">Being installed is not permission to spend it &mdash; turn one on to let <code>agent=auto</code> use it. Cheapest tier runs first and escalates on failure.</span>
           </div>
           <div class="field" style="margin-top:14px">
             <span class="field-label">Remote access &mdash; use this from your phone</span>

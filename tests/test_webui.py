@@ -3409,6 +3409,39 @@ def test_agents_post_requires_a_name(tmp_path, monkeypatch):
         assert status == 400 and data["ok"] is False
 
 
+def test_agents_endpoint_add_and_remove_a_custom_agent(tmp_path, monkeypatch):
+    import saturday.config as cfgmod
+
+    monkeypatch.setattr(cfgmod, "CONFIG_DIR", tmp_path)
+    app = AppState(cfg_overrides={"workspace_root": str(tmp_path)})
+    with _Server(app) as srv:
+        status, data = _req(srv.base, "/api/agents", "POST", {
+            "action": "add", "name": "aider", "binaries": ["aider"], "install_hint": "pip install aider-chat",
+        })
+        assert status == 200 and data["ok"] is True
+
+        _, data = _req(srv.base, "/api/agents")
+        row = next(a for a in data["agents"] if a["agent"] == "aider")
+        assert row["custom"] is True
+        builtin = next(a for a in data["agents"] if a["agent"] == "claude-code")
+        assert builtin["custom"] is False
+
+        status, data = _req(srv.base, "/api/agents", "POST", {"action": "remove", "name": "aider"})
+        assert status == 200 and data["removed"] is True
+        _, data = _req(srv.base, "/api/agents")
+        assert "aider" not in {a["agent"] for a in data["agents"]}
+
+
+def test_agents_endpoint_add_rejects_missing_binary(tmp_path, monkeypatch):
+    import saturday.config as cfgmod
+
+    monkeypatch.setattr(cfgmod, "CONFIG_DIR", tmp_path)
+    app = AppState(cfg_overrides={"workspace_root": str(tmp_path)})
+    with _Server(app) as srv:
+        status, data = _req(srv.base, "/api/agents", "POST", {"action": "add", "name": "aider", "binaries": []})
+        assert status == 400 and data["ok"] is False
+
+
 def test_models_endpoint_marks_free_and_filters(tmp_path, monkeypatch):
     import saturday.cli as cli
     import saturday.config as cfgmod

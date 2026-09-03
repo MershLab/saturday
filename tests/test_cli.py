@@ -1216,6 +1216,39 @@ def test_configured_or_hint_gates_missing_key(monkeypatch, tmp_path):
     assert cli._configured_or_hint(ns) is None
 
 
+def test_cmd_agents_add_and_remove(tmp_path, monkeypatch):
+    import argparse
+
+    from saturday import cli
+    from saturday import config as cfgmod
+    from saturday.tools import external_agent as ea
+
+    monkeypatch.setattr(cfgmod, "CONFIG_DIR", tmp_path)
+    printed = []
+    monkeypatch.setattr(cli, "_print", printed.append)
+
+    ns = argparse.Namespace(
+        add="aider", binary=["aider"], args="--yes --message {prompt}", install_hint="pip install aider-chat",
+        remove=None, enable=None, disable=None, task_kind=None,
+    )
+    assert cli.cmd_agents(ns) == 0
+    assert any("added" in p and "aider" in p for p in printed)
+    assert ea.all_agents()["aider"].build_argv("/x", "hi") == ["/x", "--yes", "--message", "hi"]
+
+    printed.clear()
+    ns2 = argparse.Namespace(
+        add=None, binary=None, args=None, install_hint="", remove="aider",
+        enable=None, disable=None, task_kind=None,
+    )
+    assert cli.cmd_agents(ns2) == 0
+    assert any("removed" in p and "aider" in p for p in printed)
+    assert "aider" not in ea.all_agents()
+
+    printed.clear()
+    assert cli.cmd_agents(ns2) == 0
+    assert any("no custom agent" in p for p in printed)
+
+
 
 # ---- merged from test_assistant_mode.py ----
 @pytest.fixture(autouse=True)

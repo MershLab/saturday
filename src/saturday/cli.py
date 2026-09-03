@@ -853,6 +853,31 @@ def _add_free_to_agents(found: dict[str, list[str]]) -> list[str]:
 def cmd_agents(args: argparse.Namespace) -> int:
     from saturday import routing
 
+    if getattr(args, "add", None):
+        import shlex
+
+        from saturday.tools.external_agent import save_custom_agent
+
+        argv = shlex.split(args.args) if getattr(args, "args", None) else None
+        try:
+            save_custom_agent(
+                args.add, getattr(args, "binary", None) or [], argv, getattr(args, "install_hint", "") or ""
+            )
+        except ValueError as exc:
+            _print(f"error: {exc}")
+            return 1
+        _print(f"added    {args.add}")
+        return 0
+    if getattr(args, "remove", None):
+        from saturday.tools.external_agent import remove_custom_agent
+
+        if remove_custom_agent(args.remove):
+            routing.set_enabled(args.remove, False)
+            _print(f"removed  {args.remove}")
+        else:
+            _print(f"no custom agent named {args.remove!r}")
+        return 0
+
     for name in (getattr(args, "enable", None) or []):
         routing.set_enabled(name, True)
         _print(f"enabled  {name}")
@@ -1625,6 +1650,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_agents.add_argument("--enable", action="append", metavar="NAME", help="allow auto-delegation to this agent (repeatable)")
     p_agents.add_argument("--disable", action="append", metavar="NAME", help="stop auto-delegating to this agent")
     p_agents.add_argument("--task-kind", dest="task_kind", help="show success rates for this task category")
+    p_agents.add_argument("--add", metavar="NAME", help="register a CLI agent Saturday doesn't already know about")
+    p_agents.add_argument("--binary", action="append", metavar="BIN", help="binary name to look for on PATH (repeatable; with --add)")
+    p_agents.add_argument("--args", help="argv template, {prompt} substituted (default: -p {prompt}; with --add)")
+    p_agents.add_argument("--install-hint", dest="install_hint", default="", help="shown when the binary isn't found (with --add)")
+    p_agents.add_argument("--remove", metavar="NAME", help="un-register a custom agent added with --add")
     p_agents.set_defaults(fn=cmd_agents)
 
     p_remote = sub.add_parser("remote", help="reach this Saturday from your phone via a tunnel")

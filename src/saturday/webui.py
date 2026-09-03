@@ -1398,7 +1398,7 @@ class Handler(BaseHTTPRequestHandler):
         rows = [
             {
                 "agent": c.agent, "tier": c.tier, "tier_name": routing.TIER_NAMES[c.tier],
-                "installed": c.installed, "enabled": c.enabled,
+                "installed": c.installed, "enabled": c.enabled, "custom": c.custom,
                 "success": c.ema_success if c.n else None, "runs": c.n,
                 "caution": _agent_caution(c.agent),
             }
@@ -1409,6 +1409,32 @@ class Handler(BaseHTTPRequestHandler):
     def _post_agents(self, payload: dict) -> None:
         from saturday import routing
 
+        action = str(payload.get("action") or "")
+        if action == "add":
+            from saturday.tools.external_agent import save_custom_agent
+
+            name = str(payload.get("name") or "")
+            binaries = payload.get("binaries") or []
+            if isinstance(binaries, str):
+                binaries = [b.strip() for b in binaries.split(",")]
+            args = payload.get("args") or None
+            try:
+                save_custom_agent(
+                    name, [str(b) for b in binaries], args, str(payload.get("install_hint") or "")
+                )
+            except ValueError as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=400)
+                return
+            self._send_json({"ok": True})
+            return
+        if action == "remove":
+            from saturday.tools.external_agent import remove_custom_agent
+
+            name = str(payload.get("name") or "")
+            removed = remove_custom_agent(name)
+            routing.set_enabled(name, False)
+            self._send_json({"ok": True, "removed": removed})
+            return
         name = str(payload.get("agent") or "")
         if not name:
             self._send_json({"ok": False, "error": "agent required"}, status=400)

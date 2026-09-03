@@ -56,6 +56,7 @@ class Candidate:
     enabled: bool
     ema_success: float = 0.5
     n: int = 0
+    custom: bool = False
 
 
 def _db_path() -> Path:
@@ -209,6 +210,7 @@ def candidates(task_kind: str = "general", tier_overrides: dict | None = None) -
             enabled=name in enabled,
             ema_success=ema,
             n=n,
+            custom=spec.custom,
         ))
     out.sort(key=lambda c: (c.tier, -c.ema_success))
     return out

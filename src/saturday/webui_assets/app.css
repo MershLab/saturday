@@ -2278,7 +2278,18 @@ body.mode-assistant #composerModes { display: none; }
 .tier-subscription { color: #60a5fa; border-color: #60a5fa55; }
 .tier-metered { color: #fbbf24; border-color: #fbbf2455; }
 .agent-stat { font-size: 11px; opacity: .65; min-width: 110px; text-align: right; }
+.agent-remove {
+  background: transparent; border: 0; color: var(--faint); cursor: pointer;
+  font-size: 14px; line-height: 1; padding: 0 2px;
+}
+.agent-remove:hover { color: var(--err); }
 .agents-actions { display: flex; gap: 8px; margin-top: 6px; }
+.add-agent-form { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+.add-agent-form input {
+  flex: 1 1 140px; background: var(--bg0); border: 1px solid var(--line2);
+  border-radius: var(--r-sm); color: var(--text); font-size: 12px; padding: 6px 9px;
+}
+.add-agent-form input::placeholder { color: var(--faint); }
 .models-list { max-height: 260px; overflow-y: auto; margin: 6px 0; display: flex; flex-direction: column; gap: 2px; }
 .models-provider { font-size: 11px; opacity: .6; margin-top: 8px; text-transform: uppercase; letter-spacing: .04em; }
 .model-row { font-size: 12px; }

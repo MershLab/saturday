@@ -3592,6 +3592,53 @@ def test_external_agents_family_maps_to_the_tool():
     assert ToolRegistry.expand_tool_names(["external_agents"]) == {"external_agent"}
 
 
+def test_save_custom_agent_registers_it_without_hand_editing_json(tmp_path, monkeypatch):
+    """The GUI/CLI escape hatch for any CLI agent, not just the built-in five."""
+    import saturday.config as cfgmod
+    from saturday.tools import external_agent as ea
+
+    monkeypatch.setattr(cfgmod, "CONFIG_DIR", tmp_path)
+    ea.save_custom_agent("aider", ["aider"], ["--yes", "--message", "{prompt}"], "pip install aider-chat")
+    agents = ea.all_agents()
+    assert "aider" in agents
+    spec = agents["aider"]
+    assert spec.custom is True
+    assert spec.binaries == ("aider",)
+    assert spec.install_hint == "pip install aider-chat"
+    assert spec.build_argv("/usr/bin/aider", "hi") == ["/usr/bin/aider", "--yes", "--message", "hi"]
+
+
+def test_save_custom_agent_defaults_args_and_rejects_missing_fields(tmp_path, monkeypatch):
+    import saturday.config as cfgmod
+    from saturday.tools import external_agent as ea
+
+    monkeypatch.setattr(cfgmod, "CONFIG_DIR", tmp_path)
+    ea.save_custom_agent("goose", ["goose"])
+    assert ea.all_agents()["goose"].build_argv("/x", "hi") == ["/x", "-p", "hi"]
+    with pytest.raises(ValueError):
+        ea.save_custom_agent("", ["goose"])
+    with pytest.raises(ValueError):
+        ea.save_custom_agent("goose", [])
+
+
+def test_remove_custom_agent_drops_it_and_reports_whether_it_existed(tmp_path, monkeypatch):
+    import saturday.config as cfgmod
+    from saturday.tools import external_agent as ea
+
+    monkeypatch.setattr(cfgmod, "CONFIG_DIR", tmp_path)
+    ea.save_custom_agent("aider", ["aider"])
+    assert ea.remove_custom_agent("aider") is True
+    assert "aider" not in ea.all_agents()
+    assert ea.remove_custom_agent("aider") is False
+
+
+def test_built_in_agents_are_not_flagged_custom():
+    from saturday.tools import external_agent as ea
+
+    assert ea.AGENTS["claude-code"].custom is False
+    assert ea.AGENTS["codex"].custom is False
+
+
 
 # ---- auto-delegation routing ---------------------------------------------
 
