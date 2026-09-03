@@ -184,6 +184,26 @@ def load_entries(workspace_root: str | Path, limit: int = 10) -> list[dict]:
     return out
 
 
+def latest_before(workspace_root: str | Path, path: str) -> str | None:
+    """The 'before' content of the most recent journal entry for `path`, or
+    None if there isn't one (a fresh create, or the journal was pruned past
+    it) - used to diff a just-completed edit for display, without a second
+    disk read racing the edit itself."""
+    target = str(Path(path))
+    try:
+        lines = journal_path(workspace_root).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    for line in reversed(lines):
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(rec, dict) and rec.get("path") == target:
+            return rec.get("before")
+    return None
+
+
 def restore_entry(workspace_root: str | Path, index: int, root: str | Path | None = None) -> tuple[bool, str]:
     """Restore entry ``index`` (as shown by load_entries, 0 = most recent).
 

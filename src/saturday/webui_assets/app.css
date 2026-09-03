@@ -427,6 +427,19 @@ body.embedded #titlebar { display: flex; }
 .dl.del { color: var(--err); background: rgba(224, 82, 82, 0.08); }
 .dl.hunk { color: var(--info); }
 .dl.meta { color: var(--faint); }
+/* inline diff card - what a completed write_file/edit_file actually
+   changed, shown right under the tool row, not hidden behind expanding it */
+.diff-card {
+  margin: 3px 0 4px 23px; border: 1px solid var(--line2); border-radius: var(--r-md);
+  overflow: hidden; font-family: var(--mono); font-size: 12px;
+}
+.diff-head {
+  display: flex; align-items: center; gap: 7px; padding: 6px 10px;
+  border-bottom: 1px solid var(--line); color: var(--dim); background: var(--bg1);
+}
+.diff-head-name { font-size: 11px; color: var(--text); }
+.diff-badge { margin-left: auto; font-size: 10.5px; color: var(--ok); }
+.diff-card .diff { margin: 0; border: 0; border-radius: 0; }
 .appr-actions { display: flex; gap: 7px; padding: 9px 12px 10px; align-items: center; }
 .appr-btn {
   font: inherit; font-size: 11.5px; font-weight: 600; padding: 5px 13px;

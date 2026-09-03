@@ -1502,6 +1502,67 @@ def test_render_file_diff_mirrors_edit_file_rules(tmp_path):
     assert ok_diff and "+bullseye" in ok_diff
 
 
+def test_diff_after_edit_shows_what_a_completed_write_actually_changed(tmp_path):
+    """render_file_diff previews BEFORE a tool runs; diff_after_edit is the
+    complementary AFTER view, sourced from the journal's snapshot - the
+    inline diff card in chat uses this, not the pre-execution preview."""
+    from saturday.editing import diff_after_edit
+    from saturday.tools.files import EditFile
+    from saturday.tools.journal import latest_before
+
+    p = tmp_path / "f.txt"
+    p.write_text("hello\nworld\n", encoding="utf-8")
+    tool = EditFile(root=str(tmp_path))
+    ok, _ = tool.run({"path": "f.txt", "old_string": "world", "new_string": "there"})
+    assert ok
+
+    resolved = str(p.resolve())
+    before = latest_before(tmp_path, resolved)
+    assert before == "hello\nworld\n"
+    diff = diff_after_edit(resolved, before)
+    assert "-world" in diff and "+there" in diff
+
+
+def test_diff_after_edit_on_a_fresh_create_shows_everything_as_added(tmp_path):
+    from saturday.editing import diff_after_edit
+    from saturday.tools.files import WriteFile
+    from saturday.tools.journal import latest_before
+
+    p = tmp_path / "new.txt"
+    tool = WriteFile(root=str(tmp_path))
+    ok, _ = tool.run({"path": "new.txt", "content": "brand new\n"})
+    assert ok
+
+    resolved = str(p.resolve())
+    before = latest_before(tmp_path, resolved)
+    assert before is None
+    diff = diff_after_edit(resolved, before)
+    assert "+brand new" in diff
+
+
+def test_latest_before_returns_none_for_a_path_never_journaled(tmp_path):
+    from saturday.tools.journal import latest_before
+
+    assert latest_before(tmp_path, str(tmp_path / "never.txt")) is None
+
+
+def test_edit_result_diff_helper_matches_the_actual_files_resolve(tmp_path):
+    """webui._edit_result_diff must resolve paths exactly the way
+    tools.files._resolve() does, or it silently finds no journal entry."""
+    from saturday.tools.files import EditFile
+    from saturday.webui import _edit_result_diff
+
+    p = tmp_path / "sub" / "f.txt"
+    p.parent.mkdir()
+    p.write_text("a\n", encoding="utf-8")
+    tool = EditFile(root=str(tmp_path))
+    ok, _ = tool.run({"path": "sub/f.txt", "old_string": "a", "new_string": "b"})
+    assert ok
+
+    diff = _edit_result_diff(str(tmp_path), "sub/f.txt")
+    assert diff and "-a" in diff and "+b" in diff
+
+
 def test_gates_preview_against_workspace_root_not_cwd(tmp_path, monkeypatch):
     """Behavioral: both gates must resolve relative edit paths against the
     agent's workspace root — even when the process CWD is elsewhere."""

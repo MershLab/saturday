@@ -198,6 +198,34 @@ def test_chat_tool_flow_shell(tmp_path: Path):
         assert results[0]["card"] == starts[0]["card"], "result must attach to the running card"
 
 
+def test_chat_tool_flow_edit_file_carries_a_diff_for_the_inline_card(tmp_path: Path):
+    (tmp_path / "f.txt").write_text("hello\nworld\n", encoding="utf-8")
+    turns = [
+        {"tool_calls": [{"name": "edit_file", "arguments": {
+            "path": "f.txt", "old_string": "world", "new_string": "there",
+        }}]},
+        {"content": "done"},
+    ]
+    app = make_app(tmp_path, turns, safety="autonomous")
+    with _Server(app) as srv:
+        events = chat_events(srv, {"text": "edit it"})
+        result = [e for e in events if e["t"] == "tool_result"][0]
+        assert result["ok"] is True
+        assert result["diff"] and "-world" in result["diff"] and "+there" in result["diff"]
+
+
+def test_chat_tool_flow_shell_carries_no_diff(tmp_path: Path):
+    turns = [
+        {"tool_calls": [{"name": "shell", "arguments": {"command": "true"}}]},
+        {"content": "done"},
+    ]
+    app = make_app(tmp_path, turns)
+    with _Server(app) as srv:
+        events = chat_events(srv, {"text": "run"})
+        result = [e for e in events if e["t"] == "tool_result"][0]
+        assert result["diff"] is None
+
+
 def test_busy_session_returns_409(tmp_path: Path):
     app = make_app(tmp_path, [{"content": "x"}])
     with _Server(app) as srv:

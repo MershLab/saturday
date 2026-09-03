@@ -216,6 +216,17 @@ function renderMd(src) {
   return out.join("");
 }
 
+function makeDiffCard(diff, path) {
+  const card = el("div", "diff-card");
+  const head = el("div", "diff-head");
+  head.appendChild(el("span", "diff-head-name mono", path.split("/").pop()));
+  const { add, del } = statCount(diff);
+  head.appendChild(el("span", "diff-badge", "+" + add + " −" + del));
+  card.appendChild(head);
+  card.appendChild(renderDiff(diff));
+  return card;
+}
+
 function renderDiff(diffText) {
   const box = el("div", "diff");
   for (const ln of String(diffText).split("\n")) {
@@ -962,6 +973,11 @@ function makeToolCard(name, args, running) {
     if (res.ok) { status.className = "chip chip-ok"; status.textContent = "ok"; }
     else if (res.error && /denied|BLOCK|BACKGROUND/i.test(res.error)) { status.className = "chip chip-blk"; status.textContent = "blocked"; }
     else { status.className = "chip chip-err"; status.textContent = "error"; }
+    // shown right in the transcript, not hidden behind expanding the card -
+    // that's the whole point of an inline diff
+    if (res.diff && res.diff !== "(no changes)" && !res.diff.startsWith("(preview unavailable")) {
+      card.insertBefore(makeDiffCard(res.diff, (args && args.path) || name), body);
+    }
     const secA = el("div", "tool-section");
     secA.appendChild(el("div", "tool-label", "arguments"));
     const preA = el("pre", "tool-pre");

@@ -59,12 +59,16 @@ def render_file_diff(tool_name: str, args: dict, root: str | None = None) -> str
             new = old.replace(old_str, str(new_str if new_str is not None else ""), 1)
     else:
         return None
+    return _format_diff(old, new, p.name)
+
+
+def _format_diff(old: str, new: str, name: str) -> str:
     lines = list(
         difflib.unified_diff(
             old.splitlines(),
             new.splitlines(),
-            fromfile=f"a/{p.name}",
-            tofile=f"b/{p.name}",
+            fromfile=f"a/{name}",
+            tofile=f"b/{name}",
             lineterm="",
         )
     )
@@ -73,3 +77,16 @@ def render_file_diff(tool_name: str, args: dict, root: str | None = None) -> str
     if len(lines) > DIFF_MAX_LINES:
         lines = lines[:DIFF_MAX_LINES] + [f"... {len(lines) - DIFF_MAX_LINES} more diff lines"]
     return "\n".join(lines)
+
+
+def diff_after_edit(path: str, before: str | None, root: str | None = None) -> str | None:
+    """Unified diff for an edit that already happened, using the journal's
+    'before' snapshot as the old side and the current on-disk content as the
+    new side - complements render_file_diff (which previews BEFORE the tool
+    runs); this is for showing what actually changed AFTER it did."""
+    p = Path(root) / path if (root and not Path(path).is_absolute()) else Path(path)
+    try:
+        new = p.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    return _format_diff(before or "", new, p.name)

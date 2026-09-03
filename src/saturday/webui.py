@@ -440,6 +440,23 @@ def _one_shot(cfg, prompt: str, *, max_tokens: int = 64, temperature: float = 0.
     return str(msg or "").strip()
 
 
+def _edit_result_diff(workspace_root: str, path: str) -> str | None:
+    """What a just-completed write_file/edit_file actually changed, for the
+    inline diff card in chat - best effort, never breaks the turn."""
+    try:
+        from saturday.editing import diff_after_edit
+        from saturday.tools.journal import latest_before
+
+        # must match tools.files._resolve()'s output exactly - that's the
+        # path string the journal entry was written under
+        base = Path(workspace_root).resolve()
+        resolved = str((base / path).resolve()) if not Path(path).is_absolute() else str(Path(path).resolve())
+        before = latest_before(workspace_root, resolved)
+        return diff_after_edit(resolved, before)
+    except Exception:
+        return None
+
+
 def _auto_title(app: "AppState", rt: SessionRuntime, user_text: str, final: str) -> None:
     """Rename a fresh session with a model-generated title (best effort)."""
     try:
@@ -477,6 +494,9 @@ def _run_chat(app: "AppState", rt: SessionRuntime, text: str, image_paths: list[
 
     def emit_result(result) -> None:
         card, args = rt.take_pending_call(result.name)
+        diff = None
+        if result.ok and result.name in ("write_file", "edit_file") and args.get("path"):
+            diff = _edit_result_diff(agent.cfg.workspace_root, str(args["path"]))
         bus.publish(
             {
                 "t": "tool_result",
@@ -487,6 +507,7 @@ def _run_chat(app: "AppState", rt: SessionRuntime, text: str, image_paths: list[
                 "output": result.output if result.ok else "",
                 "error": None if result.ok else (result.error or result.output),
                 "images": list(result.images or []),
+                "diff": diff,
             }
         )
 
