@@ -4611,6 +4611,70 @@ def test_skills_endpoint_reports_a_refusal_as_a_client_error(tmp_path, monkeypat
     assert status == 400 and "refusing" in data["error"]
 
 
+def test_codemem_endpoint_installs_without_the_cli(tmp_path, monkeypatch):
+    """The GUI equivalent of `saturday codemem install` - previously the
+    Settings row only told the user to run that command themselves."""
+    from saturday import codemem
+
+    monkeypatch.setattr(codemem, "status", lambda: {
+        "retrieval": "lexical", "version": "1", "platform": "linux-x86_64",
+        "supported": True, "available": False, "binary": "", "asset": "x.tar.gz",
+    })
+    monkeypatch.setattr(codemem, "install", lambda **kw: tmp_path / "codemem-bin")
+    app = AppState(store_root=tmp_path / "s")
+    base, _ = _server(app)
+    status, data = _req(base, "/api/codemem", "POST", {})
+    assert status == 200 and data["ok"] is True
+    assert data["path"] == str(tmp_path / "codemem-bin")
+
+
+def test_codemem_endpoint_short_circuits_when_already_installed(tmp_path, monkeypatch):
+    from saturday import codemem
+
+    called = []
+    monkeypatch.setattr(codemem, "status", lambda: {
+        "retrieval": "structural", "version": "1", "platform": "linux-x86_64",
+        "supported": True, "available": True, "binary": "/x/codemem", "asset": "x.tar.gz",
+    })
+    monkeypatch.setattr(codemem, "install", lambda **kw: called.append(1) or Path("/x/codemem"))
+    app = AppState(store_root=tmp_path / "s")
+    base, _ = _server(app)
+    status, data = _req(base, "/api/codemem", "POST", {})
+    assert status == 200 and data["already_installed"] is True
+    assert not called, "must not re-download when already installed and force isn't set"
+
+
+def test_codemem_endpoint_reports_a_bad_checksum_as_a_client_error(tmp_path, monkeypatch):
+    from saturday import codemem
+
+    monkeypatch.setattr(codemem, "status", lambda: {
+        "retrieval": "lexical", "version": "1", "platform": "linux-x86_64",
+        "supported": True, "available": False, "binary": "", "asset": "x.tar.gz",
+    })
+
+    def bad_install(**kw):
+        raise codemem.VerificationError("checksum mismatch")
+
+    monkeypatch.setattr(codemem, "install", bad_install)
+    app = AppState(store_root=tmp_path / "s")
+    base, _ = _server(app)
+    status, data = _req(base, "/api/codemem", "POST", {})
+    assert status == 400 and "checksum" in data["error"]
+
+
+def test_codemem_endpoint_refuses_on_an_unsupported_platform(tmp_path, monkeypatch):
+    from saturday import codemem
+
+    monkeypatch.setattr(codemem, "status", lambda: {
+        "retrieval": "lexical", "version": "1", "platform": "weird-arch",
+        "supported": False, "available": False, "binary": "", "asset": "",
+    })
+    app = AppState(store_root=tmp_path / "s")
+    base, _ = _server(app)
+    status, data = _req(base, "/api/codemem", "POST", {})
+    assert status == 400 and data["ok"] is False
+
+
 def test_pipelines_endpoint_lists_saves_and_refuses_bad_graphs(tmp_path, monkeypatch):
     monkeypatch.setattr("saturday.config.get_config_dir", lambda: tmp_path)
     app = AppState(store_root=tmp_path / "s")

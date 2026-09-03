@@ -4689,7 +4689,21 @@ async function loadCodemem() {
   line.appendChild(el("span", "mcp-dot " + (d.available ? "ok" : "unknown")));
   line.appendChild(el("span", "", "code retrieval: " + d.retrieval));
   if (!d.available && d.supported) {
-    line.appendChild(el("code", "mono", "saturday codemem install"));
+    const btn = el("button", "btn-sub", "Install");
+    btn.type = "button";
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      btn.textContent = "installing…";
+      try {
+        await api("/api/codemem", { method: "POST", body: JSON.stringify({}) });
+        await loadCodemem();
+      } catch (err) {
+        toast(err.message, "err");
+        btn.disabled = false;
+        btn.textContent = "Install";
+      }
+    });
+    line.appendChild(btn);
   }
   row.appendChild(line);
 }

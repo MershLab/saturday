@@ -2447,6 +2447,29 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._send_json({"error": f"{type(exc).__name__}: {exc}"}, 500)
 
+    def _post_codemem(self, payload: dict) -> None:
+        """Install the pinned, checksum-verified binary - the GUI equivalent
+        of `saturday codemem install`. Synchronous like the CLI: this is an
+        explicit button press, never part of page load."""
+        from saturday import codemem
+
+        st = codemem.status()
+        if not st["supported"]:
+            self._send_json({"ok": False, "error": f"no pinned build for {st['platform']}"}, status=400)
+            return
+        if st["available"] and not bool(payload.get("force")):
+            self._send_json({"ok": True, "already_installed": True, "path": st["binary"]})
+            return
+        try:
+            path = codemem.install()
+        except codemem.VerificationError as exc:
+            self._send_json({"ok": False, "error": str(exc)}, status=400)
+            return
+        except Exception as exc:
+            self._send_json({"ok": False, "error": f"{type(exc).__name__}: {exc}"}, status=500)
+            return
+        self._send_json({"ok": True, "path": str(path)})
+
     def _post_memory_consolidate(self, payload: dict) -> None:
         """Report stale and redundant notes; archive only when asked.
 
@@ -3382,6 +3405,7 @@ _POST_ROUTES = {
     "/api/journal/restore": "_post_journal_restore",
     "/api/memory/consolidate": "_post_memory_consolidate",
     "/api/skills": "_post_skills",
+    "/api/codemem": "_post_codemem",
     "/api/pipelines": "_post_pipelines",
     "/api/pipelines/run": "_post_pipeline_run",
     "/api/schedules": "_post_schedules",
