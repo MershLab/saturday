@@ -830,17 +830,10 @@ def test_ui_memory_graph_survives_a_wake_before_it_has_loaded(ui_server):
 
 @pytest.mark.skipif(not HAS_PW, reason="playwright not installed")
 def test_ui_memory_graph_shows_the_cluster_a_node_belongs_to(ui_server):
-    """The vendored graphify clustering pass (THIRD_PARTY_NOTICES.md) is a
-    no-op without the optional graph extra (networkx) - skip rather than
-    fail when it isn't installed, since that's a legitimate environment,
-    not a bug. When it is installed, this repo's own real memory graph
-    (workspace_root is Path.cwd() in this fixture) genuinely clusters, so
-    this checks the real thing, not a synthetic fixture graph."""
-    try:
-        import networkx  # noqa: F401
-    except ImportError:
-        pytest.skip("graph extra (networkx) not installed")
-
+    """memcluster.py is a native Louvain implementation with no dependency
+    to gate on - this checks the real clustering pass against this repo's
+    own real memory graph (workspace_root is Path.cwd() in this fixture),
+    not a synthetic fixture."""
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True)
         page = browser.new_page(viewport={"width": 1400, "height": 900})

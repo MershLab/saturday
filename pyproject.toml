@@ -24,7 +24,6 @@ dependencies = []
 dev = ["pytest>=8", "ruff>=0.9"]
 browser = ["playwright>=1.40"]
 desktop = ["pillow>=10", "pywebview>=6"]
-graph = ["networkx>=3.0"]
 
 [project.scripts]
 saturday = "saturday.cli:main"

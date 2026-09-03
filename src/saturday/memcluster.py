@@ -1,421 +1,287 @@
-# Adapted from graphify (github.com/Graphify-Labs/graphify), file graphify/cluster.py.
-# Copyright 2026 Safi Shamsi and the Graphify contributors.
-# Licensed under the Apache License, Version 2.0 (see THIRD_PARTY_NOTICES.md
-# and the full license text under docs/third_party/graphify-APACHE-2.0.txt).
-#
-# Changes from the original: none to the algorithm itself. Docstrings and
-# comments are verbatim from the source; only this header and the module-level
-# summary line below were added, and the requirement on the "graph" extra
-# (networkx, no graspologic/graspologic_native) is Saturday's own choice, not
-# a change to this file - the graspologic paths below already degrade to
-# plain networkx Louvain when graspologic isn't installed, unmodified from
-# upstream, which is exactly the tier Saturday's optional extra provides.
-"""Community detection on NetworkX graphs. Uses Leiden (graspologic) if available, falls back to Louvain (networkx). Splits oversized communities. Returns cohesion scores."""
+"""Community detection for the memory graph: Louvain, written directly
+against the plain node/edge dicts _Builder already produces in memgraph.py.
+
+No dependency - not networkx, not a vendored library. The Louvain algorithm
+(Blondel et al., 2008) doesn't inherently need a graph library; networkx and
+graspologic are just convenient containers and, for graspologic, a faster
+native implementation for graphs orders of magnitude larger than anything
+Saturday's memory graph ever holds (MAX_NODES caps it at 4000). A first pass
+at this reused graphify's cluster.py (github.com/Graphify-Labs/graphify)
+under its optional-extra pattern, but that meant every user installing
+networkx just to see clusters - real bundle weight for a feature that runs
+fine on a few thousand nodes in plain Python. This replaces it: nothing to
+install, works the same for everyone, and it's actually Saturday's own code
+rather than someone else's module with a dependency trailing behind it.
+
+Two phases, standard Louvain:
+
+  1. Local moving - each node starts in its own community; repeatedly move
+     each node into whichever neighbouring community gives the best
+     modularity gain, until nothing moves.
+  2. Aggregation - collapse each community into one node (self-loop weight
+     = its internal edges, inter-node weight = the sum of edges between the
+     two communities) and repeat phase 1 on that coarser graph.
+
+Repeat until a pass produces no further improvement. Community IDs from the
+deepest level are mapped back down through every aggregation step onto the
+original node indices.
+"""
 from __future__ import annotations
-import contextlib
-import inspect
-import io
-import json
-import sys
-import networkx as nx
+
+import random
 
 
-def _suppress_output():
-    """Context manager to suppress stdout/stderr during library calls.
-
-    graspologic's leiden() emits ANSI escape sequences (progress bars,
-    colored warnings) that corrupt PowerShell 5.1's scroll buffer on
-    Windows (see issue #19). Redirecting stdout/stderr to devnull during
-    the call prevents this without losing any graphify output.
-    """
-    return contextlib.redirect_stdout(io.StringIO())
-
-
-def _native_leiden(stable: nx.Graph, resolution: float) -> dict[str, int] | None:
-    """Call graspologic_native.leiden() directly, bypassing graspologic's own
-    package import.
-
-    graspologic.partition.leiden() is a thin wrapper around exactly this
-    native (Rust) call. Importing the *package* — as opposed to the native
-    extension module it depends on — pulls in graspologic.layouts, which
-    imports umap, which imports pynndescent, which numba-JIT-compiles at
-    import time for a layout algorithm this function never calls: measured
-    at 7-19s of one-time import cost against a ~1s native call and a ~1.4s
-    full round trip (conversion + call + map-back) — see the "third update"
-    in GRAPHIFY_BUILD_PERF.md for the measurements this is based on.
-
-    Returns None (the caller falls through to the graspologic.partition.leiden
-    path, then to the networkx Louvain fallback) if graspologic_native isn't
-    installed, or if `stable` isn't the plain undirected, non-multigraph
-    input leiden actually supports — the same shape check
-    graspologic.partition.leiden itself makes before calling the same native
-    function.
-    """
-    try:
-        import graspologic_native as gn
-    except ImportError:
-        return None
-
-    if stable.is_directed() or stable.is_multigraph():
-        return None
-
-    # graspologic_native identifies nodes by their string form; two DISTINCT
-    # node objects that happen to stringify the same way would silently merge
-    # under it (this is exactly what graspologic.partition.leiden's own
-    # _IdentityMapper guards against). Graphify's own node IDs are already
-    # unique strings by construction — extractors/resolution.py's
-    # _disambiguate_colliding_node_ids salts any two distinct nodes that would
-    # otherwise share a string id before the graph is ever built — so this is
-    # a defensive check on an assumption that should never actually trip, not
-    # an expected path. One pass over the nodes, cheaper than an
-    # _IdentityMapper-style dict-store-per-edge-endpoint.
-    id_to_node: dict[str, object] = {}
-    for node in stable.nodes():
-        key = str(node)
-        existing = id_to_node.get(key)
-        if existing is not None and existing != node:
-            return None  # let graspologic.partition.leiden's own check handle/raise on this
-        id_to_node[key] = node
-
-    edges = [
-        (str(u), str(v), float(attrs.get("weight", 1.0)))
-        for u, v, attrs in stable.edges(data=True)
-    ]
-
-    try:
-        old_stderr = sys.stderr
-        try:
-            sys.stderr = io.StringIO()
-            with _suppress_output():
-                _quality, native_partitions = gn.leiden(
-                    edges=edges,
-                    starting_communities=None,
-                    resolution=resolution,
-                    randomness=0.001,
-                    iterations=1,
-                    use_modularity=True,
-                    seed=42,
-                    trials=1,
-                )
-        finally:
-            sys.stderr = old_stderr
-    except Exception:
-        return None
-
-    return {id_to_node[node_id]: community for node_id, community in native_partitions.items()}
-
-
-def _partition(G: nx.Graph, resolution: float = 1.0) -> dict[str, int]:
-    """Run community detection. Returns {node_id: community_id}.
-
-    Tries Leiden (graspologic_native directly, then graspologic) first — best
-    quality. Falls back to Louvain (built into networkx) if neither is
-    installed.
-
-    resolution > 1.0 → more, smaller communities.
-    resolution < 1.0 → fewer, larger communities.
-
-    Output from graspologic is suppressed to prevent ANSI escape codes
-    from corrupting terminal scroll buffers on Windows PowerShell 5.1.
-    """
-    stable = nx.Graph()
-    stable.add_nodes_from(sorted(G.nodes(), key=str))
-    # Canonicalise the endpoint pair before sorting. On an undirected graph the
-    # (u, v) orientation each edge is yielded with comes from adjacency
-    # iteration, which follows CPython's per-process string-hash order - so the
-    # SAME edge appears as (A, B) in one run and (B, A) in the next. Sorting on
-    # the raw pair therefore does not canonicalise anything: the edge lands in a
-    # different position, `stable` is built in a different insertion order, and
-    # Louvain - order-sensitive even with a fixed seed - can return a different
-    # grouping. Measured on a 914-node graph: identical input, identical
-    # first-pass partition, but the cohesion-split pass produced 70 communities
-    # under PYTHONHASHSEED=1 and 69 under =2. Sorting the pair itself removes
-    # the dependency; for nx.Graph the orientation carries no meaning anyway.
-    edge_rows = sorted(
-        G.edges(data=True),
-        key=lambda row: (
-            *sorted((str(row[0]), str(row[1]))),
-            json.dumps(row[2], sort_keys=True, ensure_ascii=False, default=str),
-        ),
-    )
-    for src, tgt, attrs in edge_rows:
-        stable.add_edge(src, tgt, **attrs)
-
-    native_result = _native_leiden(stable, resolution)
-    if native_result is not None:
-        return native_result
-
-    try:
-        from graspologic.partition import leiden
-        lsig = inspect.signature(leiden).parameters
-        kwargs: dict = {}
-        if "random_seed" in lsig:
-            kwargs["random_seed"] = 42
-        if "trials" in lsig:
-            kwargs["trials"] = 1
-        if "resolution" in lsig:
-            kwargs["resolution"] = resolution
-        # Suppress graspologic output to prevent ANSI escape codes from
-        # corrupting PowerShell 5.1 scroll buffer (issue #19)
-        old_stderr = sys.stderr
-        try:
-            sys.stderr = io.StringIO()
-            with _suppress_output():
-                result = leiden(stable, **kwargs)
-        finally:
-            sys.stderr = old_stderr
-        return result
-    except ImportError:
-        pass
-
-    # Fallback: networkx louvain (available since networkx 2.7).
-    # Inspect kwargs to stay compatible across NetworkX versions — max_level
-    # was added in a later release and prevents hangs on large sparse graphs.
-    kwargs: dict = {"seed": 42, "threshold": 1e-4, "resolution": resolution}
-    if "max_level" in inspect.signature(nx.community.louvain_communities).parameters:
-        kwargs["max_level"] = 10
-    communities = nx.community.louvain_communities(stable, **kwargs)
-    return {node: cid for cid, nodes in enumerate(communities) for node in nodes}
-
-
-_MAX_COMMUNITY_FRACTION = 0.25   # communities larger than 25% of graph get split
-_MIN_SPLIT_SIZE = 10             # only split if community has at least this many nodes
-_COHESION_SPLIT_THRESHOLD = 0.05 # re-split communities with cohesion below this
-_COHESION_SPLIT_MIN_SIZE = 50    # only cohesion-split if community has at least this many nodes
-
-
-def label_communities_by_hub(
-    G: nx.Graph, communities: dict[int, list[str]]
-) -> dict[int, str]:
-    """Deterministic, LLM-free community labels: name each community after its
-    highest-degree member — the structural hub — so a report reads ``auth`` /
-    ``log_action`` instead of ``Community 70``. Degree is measured on the full graph
-    ``G``; ties break by node id for run-to-run stability. A community whose members
-    are all absent from ``G`` falls back to ``Community {cid}``.
-
-    Used as the default (no-backend) labeler; an LLM naming pass, when configured,
-    overrides these with richer names.
-    """
-    labels: dict[int, str] = {}
-    for cid, members in communities.items():
-        present = [n for n in members if n in G]
-        if not present:
-            labels[cid] = f"Community {cid}"
+def _adjacency(n: int, edges: list[tuple[int, int, float]]
+              ) -> tuple[list[dict[int, float]], list[float], list[float]]:
+    """Returns (adj, degree, self_loop). A self-loop (a==b) never becomes a
+    neighbor entry - a node was never "adjacent to itself" for movement
+    purposes - but its weight still counts twice toward that node's own
+    degree, same as a regular edge counts once toward each endpoint, and
+    the raw self-loop total is returned too so _aggregate can carry it
+    forward. This matters past level 0: _aggregate turns each community's
+    internal edges into a self-loop on its collapsed node, and that
+    self-loop is the ONLY place a coarser level still carries "how
+    cohesive was this community already" - drop it here (or fail to fold
+    it back in at the next _aggregate) and every level past the first
+    silently under-counts degree, which is exactly the bug that let
+    unrelated communities merge into one
+    on a real, hub-heavy graph even though a reference Louvain split it
+    cleanly on the same input."""
+    adj: list[dict[int, float]] = [dict() for _ in range(n)]
+    self_loop = [0.0] * n
+    for a, b, w in edges:
+        if w <= 0:
             continue
-        # highest degree wins; ties broken by node id (ascending) for determinism
-        hub = min(present, key=lambda n: (-G.degree(n), str(n)))
-        name = str(G.nodes[hub].get("label") or hub).strip()
-        if name.endswith("()"):
-            name = name[:-2]
-        labels[cid] = name or f"Community {cid}"
-    return labels
+        if a == b:
+            self_loop[a] += w
+            continue
+        adj[a][b] = adj[a].get(b, 0.0) + w
+        adj[b][a] = adj[b].get(a, 0.0) + w
+    degree = [sum(adj[i].values()) + 2 * self_loop[i] for i in range(n)]
+    return adj, degree, self_loop
 
 
-def community_member_sigs(communities: dict[int, list[str]]) -> dict[int, str]:
-    """Per-community membership fingerprints: ``{cid: sha256(sorted member ids)}``.
+def _local_moving(n: int, adj: list[dict[int, float]], degree: list[float], m2: float,
+                  seed: int) -> tuple[list[int], bool]:
+    """One Louvain pass. Returns {node: community} (dense-renumbered) and
+    whether anything moved - a caller uses that to know whether another
+    round of aggregation is worth trying."""
+    community = list(range(n))
+    community_degree = list(degree)
+    if m2 <= 0:
+        return community, False
 
-    Persisted next to ``.graphify_labels.json`` so a later ``cluster-only`` can tell
-    which communities actually changed since labeling. A cid whose members no longer
-    hash the same is a different community — reusing its old (LLM) label there is the
-    "stale label after re-scoping" bug this guards against. Deterministic; independent
-    of cid index, node order, and machine.
-    """
-    import hashlib
+    order = list(range(n))
+    random.Random(seed).shuffle(order)  # a fixed seed keeps results reproducible run to run
+    moved_any = False
+    changed = True
+    while changed:
+        changed = False
+        for i in order:
+            ci = community[i]
+            community_degree[ci] -= degree[i]
+            neighbor_gain: dict[int, float] = {}
+            for j, w in adj[i].items():
+                cj = community[j]
+                neighbor_gain[cj] = neighbor_gain.get(cj, 0.0) + w
+            best_c, best_gain = ci, neighbor_gain.get(ci, 0.0) - community_degree[ci] * degree[i] / m2
+            for c, k_i_in in neighbor_gain.items():
+                gain = k_i_in - community_degree[c] * degree[i] / m2
+                if gain > best_gain + 1e-12:
+                    best_gain, best_c = gain, c
+            community[i] = best_c
+            community_degree[best_c] += degree[i]
+            if best_c != ci:
+                changed = True
+                moved_any = True
 
-    sigs: dict[int, str] = {}
-    for cid, members in communities.items():
-        h = hashlib.sha256()
-        for nid in sorted(str(n) for n in members):
-            h.update(nid.encode("utf-8", "replace"))
-            h.update(b"\x00")
-        sigs[cid] = h.hexdigest()[:16]
-    return sigs
+    # renumber to a dense 0..k-1 range so the next aggregation's node ids
+    # are compact, not sparse original community labels
+    remap: dict[int, int] = {}
+    for c in community:
+        if c not in remap:
+            remap[c] = len(remap)
+    return [remap[c] for c in community], moved_any
 
 
-def cluster(
-    G: nx.Graph,
-    resolution: float = 1.0,
-    exclude_hubs_percentile: float | None = None,
-) -> dict[int, list[str]]:
-    """Run Leiden community detection. Returns {community_id: [node_ids]}.
+def _aggregate(n_communities: int, community: list[int], adj: list[dict[int, float]],
+               self_loop: list[float]) -> list[tuple[int, int, float]]:
+    """Collapse each community into one node. A self-loop's weight is that
+    community's own internal edges (each counted once, not twice, matching
+    _adjacency's undirected-edge convention), PLUS whatever self-loop
+    weight its members already carried in from the level below - a
+    member that is itself a previously-collapsed community brings its own
+    internal cohesion with it, and dropping that here is what silently
+    corrupted every level past the first (see _adjacency's docstring)."""
+    agg: dict[tuple[int, int], float] = {}
+    for i, neighbors in enumerate(adj):
+        ci = community[i]
+        for j, w in neighbors.items():
+            if j < i:
+                continue  # each undirected edge appears twice in adj; take it once
+            cj = community[j]
+            key = (ci, cj) if ci <= cj else (cj, ci)
+            agg[key] = agg.get(key, 0.0) + w
+    for i, loop_w in enumerate(self_loop):
+        if loop_w > 0:
+            ci = community[i]
+            agg[(ci, ci)] = agg.get((ci, ci), 0.0) + loop_w
+    return [(a, b, w) for (a, b), w in agg.items()]
 
-    Community IDs are stable across runs: 0 = largest community after splitting.
-    Oversized communities (> 25% of graph nodes, min 10) are split by running
-    a second Leiden pass on the subgraph.
 
-    Accepts directed or undirected graphs. DiGraphs are converted to undirected
-    internally since Louvain/Leiden require undirected input.
+_HUB_EXCLUDE_PERCENTILE = 95   # nodes above this degree percentile bridge everything and
+                               # tell you nothing about which subsystem they're "really" in
+_MAX_COMMUNITY_FRACTION = 0.25   # communities bigger than this share of the graph get split
+_MIN_SPLIT_SIZE = 10              # below this, a community is small enough to just keep
 
-    resolution: passed to Leiden/Louvain. >1.0 = more smaller communities,
-        <1.0 = fewer larger communities. Default 1.0.
-    exclude_hubs_percentile: if set (0-100), nodes whose degree exceeds this
-        percentile are excluded from partitioning and reattached to their
-        majority-vote neighbour community afterwards. Useful for staging/utility
-        super-hubs that inflate god-node rankings (#919).
-    """
-    if G.number_of_nodes() == 0:
+
+def _louvain_core(n: int, edges: list[tuple[int, int, float]], seed: int) -> dict[int, int]:
+    """The Louvain algorithm itself, no hub handling or size splitting -
+    plain multi-level local-moving + aggregation, returning {node: cid}
+    with no particular numbering. cluster() below is what a caller wants;
+    this is the part every layer of it (initial pass, hub reattachment
+    excluded, oversized-community re-split) runs."""
+    if n == 0:
         return {}
-    if G.is_directed():
-        G = G.to_undirected()
-    if G.number_of_edges() == 0:
-        return {i: [n] for i, n in enumerate(sorted(G.nodes))}
+    adj, degree, self_loop = _adjacency(n, edges)
+    m2 = sum(degree)
+    if m2 <= 0:
+        return {i: i for i in range(n)}
 
-    # Compute hub exclusion set before removing anything so degree is based on full graph
-    hub_nodes: set[str] = set()
-    if exclude_hubs_percentile is not None:
-        degrees = sorted(d for _, d in G.degree())
-        if degrees:
-            idx = max(0, int(len(degrees) * exclude_hubs_percentile / 100) - 1)
-            threshold = degrees[idx]
-            hub_nodes = {n for n, d in G.degree() if d > threshold}
+    # level 0: original nodes. Each later level's "node" is a community from
+    # the level below - membership is tracked back through all of them so
+    # the final assignment lands on original node indices, not level-k ones.
+    level_adj, level_degree, level_self_loop, level_n = adj, degree, self_loop, n
+    membership = list(range(n))
 
-    # Leiden warns and drops isolates - handle them separately
-    # Also exclude hub nodes from partitioning so they don't pull unrelated
-    # subsystems into the same community
-    excluded = hub_nodes
-    isolates = [n for n in G.nodes() if G.degree(n) == 0 and n not in excluded]
-    connected_nodes = [n for n in G.nodes() if G.degree(n) > 0 and n not in excluded]
-    connected = G.subgraph(connected_nodes)
+    while True:
+        community, moved = _local_moving(level_n, level_adj, level_degree, m2, seed)
+        n_communities = len(set(community))
+        membership = [community[c] for c in membership]
+        if not moved or n_communities == level_n:
+            break
+        agg_edges = _aggregate(n_communities, community, level_adj, level_self_loop)
+        level_adj, level_degree, level_self_loop = _adjacency(n_communities, agg_edges)
+        level_n = n_communities
+    return {i: cid for i, cid in enumerate(membership)}
 
-    raw: dict[int, list[str]] = {}
-    if connected.number_of_nodes() > 0:
-        partition = _partition(connected, resolution=resolution)
-        for node, cid in partition.items():
-            raw.setdefault(cid, []).append(node)
 
-    # Each isolate becomes its own single-node community
-    next_cid = max(raw.keys(), default=-1) + 1
-    for node in isolates:
-        raw[next_cid] = [node]
-        next_cid += 1
+def _split_oversized(members: list[int], edges: list[tuple[int, int, float]], seed: int) -> list[list[int]]:
+    """Re-run Louvain on one community's own induced subgraph. Used when a
+    community swallowed a large share of the graph - almost always a real
+    subsystem plus a hub-adjacent blob rather than one true community."""
+    local_id = {node: i for i, node in enumerate(members)}
+    sub_edges = [(local_id[a], local_id[b], w) for a, b, w in edges
+                if a in local_id and b in local_id]
+    if not sub_edges:
+        return [[m] for m in members]
+    sub_result = _louvain_core(len(members), sub_edges, seed)
+    groups: dict[int, list[int]] = {}
+    for local_i, cid in sub_result.items():
+        groups.setdefault(cid, []).append(members[local_i])
+    if len(groups) <= 1:
+        return [members]
+    return list(groups.values())
 
-    # Reattach excluded hubs by majority-vote neighbour community
+
+def cluster(n: int, edges: list[tuple[int, int, float]], seed: int = 42) -> dict[int, int]:
+    """Run Louvain with the two refinements a raw pass needs on a real,
+    hub-heavy graph (a file mentioned across half the codebase otherwise
+    drags every subsystem that touches it into one blob):
+
+      1. Nodes above the 95th degree percentile are excluded from the
+         initial partitioning and reattached afterward to whichever
+         neighbouring community they connect to most - so a hub still ends
+         up SOMEWHERE, it just doesn't get to decide everyone else's
+         community on the way in.
+      2. Communities bigger than 25% of the graph are re-clustered on their
+         own induced subgraph, since a community that large is usually a
+         real subsystem plus everything a hub happened to touch, not one
+         true community.
+
+    Returns {node_index: community_id}, communities numbered 0..k-1,
+    largest first. Isolated nodes each land in their own singleton
+    community rather than being dropped."""
+    if n == 0:
+        return {}
+    degree = degrees(n, edges)
+    total_degree = sum(degree)
+    if total_degree <= 0:
+        return {i: i for i in range(n)}
+
+    hub_nodes: set[int] = set()
+    if n >= 20:  # percentile exclusion is noise on a small graph
+        sorted_deg = sorted(degree)
+        idx = max(0, int(n * _HUB_EXCLUDE_PERCENTILE / 100) - 1)
+        threshold = sorted_deg[idx]
+        hub_nodes = {i for i in range(n) if degree[i] > threshold}
+
+    core_edges = [(a, b, w) for a, b, w in edges if a not in hub_nodes and b not in hub_nodes]
+    core_result = _louvain_core(n, core_edges, seed)
+    # core_result assigns every node an id (isolated hubs included, alone),
+    # but only non-hub membership is real - hubs get reattached next
+    members: dict[int, list[int]] = {}
+    for node in range(n):
+        if node in hub_nodes:
+            continue
+        members.setdefault(core_result[node], []).append(node)
+
     if hub_nodes:
-        node_community: dict[str, int] = {n: cid for cid, nodes in raw.items() for n in nodes}
+        node_community: dict[int, int] = {node: cid for cid, ms in members.items() for node in ms}
+        adj, _deg, _self_loop = _adjacency(n, edges)
+        next_cid = (max(members.keys(), default=-1)) + 1
         for hub in sorted(hub_nodes):
-            votes: dict[int, int] = {}
-            for nb in G.neighbors(hub):
+            votes: dict[int, float] = {}
+            for nb, w in adj[hub].items():
                 cid = node_community.get(nb)
                 if cid is not None:
-                    votes[cid] = votes.get(cid, 0) + 1
+                    votes[cid] = votes.get(cid, 0.0) + w
             if votes:
-                best = min(votes, key=lambda c: (-votes[c], c))
-                raw.setdefault(best, []).append(hub)
+                best = max(votes, key=lambda c: (votes[c], -c))
+                members.setdefault(best, []).append(hub)
                 node_community[hub] = best
             else:
-                raw[next_cid] = [hub]
+                members[next_cid] = [hub]
                 node_community[hub] = next_cid
                 next_cid += 1
 
-    # Split oversized communities
-    max_size = max(_MIN_SPLIT_SIZE, int(G.number_of_nodes() * _MAX_COMMUNITY_FRACTION))
-    final_communities: list[list[str]] = []
-    for nodes in raw.values():
-        if len(nodes) > max_size:
-            final_communities.extend(_split_community(G, nodes))
+    max_size = max(_MIN_SPLIT_SIZE, int(n * _MAX_COMMUNITY_FRACTION))
+    final: list[list[int]] = []
+    for ms in members.values():
+        if len(ms) > max_size:
+            final.extend(_split_oversized(ms, edges, seed))
         else:
-            final_communities.append(nodes)
+            final.append(ms)
 
-    # Second pass: re-split low-cohesion communities caused by doc-hub nodes
-    # that bridge otherwise-unrelated subsystems (e.g. CLAUDE.md connected to everything).
-    second_pass: list[list[str]] = []
-    for nodes in final_communities:
-        if len(nodes) >= _COHESION_SPLIT_MIN_SIZE and cohesion_score(G, nodes) < _COHESION_SPLIT_THRESHOLD:
-            splits = _split_community(G, nodes)
-            second_pass.extend(splits if len(splits) > 1 else [nodes])
-        else:
-            second_pass.append(nodes)
-    final_communities = second_pass
-
-    # Re-index by size descending. The tuple(sorted(nodes)) tiebreak makes this a
-    # TOTAL order, so an identical grouping always gets identical community IDs.
-    # Without it, the hundreds of equal-sized small communities are ordered by the
-    # partitioner's (not seed-stable) enumeration order, so their integer IDs
-    # permute run-to-run - which reads as massive "community churn" in a per-node
-    # cid diff even though the actual grouping is reproducible (#1090 follow-up).
-    final_communities.sort(key=lambda nodes: (-len(nodes), tuple(sorted(map(str, nodes)))))
-    return {i: sorted(nodes) for i, nodes in enumerate(final_communities)}
+    ordered = sorted(final, key=lambda ms: (-len(ms), min(ms)))
+    return {node: cid for cid, ms in enumerate(ordered) for node in ms}
 
 
-def _split_community(G: nx.Graph, nodes: list[str]) -> list[list[str]]:
-    """Run a second Leiden pass on a community subgraph to split it further."""
-    subgraph = G.subgraph(nodes)
-    if subgraph.number_of_edges() == 0:
-        # No edges - split into individual nodes
-        return [[n] for n in sorted(nodes)]
-    try:
-        sub_partition = _partition(subgraph)
-        sub_communities: dict[int, list[str]] = {}
-        for node, cid in sub_partition.items():
-            sub_communities.setdefault(cid, []).append(node)
-        if len(sub_communities) <= 1:
-            return [sorted(nodes)]
-        return [sorted(v) for v in sub_communities.values()]
-    except Exception:
-        return [sorted(nodes)]
+def degrees(n: int, edges: list[tuple[int, int, float]]) -> list[float]:
+    """Weighted degree of every node - the same figure the god-node ranking
+    and label_by_hub use, exposed separately so a caller doesn't need to
+    rebuild the adjacency structure itself just to get it."""
+    _adj, degree, _self_loop = _adjacency(n, edges)
+    return degree
 
 
-def cohesion_score(G: nx.Graph, community_nodes: list[str]) -> float:
-    """Ratio of actual intra-community edges to maximum possible."""
-    n = len(community_nodes)
-    if n <= 1:
+def cohesion_score(n: int, edges: list[tuple[int, int, float]], members: list[int]) -> float:
+    """Ratio of actual intra-community edges to the maximum possible."""
+    k = len(members)
+    if k <= 1:
         return 1.0
-    subgraph = G.subgraph(community_nodes)
-    actual = subgraph.number_of_edges()
-    possible = n * (n - 1) / 2
+    in_set = set(members)
+    actual = sum(1 for a, b, _w in edges if a in in_set and b in in_set)
+    possible = k * (k - 1) / 2
     return actual / possible if possible > 0 else 0.0
 
 
-def score_all(G: nx.Graph, communities: dict[int, list[str]]) -> dict[int, float]:
-    return {cid: cohesion_score(G, nodes) for cid, nodes in communities.items()}
-
-
-def remap_communities_to_previous(
-    communities: dict[int, list[str]],
-    previous_node_community: dict[str, int],
-) -> dict[int, list[str]]:
-    """Remap community IDs to maximize overlap with a previous assignment.
-
-    Uses greedy one-to-one matching by intersection size, then assigns fresh IDs
-    to unmatched communities in deterministic order (size desc, lexical tie-break).
-    """
-    if not communities:
-        return {}
-
-    new_sets = {cid: set(nodes) for cid, nodes in communities.items()}
-    old_sets: dict[int, set[str]] = {}
-    for node, old_cid in previous_node_community.items():
-        old_sets.setdefault(old_cid, set()).add(node)
-
-    overlaps: list[tuple[int, int, int]] = []
-    for old_cid, old_nodes in old_sets.items():
-        for new_cid, new_nodes in new_sets.items():
-            overlap = len(old_nodes & new_nodes)
-            if overlap > 0:
-                overlaps.append((overlap, old_cid, new_cid))
-    overlaps.sort(key=lambda x: (-x[0], x[1], x[2]))
-
-    new_to_final: dict[int, int] = {}
-    used_old_ids: set[int] = set()
-    matched_new_ids: set[int] = set()
-    for _overlap, old_cid, new_cid in overlaps:
-        if old_cid in used_old_ids or new_cid in matched_new_ids:
-            continue
-        new_to_final[new_cid] = old_cid
-        used_old_ids.add(old_cid)
-        matched_new_ids.add(new_cid)
-
-    unmatched = [cid for cid in communities if cid not in matched_new_ids]
-    unmatched.sort(key=lambda cid: (-len(communities[cid]), tuple(sorted(communities[cid]))))
-    next_id = 0
-    for new_cid in unmatched:
-        while next_id in used_old_ids:
-            next_id += 1
-        new_to_final[new_cid] = next_id
-        used_old_ids.add(next_id)
-        next_id += 1
-
-    remapped: dict[int, list[str]] = {}
-    for new_cid, nodes in communities.items():
-        remapped[new_to_final[new_cid]] = sorted(nodes)
-    return dict(sorted(remapped.items(), key=lambda kv: kv[0]))
+def label_by_hub(members: list[int], degree: list[float], labels: list[str]) -> str:
+    """Name a community after its highest-degree member - the structural
+    hub - so a UI reads 'webui.py' instead of 'Community 4'. Ties break by
+    node index for determinism."""
+    if not members:
+        return "Community"
+    hub = min(members, key=lambda i: (-degree[i], i))
+    name = (labels[hub] or "").strip()
+    return name or f"Community {hub}"

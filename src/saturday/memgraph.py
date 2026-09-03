@@ -371,44 +371,32 @@ def build_graph(workspace_root: str | Path | None = None,
 def _add_clusters(out: dict) -> None:
     """Best-effort community detection: which nodes cluster into the same
     subsystem, so a reader sees groupings instead of one undifferentiated
-    graph. A no-op when the optional `graph` extra (`pip install
-    saturday[graph]`, adds networkx) isn't installed - same pattern as the
-    browser/desktop extras, core stays zero-dependency either way.
+    graph. Native Louvain (memcluster.py), no dependency - clustering must
+    never take the graph itself down, so any failure here is swallowed and
+    the graph ships without community labels rather than not shipping at
+    all."""
+    from saturday import memcluster
 
-    Adapted from graphify's cluster.py (Apache-2.0, see
-    THIRD_PARTY_NOTICES.md); clustering must never take the graph itself
-    down, so any failure here is swallowed and the graph ships without
-    community labels rather than not shipping at all."""
-    try:
-        import networkx as nx
-
-        from saturday import memcluster
-    except ImportError:
-        return
     nodes, edges = out["nodes"], out["edges"]
     if not nodes:
         return
-    g = nx.Graph()
-    for i, n in enumerate(nodes):
-        g.add_node(i, label=n.get("label", ""))
-    for e in edges:
-        g.add_edge(e["s"], e["t"], weight=e.get("w", 1.0))
     try:
-        communities = memcluster.cluster(g)
-        labels = memcluster.label_communities_by_hub(g, communities)
+        edge_tuples = [(e["s"], e["t"], e.get("w", 1.0)) for e in edges]
+        node_to_cid = memcluster.cluster(len(nodes), edge_tuples)
     except Exception:
         return
-    node_to_cid: dict[int, int] = {}
-    for cid, members in communities.items():
-        for i in members:
-            node_to_cid[i] = cid
+    members: dict[int, list[int]] = {}
+    for i, cid in node_to_cid.items():
+        members.setdefault(cid, []).append(i)
+    degree = memcluster.degrees(len(nodes), edge_tuples)
+    labels = [n.get("label", "") for n in nodes]
     for i, n in enumerate(nodes):
         cid = node_to_cid.get(i)
         if cid is not None:
             n["community"] = cid
     out["communities"] = [
-        {"id": cid, "label": labels.get(cid, f"Community {cid}"), "size": len(members)}
-        for cid, members in sorted(communities.items(), key=lambda kv: kv[0])
+        {"id": cid, "label": memcluster.label_by_hub(mem, degree, labels), "size": len(mem)}
+        for cid, mem in sorted(members.items(), key=lambda kv: kv[0])
     ]
 
 

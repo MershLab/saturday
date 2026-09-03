@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import time
 
-import pytest
-
 from saturday.memindex import MemoryIndex, parse_notes
 
 
@@ -192,12 +190,10 @@ def test_memory_graph_still_lists_facts_if_the_index_fails(tmp_path, monkeypatch
 
 
 def test_add_clusters_groups_a_real_graph_into_communities():
-    """_add_clusters is the memgraph-side integration point for the vendored
-    graphify clustering pass (THIRD_PARTY_NOTICES.md) - this proves the
-    plain-dict node/edge shape memgraph actually produces round-trips
-    through it correctly, not just that memcluster.cluster() itself works
-    on an nx.Graph someone hand-builds."""
-    pytest.importorskip("networkx", reason="graph extra (networkx) not installed")
+    """_add_clusters is the memgraph-side integration point for the native
+    Louvain pass (memcluster.py) - this proves the plain-dict node/edge
+    shape memgraph actually produces round-trips through it correctly, not
+    just that memcluster.cluster() itself works on tuples someone hand-builds."""
     from saturday.memgraph import _add_clusters
 
     # two dense, disjoint groups plus one isolated node - the isolated node
@@ -225,12 +221,9 @@ def test_add_clusters_groups_a_real_graph_into_communities():
     assert "n6" in by_id  # the isolated node still gets a community, not dropped
 
 
-def test_add_clusters_is_a_noop_without_the_graph_extra(monkeypatch):
-    """Same optional-extra pattern as browser/desktop: absent networkx must
-    not break the graph, just skip the community pass."""
-    import sys
-
-    monkeypatch.setitem(sys.modules, "networkx", None)
+def test_add_clusters_handles_a_single_node_with_no_edges():
+    """No dependency to no-op on anymore - even a trivial one-node, no-edge
+    graph should get a real (singleton) community rather than nothing."""
     from saturday.memgraph import _add_clusters
 
     out = {
@@ -238,14 +231,13 @@ def test_add_clusters_is_a_noop_without_the_graph_extra(monkeypatch):
         "edges": [],
     }
     _add_clusters(out)
-    assert "communities" not in out
-    assert "community" not in out["nodes"][0]
+    assert "communities" in out
+    assert out["nodes"][0]["community"] == 0
 
 
 def test_add_clusters_swallows_a_clustering_failure(monkeypatch):
     """Clustering is a nice-to-have on top of a real graph - a bug in it
     must never take the graph itself down."""
-    pytest.importorskip("networkx", reason="graph extra (networkx) not installed")
     import saturday.memcluster as memcluster
     from saturday.memgraph import _add_clusters
 
