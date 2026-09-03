@@ -87,11 +87,20 @@ def parse_notes(markdown: str) -> list[dict[str, Any]]:
 
     A note is a bullet or a paragraph - the units people actually write in.
     An explicit ``[[slug]]`` anywhere in the note names it; otherwise the slug
-    comes from its own text, so re-parsing an unchanged file is stable."""
+    comes from its own text, so re-parsing an unchanged file is stable.
+
+    Each note also carries ``start``/``end`` (0-indexed, ``end`` exclusive,
+    Python-slice convention) spanning its original lines in ``markdown``.
+    Nothing that reads only ``text``/``refs``/``slug`` needs to change; this
+    is what lets a caller that needs to DROP specific notes do it by
+    deleting exact original lines - preserving headings and every other
+    line verbatim - rather than reconstructing the file from this
+    function's normalized text, which would silently lose both."""
     notes: list[dict[str, Any]] = []
     block: list[str] = []
+    block_start = 0
 
-    def flush() -> None:
+    def flush(end: int) -> None:
         if not block:
             return
         text = " ".join(b.strip() for b in block).strip()
@@ -108,23 +117,28 @@ def parse_notes(markdown: str) -> list[dict[str, Any]]:
         if lead:
             body = body[len(name):].strip(" :-\u2014").strip() or name
         others = [slugify(r) for r in refs if not (lead and r == name)]
-        notes.append({"text": body, "refs": others, "slug": slugify(name or body)})
+        notes.append({"text": body, "refs": others, "slug": slugify(name or body),
+                      "start": block_start, "end": end})
 
-    for raw in (markdown or "").splitlines():
+    lines = (markdown or "").splitlines()
+    for i, raw in enumerate(lines):
         line = raw.rstrip()
         stripped = line.strip()
         if not stripped:
-            flush()
+            flush(i)
             continue
         if stripped.startswith("#"):
-            flush()
+            flush(i)
             continue  # headings organize the file; they are not notes
         if re.match(r"^[-*+]\s+|^\d+\.\s+", stripped):
-            flush()
+            flush(i)
+            block_start = i
             block.append(re.sub(r"^[-*+]\s+|^\d+\.\s+", "", stripped))
         else:
+            if not block:
+                block_start = i
             block.append(stripped)
-    flush()
+    flush(len(lines))
 
     # a file can repeat a slug (two bullets starting the same way); keep them
     # distinct so neither silently overwrites the other
@@ -440,6 +454,14 @@ class MemoryIndex:
             for sym in (meta.get("symbols") or []):
                 names.add(str(sym).lower())
         return names
+
+    def salience_by_slug(self, scope: str = "global") -> dict[str, float]:
+        """{slug: salience} for one scope - the read side of the same score
+        reindex() computes and preserves, used by MemoryTool.append to pick
+        which notes give way first when MEMORY.md needs to shrink."""
+        conn = self._connect()
+        return {row[0]: float(row[1] or 0.0) for row in conn.execute(
+            "SELECT slug, salience FROM memory_nodes WHERE scope=?", (scope,))}
 
     def consolidate(self, dry_run: bool = False,
                     workspace: str | Path | None = None) -> dict[str, Any]:

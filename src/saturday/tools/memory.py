@@ -135,17 +135,67 @@ class MemoryTool:
             if action == "append":
                 existing = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
                 combined = (existing.rstrip() + "\n" + text.strip()).lstrip("\n")
+                dropped: list[str] = []
                 if len(combined) > self.MAX_CHARS:
-                    combined = combined[-self.MAX_CHARS:]
-                    nl = combined.find("\n")
-                    if nl != -1:
-                        combined = combined[nl + 1:]
+                    scope = (f"project:{Path(self.scope_path).resolve().parent.parent}"
+                             if self.scope_path else "global")
+                    combined, dropped = self._trim_by_salience(combined, scope)
                 path.write_text(combined, encoding="utf-8")
+                msg = f"memory {action}ed ({path})"
+                if dropped:
+                    msg += f" — dropped {len(dropped)} lowest-value note(s) to fit: {', '.join(dropped)}"
+                return True, msg
             else:
                 path.write_text(text.strip()[:self.MAX_CHARS], encoding="utf-8")
             return True, f"memory {action}ed ({path})"
         except OSError as exc:
             return False, f"memory unavailable: {exc}"
+
+    def _trim_by_salience(self, combined: str, scope: str) -> tuple[str, list[str]]:
+        """When memory needs to shrink, drop the lowest-salience notes first
+        - a note that adds nothing to what's already known - instead of
+        blindly cutting whatever happens to be oldest by position. A note
+        written months ago and touched often is real signal; one added
+        yesterday that just restates something already there is not, and
+        the old behaviour deleted the former to make room for the latter.
+
+        Headings and every kept note's original formatting are preserved
+        verbatim: this removes exact original line spans (from parse_notes'
+        start/end), it does not reconstruct the file from parsed text,
+        which would silently lose both."""
+        try:
+            from saturday.memindex import MemoryIndex, parse_notes
+
+            idx = MemoryIndex()
+            try:
+                idx.reindex(combined, scope=scope)
+                salience = idx.salience_by_slug(scope)
+            finally:
+                idx.close()
+            notes = parse_notes(combined)
+            if not notes:
+                raise ValueError("no notes to trim")
+            lines = combined.splitlines()
+            # lowest salience first; ties keep original (oldest-first) order
+            order = sorted(range(len(notes)), key=lambda i: (salience.get(notes[i]["slug"], 0.5), i))
+            drop_lines: set[int] = set()
+            dropped: list[str] = []
+            for i in order:
+                kept = "\n".join(line for j, line in enumerate(lines) if j not in drop_lines)
+                if len(kept) <= self.MAX_CHARS:
+                    break
+                drop_lines.update(range(notes[i]["start"], notes[i]["end"]))
+                dropped.append(notes[i]["slug"])
+            rebuilt = "\n".join(line for j, line in enumerate(lines) if j not in drop_lines)
+            if len(rebuilt) <= self.MAX_CHARS:
+                return rebuilt, dropped
+        except Exception:
+            pass  # trimming must never crash a write - fall through to the old behaviour
+        # last resort: the notes that are left, even alone, still don't fit
+        # (or something above failed) - cut from the top, same as before
+        tail = combined[-self.MAX_CHARS:]
+        nl = tail.find("\n")
+        return (tail[nl + 1:] if nl != -1 else tail), []
 
 
 def load_memory_block(scope: str | Path | None = None) -> str:

@@ -208,6 +208,104 @@ def test_unscoped_tool_uses_global_file(tmp_path):
     assert memory_path() == tmp_path / "MEMORY.md", "fixture isolation confirmed"
 
 
+def test_append_overflow_drops_lowest_salience_notes_not_oldest(tmp_path):
+    """The old behaviour cut from the top by position, so a genuinely
+    valuable note written early silently vanished the moment a bunch of
+    later, low-value filler pushed the file over MAX_CHARS - while the
+    filler itself, being newer, survived. This proves the fix: salience,
+    not position, decides what gives way. One single overflowing append,
+    not several, so exactly one trim decision is being tested rather than
+    several compounding ones."""
+    tool = MemoryTool()
+    tool.MAX_CHARS = 400  # small budget, easy to force real overflow
+
+    # Pre-existing file: the oldest note is the one real, high-value fact;
+    # everything after it is near-duplicate filler that should read as low
+    # salience once indexed. Position-based trimming would cut this exact
+    # note first, since it's the oldest content in the file.
+    existing = "- the deploy key rotates every 90 days via vault\n" + "".join(
+        f"- filler note number {i} says nothing new, filler note number {i} says nothing new\n"
+        for i in range(6)
+    )
+    memory_path().write_text(existing, encoding="utf-8")
+    assert len(existing) > tool.MAX_CHARS, "fixture must already be over budget"
+
+    ok, msg = tool.run({"action": "append", "text": "- one more small note"})
+    assert ok
+
+    final = memory_path().read_text(encoding="utf-8")
+    assert len(final) <= tool.MAX_CHARS
+    assert "deploy key rotates every 90 days" in final, \
+        "the real, valuable note must survive - it must not be the one cut just for being oldest"
+    assert "dropped" in msg
+
+
+def test_append_overflow_reports_what_it_dropped(tmp_path):
+    tool = MemoryTool()
+    tool.MAX_CHARS = 300
+    existing = "".join(f"- filler note number {i} says nothing new here at all\n" for i in range(6))
+    memory_path().write_text(existing, encoding="utf-8")
+    assert len(existing) > tool.MAX_CHARS
+    ok, msg = tool.run({"action": "append", "text": "- one more filler note here"})
+    assert ok
+    assert "dropped" in msg and "note(s) to fit" in msg
+
+
+def test_trim_by_salience_preserves_headings_and_formatting_verbatim(tmp_path):
+    """Rebuilding from parse_notes' normalized text would silently strip
+    headings and reformat bullets - this proves kept notes and structure
+    survive exactly as written, only the dropped notes' lines are gone.
+
+    Salience is novelty relative to what's already in the corpus, not
+    self-repetition - a single note has nothing to be redundant AGAINST,
+    so it reads just as novel as anything else with nothing to compare it
+    to. Real low salience needs real near-duplicates, so this uses several,
+    matching the pattern the append-overflow integration test below uses."""
+    tool = MemoryTool()
+    tool.MAX_CHARS = 260
+    filler = "".join(
+        f"- filler note number {i} says nothing new here at all\n" for i in range(4)
+    )
+    original = (
+        "# Memory\n\n"
+        "## Deploy\n"
+        "- the deploy key rotates every 90 days via vault\n\n"
+        "## Filler\n" + filler
+    )
+    trimmed, dropped = tool._trim_by_salience(original, "global")
+    assert "# Memory" in trimmed and "## Deploy" in trimmed
+    assert "- the deploy key rotates every 90 days via vault" in trimmed
+    assert len(trimmed) <= tool.MAX_CHARS
+    assert dropped  # some filler was identified and removed
+
+
+def test_trim_by_salience_drops_a_single_note_too_big_to_fit_on_its_own(tmp_path):
+    """A single note alone bigger than the whole budget - there's nothing
+    lower-value left to drop instead, so it goes too, same as any other
+    note that loses out, and it's disclosed in `dropped` rather than
+    silently truncated mid-sentence into a fragment."""
+    tool = MemoryTool()
+    tool.MAX_CHARS = 50
+    huge = "- " + ("x" * 200)
+    trimmed, dropped = tool._trim_by_salience(huge, "global")
+    assert len(trimmed) <= tool.MAX_CHARS
+    assert trimmed == ""
+    assert len(dropped) == 1  # the one note that existed, disclosed rather than silently gone
+
+
+def test_trim_by_salience_falls_back_to_tail_cut_when_nothing_parses(tmp_path):
+    """Genuinely unparseable content (no notes at all - headings organize
+    the file, they aren't notes per parse_notes) has nothing for salience
+    to rank, so this is the one real last-resort path: cut from the top
+    like the original behaviour, rather than crash."""
+    tool = MemoryTool()
+    tool.MAX_CHARS = 10
+    headings_only = "# one\n## two\n### three, a heading long enough to overflow on its own\n"
+    trimmed, dropped = tool._trim_by_salience(headings_only, "global")
+    assert len(trimmed) <= tool.MAX_CHARS
+    assert dropped == []
+
+
 def test_scoped_writes_isolated_from_global(tmp_path):
     ws = tmp_path / "proj-ws"
     ws.mkdir()
