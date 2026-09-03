@@ -264,6 +264,9 @@ function stageShow(tab, auto) {
   if (auto && isAssistant()) return; // assistant: no technical stage noise
   if (auto && stage.manual) return;
   if (!auto) stage.manual = true;
+  // an explicit tab click in assistant mode peeks the stage open as an
+  // overlay - collapses back via stageCloseBtn, never touches persona_mode
+  if (!auto && isAssistant()) document.body.classList.add("stage-peek");
   stage.tab = tab;
   for (const [k, elp] of Object.entries(stagePanes)) elp.classList.toggle("on", k === tab);
   document.querySelectorAll(".stage-tab").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
@@ -5966,15 +5969,11 @@ async function memoryPopRender() {
   const head = el("div", "tree-head");
   head.appendChild(el("span", "hint", nodes.length + " remembered"));
   const full = el("button", "btn-sub", "See full graph…");
-  full.addEventListener("click", async () => {
+  full.addEventListener("click", () => {
     closeMemoryPop();
-    if (isAssistant()) {
-      try {
-        const out = await api("/api/config", { method: "POST", body: JSON.stringify({ persona_mode: "agent" }) });
-        state.info = out;
-        applyModeFlavor();
-      } catch (err) { toast(err.message, "err"); return; }
-    }
+    // peeks the real stage open without ever touching the saved persona_mode -
+    // a previous version of this button POSTed persona_mode:"agent" here,
+    // which silently reverted the user's actual default to see one graph
     stageShow("memory", false);
   });
   head.appendChild(full);
@@ -6537,6 +6536,11 @@ function bindEvents() {
       else if (b.dataset.tab === "runs") runsLoad();
     });
   }
+  $("#stageCloseBtn").addEventListener("click", (e) => {
+    e.stopPropagation();
+    document.body.classList.remove("stage-peek");
+    stage.manual = false;
+  });
   $("#fileInput").addEventListener("change", (e) => { addImages([...e.target.files]); e.target.value = ""; });
   document.addEventListener("paste", (e) => {
     const files = [...(e.clipboardData?.items || [])].filter((i) => i.kind === "file").map((i) => i.getAsFile()).filter(Boolean);
@@ -6678,6 +6682,7 @@ function applyModeFlavor() {
   // visible simplification, not just relabeling: assistant mode drops the
   // whole technical stage + developer pills; the chat becomes the app
   document.body.classList.toggle("mode-assistant", assistant);
+  if (!assistant) document.body.classList.remove("stage-peek");
   const tag = document.querySelector("#emptyState .tagline");
   if (tag) {
     tag.textContent = assistant

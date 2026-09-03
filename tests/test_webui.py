@@ -1421,9 +1421,12 @@ def test_ui_assistant_mode_flavor_and_toggle(ui_server):
         assert page.evaluate("() => window.df.state.info.assistant_name") == "Jarvis"
         assert page.evaluate("() => window.df.state.info.assistant_user_title") == "sir"
 
-        # THE POINT of assistant mode: the UI visibly simplifies - chat IS the app
+        # THE POINT of assistant mode: the UI visibly simplifies - chat IS the app.
+        # The stage collapses to just its tab strip (a thin header, still
+        # reachable) rather than disappearing outright - see
+        # test_ui_assistant_mode_stage_peeks_open_without_switching_modes.
         page.wait_for_function("() => document.body.classList.contains('mode-assistant')", timeout=5000)
-        assert not page.locator("#stage").is_visible(), "technical stage must disappear"
+        assert not page.locator("#stageBody").is_visible(), "technical stage content must not show by default"
         assert not page.locator("#modelChip").is_visible(), "model switch is developer plumbing"
         assert not page.locator("#tokMeter").is_visible(), "context meter is developer plumbing"
         hint = page.locator("#composerHint").inner_text()
@@ -1438,6 +1441,44 @@ def test_ui_assistant_mode_flavor_and_toggle(ui_server):
         names = page.evaluate(
             "async () => { const r = await fetch('/api/tools'); return (await r.json()); }"
         ) if False else None  # tools endpoint not exposed; verified via unit tests
+        browser.close()
+
+
+@pytest.mark.skipif(not HAS_PW, reason="playwright not installed")
+def test_ui_assistant_mode_stage_peeks_open_without_switching_modes(ui_server):
+    """Real bug found live: the memory popover's "See full graph..." used to
+    POST persona_mode:"agent" just to show one tab, silently overwriting the
+    user's saved default. The stage tab strip now stays visible as a header
+    in assistant mode; clicking a tab peeks the body open locally, and
+    closing it never touches persona_mode at all."""
+    with sync_playwright() as pw:
+        browser, ctx, page = _fresh_page(pw, ui_server)
+        # switch to assistant mode the real way, through Settings
+        page.click("#kebabBtn")
+        page.locator('#kebabMenu button[data-act="settings"]').click()
+        page.wait_for_selector("#settingsModal:not(.hidden)", timeout=5000)
+        page.locator("#cfgAssistant").check()
+        page.click("#settingsSave")
+        page.wait_for_function("() => document.body.classList.contains('mode-assistant')", timeout=8000)
+
+        # the tab strip is a visible header even before anything is peeked open
+        assert page.locator("#stageTabs").is_visible()
+        assert not page.locator("#stageBody").is_visible()
+
+        page.click('.stage-tab[data-tab="memory"]')
+        page.wait_for_function("() => document.body.classList.contains('stage-peek')", timeout=5000)
+        page.wait_for_selector("#stageBody", state="visible", timeout=5000)
+
+        # the whole point: peeking a tab must never rewrite the saved config
+        mode_after_peek = page.evaluate("() => window.df.state.info.persona_mode")
+        assert mode_after_peek == "assistant"
+
+        page.click("#stageCloseBtn")
+        page.wait_for_function("() => !document.body.classList.contains('stage-peek')", timeout=5000)
+        page.wait_for_timeout(250)  # the collapse is CSS-transitioned, not instant
+        assert not page.locator("#stageBody").is_visible()
+        assert page.locator("#stageTabs").is_visible(), "header stays up after closing the peek"
+
         browser.close()
 
 

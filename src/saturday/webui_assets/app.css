@@ -175,7 +175,7 @@ body.embedded #titlebar { display: flex; }
 .dot-sep { opacity: 0.45; }
 
 /* ------------------------------------------------------------------- main */
-#main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+#main { flex: 1; display: flex; flex-direction: column; min-width: 0; position: relative; }
 
 #topbar {
   height: 42px; display: flex; align-items: center; gap: 8px;
@@ -780,12 +780,23 @@ kbd {
 }
 
 /* ------------------------------------------------------------- assistant UI
-   mode-assistant = the simplified JARVIS surface: chat IS the app. The whole
-   technical stage disappears, developer pills go, the composer owns the view.
-   Tool details remain reachable via the existing click-to-expand cards. */
-body.mode-assistant #stage { display: none !important; }
+   mode-assistant = the simplified JARVIS surface: chat IS the app by default,
+   developer pills go, the composer owns the view. The technical stage
+   (Workbench/Files/Memory/Pipelines/Runs...) collapses to just its tab strip,
+   pinned as a thin header - clicking a tab peeks it open as an overlay
+   without leaving assistant mode or touching the saved persona_mode. */
+body.mode-assistant #stage {
+  /* absolute relative to #main's padding box, which starts above #topbar -
+     top must clear it or the collapsed strip covers the real header buttons */
+  position: absolute; left: 0; right: 0; top: 42px; height: 40px; overflow: hidden;
+  z-index: 30; background: var(--bg1); border-bottom: 1px solid var(--line);
+  transition: height 0.15s ease;
+}
+body.mode-assistant.stage-peek #stage { height: calc(100% - 42px); overflow: visible; background: var(--bg0); }
 body.mode-assistant #tokMeter { display: none !important; }
-body.mode-assistant #rail { flex: 1; width: auto; min-width: 0; max-width: none; }
+body.mode-assistant #rail { flex: 1; width: auto; min-width: 0; max-width: none; margin-top: 40px; }
+#stageCloseBtn { display: none; }
+body.mode-assistant.stage-peek #stageCloseBtn { display: inline-flex; }
 /* reading column: comfortable line lengths on wide screens */
 body.mode-assistant .thread {
   max-width: 768px; margin: 0 auto; width: 100%;
