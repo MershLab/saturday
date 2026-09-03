@@ -975,7 +975,7 @@ def test_ui_slash_popup_and_settings_modal(ui_server):
         assert "/todo" in first or "/tools" in first
         page.keyboard.press("Escape")
 
-        page.click("#modelPill")
+        page.click("#modelChip")
         page.wait_for_selector("#modelMenu:not(.hidden)", timeout=5000)
         page.locator("#modelMenu button", has_text="All settings").click()
         page.wait_for_selector("#settingsModal:not(.hidden)", timeout=5000)
@@ -1277,7 +1277,7 @@ def test_ui_settings_panes_render_and_save(ui_server):
     panes keep their two columns, and the Advanced group opens + saves."""
     with sync_playwright() as pw:
         browser, ctx, page = _fresh_page(pw, ui_server)
-        page.click("#modelLabel")
+        page.click("#modelChipLabel")
         page.wait_for_timeout(200)
         page.click("text=All settings\u2026")
         page.wait_for_selector("#settingsModal:not(.hidden)", timeout=5000)
@@ -1350,7 +1350,7 @@ def test_ui_assistant_mode_flavor_and_toggle(ui_server):
         # THE POINT of assistant mode: the UI visibly simplifies - chat IS the app
         page.wait_for_function("() => document.body.classList.contains('mode-assistant')", timeout=5000)
         assert not page.locator("#stage").is_visible(), "technical stage must disappear"
-        assert not page.locator("#modelPill").is_visible(), "model pill is developer plumbing"
+        assert not page.locator("#modelChip").is_visible(), "model switch is developer plumbing"
         assert not page.locator("#tokMeter").is_visible(), "context meter is developer plumbing"
         hint = page.locator("#composerHint").inner_text()
         assert "background" in hint
@@ -2133,12 +2133,11 @@ def test_round5_dropdowns_anchor_to_their_trigger():
     assert "function openDropdown(" in js, "missing anchored-dropdown helper"
     # every dropdown opens through the helper with its real trigger
     assert "openDropdown(m, $(\"#kebabBtn\"))" in js
-    assert "openDropdown(m, $(\"#modelPill\"))" in js
+    assert "openDropdown(m, $(\"#modelChip\"))" in js
     assert "openDropdown(m, $(\"#themeBtn\"))" in js
-    # safety menu anchors to whichever control opened it (composer chip or badge)
-    assert "openSafetyMenu($(\"#safetyBadge\"))" in js
+    # safety menu anchors to the composer chip that opened it
     assert "openSafetyMenu($(\"#safetyChip\"))" in js
-    assert 'anchor || (chip && chip.offsetParent ? chip : $("#safetyBadge"))' in js
+    assert 'anchor || chip' in js
     # move-to-project opens under the kebab button that launched it
     assert 'openProjPick(state.sid, $("#kebabBtn"))' in js
     # helper positions relative to the trigger and flips/clamps to the viewport

@@ -2629,7 +2629,7 @@ function openModelMenu() {
   const more = el("button", "", "All settings\u2026");
   more.addEventListener("click", () => { closeMenus(); openSettings(); });
   m.appendChild(more);
-  openDropdown(m, $("#modelPill"));
+  openDropdown(m, $("#modelChip"));
 }
 
 function rememberModel(model) {
@@ -3306,12 +3306,9 @@ function renderHeaderPills() {
   const info = state.info;
   if (!info) return;
   const sessModel = state.sessionModels[state.sid];
-  $("#modelLabel").textContent = (info.provider || "") + " / " + (sessModel || info.model || "?");
-  if (sessModel) $("#modelPill").title = "Model for THIS chat: " + sessModel + " (global: " + info.model + ") — click to switch";
-  else $("#modelPill").title = "Switch model";
-  const sb = $("#safetyBadge");
-  sb.textContent = info.safety_mode;
-  sb.className = "pill safety-" + info.safety_mode;
+  $("#modelChipLabel").textContent = (info.provider || "") + " / " + (sessModel || info.model || "?");
+  if (sessModel) $("#modelChip").title = "Model for THIS chat: " + sessModel + " (global: " + info.model + ") — click to switch";
+  else $("#modelChip").title = "Switch model";
   const sc = $("#safetyChip");
   if (sc) {
     sc.firstChild.textContent = info.safety_mode;
@@ -5937,7 +5934,7 @@ function openSafetyMenu(anchor) {
     m.appendChild(b);
   }
   const chip = $("#safetyChip");
-  openDropdown(m, anchor || (chip && chip.offsetParent ? chip : $("#safetyBadge")), { align: "left" });
+  openDropdown(m, anchor || chip, { align: "left" });
 }
 
 /* ------------------------------------------------- prompt enhancer (Bolt) */
@@ -6207,10 +6204,6 @@ function bindEvents() {
   $("#modeBadge").addEventListener("click", () => openSettings());
   const pb = $("#planBadge");
   if (pb) pb.addEventListener("click", (e) => { e.stopPropagation(); togglePlanMode(); });
-  $("#safetyBadge").addEventListener("click", (e) => {
-    e.stopPropagation();
-    openSafetyMenu($("#safetyBadge")); // explicit menu, not blind cycling (misclick safety)
-  });
   $("#planChip").addEventListener("click", (e) => { e.stopPropagation(); togglePlanMode(); });
   $("#safetyChip").addEventListener("click", (e) => { e.stopPropagation(); openSafetyMenu($("#safetyChip")); });
   $("#sideSettings").addEventListener("click", openSettings);
@@ -6254,12 +6247,12 @@ function bindEvents() {
     else if (act === "shortcuts") shortcutsOpen();
     else if (act === "settings") openSettings();
   });
-  $("#modelPill").addEventListener("click", (e) => { e.stopPropagation(); openModelMenu(); });
+  $("#modelChip").addEventListener("click", (e) => { e.stopPropagation(); openModelMenu(); });
   document.addEventListener("click", (e) => {
     if (!e.target.closest("#kebabMenu") && !e.target.closest("#kebabBtn")) $("#kebabMenu").classList.add("hidden");
-    if (!e.target.closest("#modelMenu") && !e.target.closest("#modelPill")) $("#modelMenu").classList.add("hidden");
+    if (!e.target.closest("#modelMenu") && !e.target.closest("#modelChip")) $("#modelMenu").classList.add("hidden");
     if (!e.target.closest("#themeMenu") && !e.target.closest("#themeBtn")) $("#themeMenu").classList.add("hidden");
-    if (!e.target.closest("#safetyMenu") && !e.target.closest("#safetyChip") && !e.target.closest("#safetyBadge")) $("#safetyMenu").classList.add("hidden");
+    if (!e.target.closest("#safetyMenu") && !e.target.closest("#safetyChip")) $("#safetyMenu").classList.add("hidden");
     if (!e.target.closest("#projPickMenu") && !e.target.closest("#kebabMenu")) $("#projPickMenu").classList.add("hidden");
     if (!e.target.closest("#atPop") && !e.target.closest("#input")) closeAt();
   });

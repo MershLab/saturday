@@ -72,11 +72,6 @@
         <span id="connDot" class="conn-dot" title="connection"></span>
         <button id="modeBadge" class="pill mode-badge hidden" title="Personal assistant mode is on (click for settings)">assistant</button>
         <button id="planBadge" class="pill plan-badge hidden" title="Plan mode is on for this chat (click to toggle)">plan</button>
-        <button id="safetyBadge" class="pill safety-ask" title="Safety mode (click to cycle)">ask</button>
-        <button id="modelPill" class="pill model-pill" title="Switch model">
-          <span class="model-name" id="modelLabel">&hellip;</span>
-          <svg viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg>
-        </button>
         <button id="themeBtn" class="icon-btn" title="Toggle theme">
           <svg viewBox="0 0 24 24"><path d="M12 18a6 6 0 1 1 0-12c1 0 2 .25 2.85.7A7 7 0 1 0 12 18z"/></svg>
         </button>
@@ -138,6 +133,11 @@
             <div id="composerModes">
               <button id="planChip" class="mode-chip" title="Plan mode — read-only planning, approve before it acts" aria-label="plan mode">plan</button>
               <button id="safetyChip" class="mode-chip" title="Safety mode — click to pick explicitly" aria-label="safety mode">ask<svg viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg></button>
+              <span class="composer-modes-sep" aria-hidden="true"></span>
+              <button id="modelChip" class="mode-chip model-chip" title="Switch model">
+                <span class="model-name" id="modelChipLabel">&hellip;</span>
+                <svg viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg>
+              </button>
             </div>
             <textarea id="input" rows="1" placeholder="Message Saturday&hellip; ( / for commands )" spellcheck="false"></textarea>
             <div class="composer-actions">
