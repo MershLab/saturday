@@ -1400,7 +1400,7 @@ def test_invalid_persona_mode_ignored(tmp_path: Path):
     app = _make_app2(tmp_path)
     with _Server2(app) as srv:
         status, data = _req2(srv.base, "/api/config", "POST", {"persona_mode": "bogus"})
-        assert status == 200 and data["persona_mode"] == "agent"
+        assert status == 200 and data["persona_mode"] == "assistant"
 
 
 def test_cli_assistant_flag_sets_override():

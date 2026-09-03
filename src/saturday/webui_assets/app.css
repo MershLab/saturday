@@ -2325,6 +2325,12 @@ body.mode-assistant #composerModes { display: none; }
 .tree-head { display: flex; justify-content: space-between; align-items: center; padding: 4px 8px 6px; border-bottom: 1px solid var(--line); margin-bottom: 4px; }
 .tree-head .hint { font-size: 11px; opacity: .6; }
 
+.skills-pop { max-height: 320px; overflow-y: auto; }
+.skills-pop-row { padding: 6px 8px; border-radius: var(--r-sm); }
+.skills-pop-row:hover { background: var(--bg4); }
+.skills-pop-name { font-size: 12.5px; color: var(--accent-hi); }
+.skills-pop-desc { font-size: 11.5px; color: var(--dim); margin-top: 2px; line-height: 1.4; }
+
 .remote-url { margin: 6px 0; word-break: break-all; font-family: var(--mono); font-size: 12px; }
 .remote-url a { color: var(--accent-hi); }
 

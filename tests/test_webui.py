@@ -1181,8 +1181,11 @@ def ui_server(tmp_path_factory):
             # a local provider needs no key, so the onboarding dialog does not
             # open. It used to, and it takes focus, so every keystroke these
             # tests typed went into its API-key field and nothing was ever sent
+            # explicit "agent": this fixture drives the technical Workbench/
+            # Files/Memory/Pipelines surface throughout, which "assistant"
+            # (now the real default for a fresh config) hides
             cfg_overrides={"safety_mode": "off", "workspace_root": str(Path.cwd()),
-                           "provider": "ollama", "model": "test-model"},
+                           "provider": "ollama", "model": "test-model", "persona_mode": "agent"},
             store_root=scratch / "sessions",
             projects_store=ProjectStore(scratch / "projects.json"),
         )
@@ -1435,6 +1438,45 @@ def test_ui_assistant_mode_flavor_and_toggle(ui_server):
         names = page.evaluate(
             "async () => { const r = await fetch('/api/tools'); return (await r.json()); }"
         ) if False else None  # tools endpoint not exposed; verified via unit tests
+        browser.close()
+
+
+@pytest.mark.skipif(not HAS_PW, reason="playwright not installed")
+def test_ui_skills_popover_reachable_from_the_composer(ui_server):
+    """Installed skills at the same reach as the file browser - not just two
+    clicks deep in Settings - matters most in assistant mode, where the
+    technical Files/Memory/Pipelines tabs are hidden entirely."""
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        page = browser.new_page(viewport={"width": 1400, "height": 900})
+        errs: list[str] = []
+        page.on("pageerror", lambda e: errs.append(getattr(e, "stack", None) or str(e)))
+        page.goto(f"{ui_server}/?k={TOKEN}")
+        page.wait_for_selector("#input", state="visible", timeout=20000)
+
+        assert not page.locator("#skillsPop").is_visible()
+        page.click("#skillsBtn")
+        page.wait_for_selector("#skillsPop:not(.hidden)", timeout=5000)
+        page.wait_for_function(
+            "() => document.querySelector('#skillsPop').textContent.includes('installed')",
+            timeout=10000,
+        )
+        # this fixture's scratch CONFIG_DIR has none installed - real content
+        # is covered by the endpoint tests; this proves the wiring end to end
+        assert "No skills installed" in page.locator("#skillsPop").inner_text()
+
+        # clicking outside closes it, same as the other composer popovers
+        page.click("#input")
+        page.wait_for_selector("#skillsPop.hidden", state="attached", timeout=5000)
+
+        # "Manage..." routes into the real Settings > Skills pane, not a dead end
+        page.click("#skillsBtn")
+        page.wait_for_selector("#skillsPop:not(.hidden)", timeout=5000)
+        page.click("#skillsPop >> text=Manage")
+        page.wait_for_selector("#settingsModal:not(.hidden)", timeout=5000)
+        page.wait_for_selector('.set-pane[data-sec="skills"].on', timeout=5000)
+
+        assert not errs, errs
         browser.close()
 
 

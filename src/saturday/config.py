@@ -296,7 +296,12 @@ class AgentConfig:
     desktop_background_only: bool = False
     persona_extra: str = ""
     auth_scopes: dict[str, list[str]] = field(default_factory=dict)
-    persona_mode: str = "agent"
+    # 2026-09-03: default flipped to "assistant" (chat is the whole app,
+    # technical panels stay one gear-icon click away) - Saturday now targets
+    # non-technical users by default; "agent" is still there for anyone who
+    # wants the full Workbench/Files/Memory/Pipelines surface, just no longer
+    # what a fresh install lands on.
+    persona_mode: str = "assistant"
     destructive_guardrails: bool = True
     # Structural isolation flag (container/job-object executor): replaces
     # pattern-based friction with a real boundary. Hardline blocks, deny rules

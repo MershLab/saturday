@@ -5905,6 +5905,43 @@ async function toggleTree() {
   await treeRender();
 }
 
+/* --- installed skills, at the same reach as the file browser above ---- */
+
+function closeSkillsPop() { $("#skillsPop").classList.add("hidden"); }
+
+async function toggleSkillsPop() {
+  const pop = $("#skillsPop");
+  if (!pop.classList.contains("hidden")) { closeSkillsPop(); return; }
+  pop.classList.remove("hidden");
+  await skillsPopRender();
+}
+
+async function skillsPopRender() {
+  const pop = $("#skillsPop");
+  pop.replaceChildren(el("div", "hint", "Loading…"));
+  let data;
+  try { data = await api("/api/skills"); }
+  catch { pop.replaceChildren(el("div", "hint", "Could not load skills.")); return; }
+  const installed = data.installed || [];
+  pop.replaceChildren();
+  const head = el("div", "tree-head");
+  head.appendChild(el("span", "hint", installed.length + " installed"));
+  const manage = el("button", "btn-sub", "Manage…");
+  manage.addEventListener("click", () => { closeSkillsPop(); openSettings(); settingsShow("skills"); });
+  head.appendChild(manage);
+  pop.appendChild(head);
+  if (!installed.length) {
+    pop.appendChild(el("div", "hint", "No skills installed yet."));
+    return;
+  }
+  for (const s of installed) {
+    const row = el("div", "skills-pop-row");
+    row.appendChild(el("div", "skills-pop-name mono", s.name));
+    if (s.description) row.appendChild(el("div", "skills-pop-desc", s.description));
+    pop.appendChild(row);
+  }
+}
+
 function atPick(file) {
   const input = $("#input");
   const pos = input.selectionStart || 0;
@@ -6329,6 +6366,7 @@ function bindEvents() {
     if (!e.target.closest("#safetyMenu") && !e.target.closest("#safetyChip")) $("#safetyMenu").classList.add("hidden");
     if (!e.target.closest("#projPickMenu") && !e.target.closest("#kebabMenu")) $("#projPickMenu").classList.add("hidden");
     if (!e.target.closest("#atPop") && !e.target.closest("#input")) closeAt();
+    if (!e.target.closest("#skillsPop") && !e.target.closest("#skillsBtn")) closeSkillsPop();
   });
 
   $("#newProjBtn").addEventListener("click", () => openProjModal(null));
@@ -6564,6 +6602,10 @@ function bindEvents() {
   // anchored menus track their trigger at open time — dismiss instead of drifting (VS Code/ChatGPT behavior)
   window.addEventListener("resize", closeMenus);
   $("#transcript").addEventListener("scroll", closeMenus, { passive: true });
+  // neither depends on loaded state - wired here, not after init()'s awaits,
+  // so a click in the gap before /api/state resolves isn't silently dropped
+  $("#treeBtn").addEventListener("click", toggleTree);
+  $("#skillsBtn").addEventListener("click", (e) => { e.stopPropagation(); toggleSkillsPop(); });
 }
 function buildSuggestions(items) {
   const input = $("#input");
@@ -6688,7 +6730,6 @@ async function init() {
   updateTokMeter();
   loadCtx();
   wireAgentsUi();
-  $("#treeBtn").addEventListener("click", toggleTree);
   wireRemoteUi();
   // Workbench dashboard elapsed clock (only touches the DOM while a run is live)
   setInterval(() => {
