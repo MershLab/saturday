@@ -869,6 +869,66 @@ def test_ui_memory_graph_search_refits_the_view_to_the_matches(ui_server):
 
 
 @pytest.mark.skipif(not HAS_PW, reason="playwright not installed")
+def test_ui_memory_graph_settles_faster_for_large_graphs(ui_server):
+    """Measured live on a real ~3600-node workspace: settling took 10.3s of
+    visible node movement on top of the data load, 16s total end to end -
+    read by a real user as "this is getting loaded" and stuck. mgStep()'s
+    alpha decay now scales with node count above 800 nodes, so a big graph
+    needs proportionally fewer steps to look settled; small graphs (this
+    fixture's real one) are untouched by the scale factor."""
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        page = browser.new_page(viewport={"width": 1400, "height": 900})
+        errs: list[str] = []
+        page.on("pageerror", lambda e: errs.append(getattr(e, "stack", None) or str(e)))
+        page.goto(f"{ui_server}/?k={TOKEN}")
+        page.wait_for_selector("#input", state="visible", timeout=20000)
+
+        page.click('.stage-tab[data-tab="memory"]')
+        page.wait_for_function("() => window.df && window.df.mg && window.df.mg.loaded && window.df.mg.nodes.length > 3",
+                               timeout=60000)
+
+        result = page.evaluate("""() => {
+            const mg = window.df.mg;
+            const baseN = mg.nodes.length;
+            mg.alpha = 1;
+            window.df.mgStep();
+            const deltaSmall = 1 - mg.alpha;
+
+            // pad every parallel array up to 1600 nodes (above the 800
+            // threshold) by duplicating real node data - mgStep only reads
+            // shape and position, not content, so repeated real nodes are a
+            // valid, if redundant, graph
+            const target = 1600;
+            const grow = (arr, Ctor) => {
+                const out = new Ctor(target);
+                out.set(arr.subarray ? arr.subarray(0, baseN) : arr.slice(0, baseN));
+                return out;
+            };
+            const nodes = mg.nodes.slice();
+            while (nodes.length < target) nodes.push(nodes[nodes.length % baseN]);
+            mg.nodes = nodes;
+            mg.x = grow(mg.x, Float32Array); mg.y = grow(mg.y, Float32Array);
+            mg.vx = grow(mg.vx, Float32Array); mg.vy = grow(mg.vy, Float32Array);
+            mg.deg = grow(mg.deg, Float32Array); mg.fixed = grow(mg.fixed, Uint8Array);
+            mg.heat = grow(mg.heat, Float32Array); mg.attnKind = grow(mg.attnKind, Int8Array);
+
+            mg.alpha = 1;
+            window.df.mgStep();
+            const deltaBig = 1 - mg.alpha;
+            return { deltaSmall, deltaBig, baseN, target };
+        }""")
+        assert result["baseN"] < 800, "test needs the fixture's real graph under the scaling threshold"
+        expected_scale = result["target"] / 800
+        actual_scale = result["deltaBig"] / result["deltaSmall"]
+        assert abs(actual_scale - expected_scale) < 0.01, \
+            f"alpha decay should scale linearly with node count above 800: {result}"
+
+        assert not errs, errs
+        browser.close()
+
+
+@pytest.mark.skipif(not HAS_PW, reason="playwright not installed")
 def test_ui_memory_graph_survives_a_wake_before_it_has_loaded(ui_server):
     """Every parallel array is null until the first fetch lands.
 

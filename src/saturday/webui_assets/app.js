@@ -6856,6 +6856,7 @@ const mg = {
 window.df.mg = mg;
 window.df.mgSelect = (i) => { mg.sel = i; mgDetail(i); mgWake(); };
 window.df.mgFit = mgFit;
+window.df.mgStep = mgStep;
 
 function mgRGBA(kind, a) {
   const c = G_COLOR[kind] || G_COLOR.file;
@@ -7272,7 +7273,13 @@ function mgStep() {
     mg.x[i] += Math.max(-40, Math.min(40, mg.vx[i]));
     mg.y[i] += Math.max(-40, Math.min(40, mg.vy[i]));
   }
-  mg.alpha = Math.max(0, mg.alpha - 0.0035);
+  // a bigger graph needs fewer total steps to look settled - individual node
+  // movement is imperceptible once there are thousands of dots, but the
+  // per-step cost (quadtree rebuild + repulsion) is what was actually slow,
+  // so decaying faster cuts real settle time without touching that cost.
+  // Small graphs (<=800 nodes) are unaffected - this only speeds up big ones.
+  const decayScale = Math.max(1, order.length / 800);
+  mg.alpha = Math.max(0, mg.alpha - 0.0035 * decayScale);
 }
 
 /* --- render ----------------------------------------------------------- */
