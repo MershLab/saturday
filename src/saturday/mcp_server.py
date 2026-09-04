@@ -193,3 +193,144 @@ def serve_stdio(server: McpServer, stdin=None, stdout=None) -> int:
 def _write(out, payload: dict[str, Any]) -> None:
     out.write(json.dumps(payload) + "\n")
     out.flush()
+
+
+# -- what Saturday exposes --------------------------------------------------
+#
+# Two layers, selected by `expose`:
+#   "agent"  delegate a whole task to Saturday's loop (the default)
+#   "tools"  hand the caller Saturday's own tool registry, raw
+#   "all"    both
+#
+# `agent` is the default because raw passthrough puts `shell`, `write_file`
+# and `python` on the host in the hands of whatever spawned this process.
+# That is a legitimate thing to want, but not a thing to turn on silently.
+
+RUN_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "task": {"type": "string", "description": "what Saturday should do"},
+        "session": {"type": "string", "description": "resume/continue this session id"},
+        "max_steps": {"type": "integer", "description": "cap on agent steps for this run"},
+    },
+    "required": ["task"],
+}
+
+SESSIONS_SCHEMA = {
+    "type": "object",
+    "properties": {"limit": {"type": "integer", "description": "how many recent sessions (default 20)"}},
+}
+
+
+def _run_task(args: dict[str, Any], cfg_overrides: dict[str, Any] | None, read_only: bool) -> tuple[bool, str]:
+    task = str(args.get("task") or "").strip()
+    if not task:
+        return False, "a non-empty 'task' is required"
+    from saturday.agent.core import Agent
+    from saturday.config import AgentConfig
+
+    overrides = dict(cfg_overrides or {})
+    if args.get("max_steps") is not None:
+        overrides["max_steps"] = int(args["max_steps"])
+    if read_only:
+        # reuse plan mode rather than inventing a second read-only concept
+        overrides["plan_mode"] = True
+    session_id = str(args.get("session") or "") or None
+    seen: dict[str, str] = {}
+    agent = Agent(cfg=AgentConfig.load(overrides))
+    traj = agent.run(task, session_id=session_id, on_session_id=lambda sid: seen.update(session=sid))
+    sid = seen.get("session", session_id or "?")
+    status = f"[session {sid} · {len(traj.steps)} steps · stop={traj.stop_reason}]"
+    if traj.final_answer:
+        return True, f"{traj.final_answer}\n\n{status}"
+    return False, f"no answer produced\n\n{status}"
+
+
+def _list_sessions(args: dict[str, Any]) -> tuple[bool, str]:
+    from saturday.sessions import SessionStore
+
+    limit = int(args.get("limit") or 20)
+    rows = SessionStore().list_sessions(limit=limit)
+    if not rows:
+        return True, "no sessions yet"
+    return True, "\n".join(f"{r['id']}  {r.get('task', '')}" for r in rows)
+
+
+def agent_tools(cfg_overrides: dict[str, Any] | None = None, read_only: bool = False) -> list[ExposedTool]:
+    """Delegation surface: hand Saturday a task, get the answer back.
+
+    The agent is built inside the handler, not here, so `initialize` and
+    `tools/list` still work on a machine with no provider key configured.
+    A client that cannot even list tools looks broken; one that fails on
+    call with a config error is self explanatory.
+    """
+    return [
+        ExposedTool(
+            name="saturday_run",
+            description=(
+                "Delegate a task to the Saturday agent harness and return its final answer. "
+                "Runs a full tool-using agent loop (shell, files, web, computer use) in Saturday's workspace."
+                + (" Read-only: plan mode, no world mutation." if read_only else "")
+            ),
+            input_schema=RUN_SCHEMA,
+            handler=lambda args: _run_task(args, cfg_overrides, read_only),
+        ),
+        ExposedTool(
+            name="saturday_sessions",
+            description="List recent Saturday sessions (id and task), newest first.",
+            input_schema=SESSIONS_SCHEMA,
+            handler=_list_sessions,
+        ),
+    ]
+
+
+def registry_tools(cfg_overrides: dict[str, Any] | None = None, read_only: bool = False) -> list[ExposedTool]:
+    """Raw passthrough of Saturday's own tools.
+
+    `read_only` filters to `ToolRegistry.READ_ONLY_TOOLS`, the allowlist plan
+    mode already uses, so there is one vetted list instead of two that drift.
+    """
+    from saturday.config import AgentConfig
+    from saturday.tools import default_registry
+    from saturday.tools.base import ToolRegistry
+
+    try:
+        cfg = AgentConfig.load(cfg_overrides or {})
+    except ValueError:
+        # tool listing must survive an unconfigured provider; the tools
+        # themselves do not need one
+        cfg = None
+    reg = default_registry(cfg)
+    if read_only:
+        reg = reg.filtered(ToolRegistry.READ_ONLY_TOOLS)
+
+    def make(name: str):
+        def handler(args: dict[str, Any]) -> tuple[bool, str]:
+            result = reg.execute(f"mcp-{name}", name, args)
+            return result.ok, (result.output if result.ok else (result.error or result.output or "tool failed"))
+
+        return handler
+
+    out: list[ExposedTool] = []
+    for spec in reg.specs():
+        name = str(spec.get("name") or "")
+        if not name:
+            continue
+        out.append(ExposedTool(
+            name=name,
+            description=str(spec.get("description") or ""),
+            input_schema=spec.get("parameters") or {"type": "object", "properties": {}},
+            handler=make(name),
+        ))
+    return out
+
+
+def build_server(expose: str = "agent", read_only: bool = False, cfg_overrides: dict[str, Any] | None = None) -> McpServer:
+    tools: list[ExposedTool] = []
+    if expose in ("agent", "all"):
+        tools.extend(agent_tools(cfg_overrides, read_only))
+    if expose in ("tools", "all"):
+        tools.extend(registry_tools(cfg_overrides, read_only))
+    if not tools:
+        raise ValueError(f"unknown expose mode '{expose}' (want agent, tools or all)")
+    return McpServer(tools)

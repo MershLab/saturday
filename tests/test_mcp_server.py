@@ -151,3 +151,134 @@ def test_a_printing_tool_cannot_corrupt_the_protocol_stream(capsys):
     assert len(lines) == 1
     assert json.loads(lines[0])["result"]["content"][0]["text"] == "done"
     assert "corrupt" in capsys.readouterr().err
+
+
+# -- exposure layer ---------------------------------------------------------
+
+from saturday.mcp_server import build_server, registry_tools  # noqa: E402
+from saturday.tools.base import ToolRegistry  # noqa: E402
+
+
+class _StubTraj:
+    def __init__(self, answer="the answer", stop_reason="done"):
+        self.final_answer = answer
+        self.stop_reason = stop_reason
+        self.steps = [1, 2, 3]
+
+
+def _stub_agent(monkeypatch, traj=None, capture=None):
+    """Replace Agent + AgentConfig.load so a run needs no provider or network."""
+    import saturday.agent.core as core
+    import saturday.config as cfgmod
+
+    class StubAgent:
+        def __init__(self, cfg=None):
+            self.cfg = cfg
+
+        def run(self, task, session_id=None, on_session_id=None, **kw):
+            if capture is not None:
+                capture["task"] = task
+                capture["session_id"] = session_id
+            if on_session_id:
+                on_session_id("sess-123")
+            return traj or _StubTraj()
+
+    monkeypatch.setattr(core, "Agent", StubAgent)
+    monkeypatch.setattr(
+        cfgmod.AgentConfig,
+        "load",
+        classmethod(lambda cls, overrides=None: (capture.update(overrides=overrides or {}) if capture is not None else None) or object()),
+    )
+
+
+def test_agent_mode_is_the_default_and_does_not_expose_raw_shell():
+    names = [t["name"] for t in build_server().handle(_req(1, "tools/list"))["result"]["tools"]]
+    assert names == ["saturday_run", "saturday_sessions"]
+    assert "shell" not in names  # the whole point of the default
+
+
+def test_tools_mode_exposes_the_registry_and_all_mode_exposes_both():
+    tool_names = [t["name"] for t in build_server("tools").handle(_req(1, "tools/list"))["result"]["tools"]]
+    assert "shell" in tool_names and "read_file" in tool_names
+    assert "saturday_run" not in tool_names
+    all_names = [t["name"] for t in build_server("all").handle(_req(1, "tools/list"))["result"]["tools"]]
+    assert "saturday_run" in all_names and "shell" in all_names
+
+
+def test_read_only_passthrough_uses_the_existing_plan_mode_allowlist():
+    names = {t.name for t in registry_tools(read_only=True)}
+    assert names <= ToolRegistry.READ_ONLY_TOOLS
+    assert "read_file" in names
+    for mutating in ("shell", "write_file", "edit_file", "python"):
+        assert mutating not in names
+
+
+def test_registry_passthrough_actually_runs_a_tool(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "hello.txt").write_text("from disk", encoding="utf-8")
+    srv = build_server("tools")
+    resp = srv.handle(_req(1, "tools/call", {"name": "read_file", "arguments": {"path": "hello.txt"}}))
+    assert resp["result"]["isError"] is False
+    assert "from disk" in resp["result"]["content"][0]["text"]
+
+
+def test_unknown_expose_mode_is_rejected():
+    import pytest
+
+    with pytest.raises(ValueError):
+        build_server("everything")
+
+
+def test_saturday_run_returns_the_answer_with_a_status_footer(monkeypatch):
+    capture: dict = {}
+    _stub_agent(monkeypatch, capture=capture)
+    resp = build_server().handle(_req(1, "tools/call", {"name": "saturday_run", "arguments": {"task": "do it"}}))
+    text = resp["result"]["content"][0]["text"]
+    assert resp["result"]["isError"] is False
+    assert text.startswith("the answer")
+    assert "session sess-123" in text and "stop=done" in text
+    assert capture["task"] == "do it"
+
+
+def test_saturday_run_reports_a_run_that_produced_no_answer_as_an_error():
+    class _Empty(_StubTraj):
+        def __init__(self):
+            super().__init__(answer="", stop_reason="max_steps")
+
+    import pytest
+
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        _stub_agent(monkeypatch, traj=_Empty())
+        resp = build_server().handle(_req(1, "tools/call", {"name": "saturday_run", "arguments": {"task": "x"}}))
+        assert resp["result"]["isError"] is True
+        assert "stop=max_steps" in resp["result"]["content"][0]["text"]
+    finally:
+        monkeypatch.undo()
+
+
+def test_saturday_run_requires_a_non_empty_task():
+    resp = build_server().handle(_req(1, "tools/call", {"name": "saturday_run", "arguments": {"task": "   "}}))
+    assert resp["result"]["isError"] is True
+    assert "task" in resp["result"]["content"][0]["text"]
+
+
+def test_read_only_puts_the_delegated_run_in_plan_mode(monkeypatch):
+    capture: dict = {}
+    _stub_agent(monkeypatch, capture=capture)
+    srv = build_server(read_only=True)
+    srv.handle(_req(1, "tools/call", {"name": "saturday_run", "arguments": {"task": "look around"}}))
+    assert capture["overrides"]["plan_mode"] is True
+
+
+def test_max_steps_argument_reaches_the_config(monkeypatch):
+    capture: dict = {}
+    _stub_agent(monkeypatch, capture=capture)
+    build_server().handle(_req(1, "tools/call", {"name": "saturday_run", "arguments": {"task": "x", "max_steps": 4}}))
+    assert capture["overrides"]["max_steps"] == 4
+
+
+def test_saturday_sessions_reports_an_empty_store_without_failing():
+    resp = build_server().handle(_req(1, "tools/call", {"name": "saturday_sessions", "arguments": {}}))
+    assert resp["result"]["isError"] is False
+    assert "no sessions yet" in resp["result"]["content"][0]["text"]
