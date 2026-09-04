@@ -44,3 +44,4 @@ packaging/arch/src/
 
 # Local build toolchain cache (build scripts download these on demand)
 tools/nsis-*/
+uv.lock
