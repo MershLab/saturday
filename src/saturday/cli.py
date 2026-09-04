@@ -491,6 +491,24 @@ def cmd_mcp(args: argparse.Namespace) -> int:
     return rc
 
 
+def cmd_mcp_serve(args: argparse.Namespace) -> int:
+    """Run Saturday itself as an MCP server on stdio.
+
+    Nothing may be printed here: stdout is the JSON-RPC channel from the
+    first byte, and `serve_stdio` diverts everything else to stderr for
+    exactly that reason."""
+    from saturday.mcp_server import build_server, serve_stdio
+    from saturday.utils.env import load_env_file
+
+    load_env_file(getattr(args, "env", None))
+    server = build_server(
+        expose=getattr(args, "expose", "agent"),
+        read_only=bool(getattr(args, "read_only", False)),
+        cfg_overrides=_overrides(args),
+    )
+    return serve_stdio(server)
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     from saturday.utils.env import load_env_file
 
@@ -1628,6 +1646,22 @@ def build_parser() -> argparse.ArgumentParser:
     p_mcp.add_argument("--config", help="path to mcp.json")
     p_mcp.add_argument("--server", help="only this alias")
     p_mcp.set_defaults(fn=cmd_mcp)
+
+    p_mcps = sub.add_parser("mcp-serve", help="run Saturday itself as an MCP server on stdio")
+    common(p_mcps)
+    p_mcps.add_argument(
+        "--expose",
+        choices=["agent", "tools", "all"],
+        default="agent",
+        help="agent: delegate whole tasks via saturday_run (default); tools: expose Saturday's own tools raw; all: both",
+    )
+    p_mcps.add_argument(
+        "--read-only",
+        dest="read_only",
+        action="store_true",
+        help="no world mutation: delegated runs use plan mode, raw passthrough is limited to read-only tools",
+    )
+    p_mcps.set_defaults(fn=cmd_mcp_serve)
 
     p_chat = sub.add_parser("chat", help="interactive REPL session")
     common(p_chat)

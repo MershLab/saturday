@@ -282,3 +282,30 @@ def test_saturday_sessions_reports_an_empty_store_without_failing():
     resp = build_server().handle(_req(1, "tools/call", {"name": "saturday_sessions", "arguments": {}}))
     assert resp["result"]["isError"] is False
     assert "no sessions yet" in resp["result"]["content"][0]["text"]
+
+
+def test_the_client_and_server_halves_actually_talk_to_each_other(tmp_path, monkeypatch):
+    """End to end over a real subprocess, using Saturday's own MCP client.
+
+    Everything above tests the halves in isolation; only this proves the
+    framing, handshake and stdout guard survive a real pipe."""
+    import sys
+
+    from saturday.mcp_client import McpStdioClient
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "note.txt").write_text("round trip", encoding="utf-8")
+    client = McpStdioClient(
+        command=[sys.executable, "-m", "saturday", "mcp-serve", "--expose", "all", "--read-only"],
+        call_timeout=60,
+    )
+    try:
+        info = client.start()
+        assert info.get("name") == "saturday"
+        names = {t.name for t in client.list_tools()}
+        assert "saturday_run" in names and "read_file" in names
+        assert "shell" not in names and "ask_user" not in names
+        ok, text = client.call_tool("read_file", {"path": "note.txt"})
+        assert ok and "round trip" in text
+    finally:
+        client.close()

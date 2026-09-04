@@ -303,6 +303,11 @@ def registry_tools(cfg_overrides: dict[str, Any] | None = None, read_only: bool 
     reg = default_registry(cfg)
     if read_only:
         reg = reg.filtered(ToolRegistry.READ_ONLY_TOOLS)
+    # ask_user has no surface to ask through here, so it would always answer
+    # "no user surface available" - a tool slot spent on a reply that can read
+    # to a model as though the human was consulted. The calling client has its
+    # own user; let it ask them.
+    reg = reg.excluding({"ask_user"})
 
     def make(name: str):
         def handler(args: dict[str, Any]) -> tuple[bool, str]:
