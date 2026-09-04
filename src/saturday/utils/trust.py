@@ -17,6 +17,13 @@ from pathlib import Path
 
 TRUST_ENV = "SATURDAY_TRUST_ALL_PROJECTS"
 
+# Decisions already made in THIS process, keyed as in _key(). A deny is not
+# persisted as final (see ensure_trusted), so without this a single command
+# that loads project config twice - main()'s guard and then the subcommand
+# handler - prompts twice, and the second prompt silently eats whatever the
+# user types next as its y/N answer.
+_session_decisions: dict[str, bool] = {}
+
 
 def _store_path() -> Path:
     from saturday.config import CONFIG_DIR
@@ -78,6 +85,8 @@ def ensure_trusted(root: Path | str, what: str, detail: list[str] | None = None)
     if override in ("1", "true", "yes", "on"):
         return True
     k = _key(Path(root))
+    if k in _session_decisions:
+        return _session_decisions[k]
     store = _read_store()
     approved = set(store.get("approved") or [])
     denied = set(store.get("denied") or [])
@@ -106,11 +115,13 @@ def ensure_trusted(root: Path | str, what: str, detail: list[str] | None = None)
         # Drop any stale deny entry so the store reflects the flip to trusted.
         store["denied"] = sorted(denied - {k})
         _write_store(store)
+        _session_decisions[k] = True
         return True
     denied.add(k)
     store.setdefault("approved", [])
     store["denied"] = sorted(denied)
     _write_store(store)
+    _session_decisions[k] = False
     print(f"[saturday] not trusted; {what} will stay ignored (re-run to change your mind)", file=sys.stderr)
     return False
 
@@ -188,3 +199,4 @@ def record_decision(root: Path | str, *, trusted: bool) -> None:
     store["approved"] = sorted(approved)
     store["denied"] = sorted(denied)
     _write_store(store)
+    _session_decisions[k] = trusted

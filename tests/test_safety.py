@@ -1361,6 +1361,8 @@ def trust_home(tmp_path, monkeypatch):
     home = tmp_path / "dfhome"
     monkeypatch.setattr("saturday.config.CONFIG_DIR", home)
     monkeypatch.delenv("SATURDAY_TRUST_ALL_PROJECTS", raising=False)
+    # the per-process decision cache is module state: give each test its own
+    monkeypatch.setattr("saturday.utils.trust._session_decisions", {})
     return home
 
 
@@ -1398,6 +1400,40 @@ def test_trust_prompt_approve_then_remember(trust_home, monkeypatch):
     # remembered approval: no prompt even non-interactively
     monkeypatch.setattr(sys, "stdin", io.StringIO(""))
     assert trust.ensure_trusted(Path("/proj/a"), what="cfg") is True
+
+
+def test_trust_denial_does_not_reprompt_within_one_process(trust_home, monkeypatch):
+    """A declined project asks once per process, not once per caller.
+
+    `load_env_file()` runs twice in a single command (main()'s guard, then the
+    subcommand handler). Because a deny is deliberately not permanent, the
+    second call used to prompt again - and that second prompt consumed the
+    user's next keystroke as its y/N answer, silently discarding their first
+    real command."""
+    import saturday.utils.trust as trust
+
+    prompts = []
+
+    class CountingIn(io.StringIO):
+        def isatty(self):
+            return True
+
+        def readline(self, *a):
+            prompts.append(1)
+            return "n\n"
+
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(sys, "stdin", CountingIn())
+    monkeypatch.setattr("builtins.input", lambda *a: (prompts.append(1), "n")[1])
+
+    assert trust.ensure_trusted(Path("/proj/denied"), what="cfg") is False
+    assert trust.ensure_trusted(Path("/proj/denied"), what="cfg") is False
+    assert len(prompts) == 1, f"expected one prompt per process, got {len(prompts)}"
+
+    # a fresh process still gets to change its mind
+    monkeypatch.setattr("saturday.utils.trust._session_decisions", {})
+    monkeypatch.setattr("builtins.input", lambda *a: "y")
+    assert trust.ensure_trusted(Path("/proj/denied"), what="cfg") is True
 
 
 def test_trust_prompt_deny_persists(trust_home, monkeypatch):
