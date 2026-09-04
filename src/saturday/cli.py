@@ -12,6 +12,13 @@ from pathlib import Path
 
 from saturday.config import PROVIDERS, AgentConfig, save_config
 
+# One wording for a safety-relevant flag: it read three different ways across
+# run/chat/app, so what it actually waives depended on where you read it.
+YOLO_HELP = (
+    "fully autonomous: no approval prompts (dangerous patterns, guardrails and "
+    "file-edit gates are auto-approved; hardline and deny rules still block)"
+)
+
 MAX_BODY = 32 * 1024 * 1024  # parity with webui.MAX_BODY
 
 BANNER = r"""
@@ -25,8 +32,8 @@ agentic harness :: deepseek x hermes lineage
 """
 
 
-def _print(*args: str) -> None:
-    print(*args, flush=True)
+def _print(*args: str, err: bool = False) -> None:
+    print(*args, flush=True, file=sys.stderr if err else sys.stdout)
 
 
 def _is_windows() -> bool:
@@ -444,13 +451,31 @@ def cmd_config(args: argparse.Namespace) -> int:
         }, indent=2))
         return 0
     if args.set:
+        import dataclasses
+
+        known = {f.name for f in dataclasses.fields(AgentConfig)}
         partial = {}
         for pair in args.set:
-            key, _, value = pair.partition("=")
-            if key in ("temperature",):
-                value = float(value)
-            elif key in ("max_steps", "max_tokens"):
-                value = int(value)
+            key, sep, value = pair.partition("=")
+            key = key.strip()
+            # Without these checks `config --set foobar` reported success and
+            # wrote a junk key into config.json.
+            if not sep:
+                _print(f"error: expected KEY=VALUE, got {pair!r}", err=True)
+                return 2
+            if key not in known:
+                near = sorted(k for k in known if key and (key in k or k.startswith(key[:3])))
+                hint = f"; did you mean {', '.join(near[:3])}?" if near else ""
+                _print(f"error: unknown setting {key!r}{hint}", err=True)
+                return 2
+            try:
+                if key in ("temperature", "top_p"):
+                    value = float(value)
+                elif key in ("max_steps", "max_tokens", "max_run_tokens"):
+                    value = int(value)
+            except ValueError:
+                _print(f"error: {key} expects a number, got {value!r}", err=True)
+                return 2
             partial[key] = value
         save_config(partial)
         _print(f"saved: {partial}")
@@ -965,11 +990,29 @@ def cmd_sessions(args: argparse.Namespace) -> int:
 
     pause_id = getattr(args, "pause", None)
     unpause_id = getattr(args, "unpause", None)
+    # pause/unpause used to report success for any string at all, so a typo
+    # looked identical to a real pause
+    def _known_session(sid: str) -> bool:
+        # Real either way: actively running (a .run file), or a stored
+        # session. Only an id matching neither is a typo.
+        try:
+            if RunState(get_config_dir() / "sessions", sid).path.is_file():
+                return True
+            return SessionStore().read_meta(sid) is not None
+        except OSError:
+            return True  # a storage read failure must not block a pause
+
     if pause_id:
+        if not _known_session(pause_id):
+            _print(f"error: no such session {pause_id!r} (see `saturday sessions`)", err=True)
+            return 2
         RunState(get_config_dir() / "sessions", pause_id).request_pause()
         _print(f"pause requested for {pause_id} (takes effect at the next step boundary)")
         return 0
     if unpause_id:
+        if not _known_session(unpause_id):
+            _print(f"error: no such session {unpause_id!r} (see `saturday sessions`)", err=True)
+            return 2
         RunState(get_config_dir() / "sessions", unpause_id).clear_pause()
         _print(f"resumed {unpause_id}")
         return 0
@@ -1606,9 +1649,26 @@ def _overrides(args: argparse.Namespace, ci: bool = False) -> dict:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="saturday", description="Saturday agentic harness")
+    # argparse lists subcommands in registration order, which put `chat`,
+    # `run` and `tui` among infrastructure like `mcp-serve`. The epilog gives
+    # the 27 commands a task-shaped map to scan first.
+    parser = argparse.ArgumentParser(
+        prog="saturday",
+        description="Saturday agentic harness",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""commands by task:
+
+  start here     chat, run, tui, app, setup, init, doctor
+  sessions       sessions, export, audit, memory
+  automation     schedule, pipeline, agents, remote, serve, gateway
+  capabilities   tools, skill, codemem, mcp, mcp-serve, models
+  maintenance    config, update, verify, eval
+
+run `saturday <command> --help` for a command's own options.
+""",
+    )
     parser.add_argument("--version", action="store_true")
-    sub = parser.add_subparsers(dest="command")
+    sub = parser.add_subparsers(dest="command", metavar="<command>")
 
     def common(p: argparse.ArgumentParser) -> argparse.ArgumentParser:
         p.add_argument("--provider", choices=sorted(PROVIDERS), help="LLM provider")
@@ -1636,7 +1696,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--detach", action="store_true", help="run in a detached background process; returns immediately (log under .saturday/bg/)")
     p_run.add_argument("--background", action="store_true", help="background-only desktop mode: blocks pointer/keyboard/focus, forces non-intrusive UI Automation (pairs well with --detach)")
     p_run.add_argument("--image", action="append", default=None, dest="images", metavar="PATH", help="attach image (repeatable; vision models)")
-    p_run.add_argument("--yolo", action="store_true", help="fully autonomous: NO approval prompts (dangerous patterns, guardrails and file-edit gates all auto-approved; hardline + deny rules still block)")
+    p_run.add_argument("--yolo", action="store_true", help=YOLO_HELP)
     p_run.add_argument("--json-out", dest="json_out", help="save trajectory JSON")
     p_run.add_argument("-q", "--quiet", action="store_true", help="only print final answer")
     p_run.add_argument("task", help="task description")
@@ -1669,7 +1729,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_chat.add_argument("--fallback-models", dest="fallback_models", help="comma-separated models to fall through to if the primary model errors or is rate-limited")
     p_chat.add_argument("--memory-nudge-interval", type=int, dest="memory_nudge_interval", help="re-surface the memory-persistence reminder every N steps (0/unset = off)")
     p_chat.add_argument("--resume", metavar="SESSION_ID", help="continue a saved session")
-    p_chat.add_argument("--yolo", action="store_true", help="fully autonomous: no approval prompts this session (/yolo toggles)")
+    p_chat.add_argument("--yolo", action="store_true", help=YOLO_HELP + " (/yolo toggles)")
     p_chat.set_defaults(fn=cmd_chat)
 
     p_models = sub.add_parser("models", help="list models reachable with your configured keys")
@@ -1733,7 +1793,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_app.add_argument("--height", type=int, default=840, help="app window height")
     p_app.add_argument("--token", help="fixed access token (default: random per launch)")
     p_app.add_argument("--no-token", action="store_true", help="disable local access token")
-    p_app.add_argument("--yolo", action="store_true", help="start in fully-autonomous mode (no approval prompts; toggleable via the safety badge)")
+    p_app.add_argument("--yolo", action="store_true", help=YOLO_HELP + " (toggle via the safety badge)")
     p_app.set_defaults(fn=cmd_app)
 
     p_doc = sub.add_parser("doctor", help="preflight checks: config, keys, endpoint, workspace")

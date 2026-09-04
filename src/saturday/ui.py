@@ -13,6 +13,10 @@ def enable_ansi() -> None:
 
 
 def _color_ok() -> bool:
+    # NO_COLOR is the cross-tool convention: any non-empty value disables
+    # colour, regardless of whether stdout is a terminal.
+    if os.environ.get("NO_COLOR"):
+        return False
     return bool(sys.stdout.isatty())
 
 

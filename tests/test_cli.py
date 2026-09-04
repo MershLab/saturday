@@ -1955,3 +1955,93 @@ def test_add_free_preserves_existing_entries(tmp_path, monkeypatch):
     cli._add_free_to_agents({"openrouter": ["a/b:free"]})
     written = json.loads((tmp_path / "agents.json").read_text())
     assert "mine" in written and "free-a-b" in written
+
+
+# --- CLI input validation (design audit P1) --------------------------------
+# `config --set foobar` and `sessions --pause <bogus>` both reported success
+# and exited 0; the first silently wrote a junk key into config.json.
+
+def test_config_set_rejects_missing_equals(capsys):
+    from saturday import cli
+
+    from saturday.config import get_config_file
+
+    rc = cli.cmd_config(Namespace(set=["foobar"], show=False))
+    assert rc == 2
+    assert "expected KEY=VALUE" in capsys.readouterr().err
+    assert not get_config_file().exists()
+
+
+def test_config_set_rejects_unknown_key_with_hint(capsys):
+    from saturday import cli
+
+    rc = cli.cmd_config(Namespace(set=["temperatur=0.5"], show=False))
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "unknown setting" in err and "temperature" in err
+
+
+def test_config_set_rejects_non_numeric_value(capsys):
+    from saturday import cli
+
+    rc = cli.cmd_config(Namespace(set=["temperature=abc"], show=False))
+    assert rc == 2
+    assert "expects a number" in capsys.readouterr().err
+
+
+def test_config_set_accepts_a_real_setting(monkeypatch, capsys):
+    """Validation must let a good pair through, coerced to its real type.
+
+    Asserts on what reaches save_config rather than on a file: this module
+    already stubs and redirects config persistence in autouse fixtures."""
+    from saturday import cli
+
+    seen = {}
+    monkeypatch.setattr(cli, "save_config", lambda partial: seen.update(partial))
+    assert cli.cmd_config(Namespace(set=["temperature=0.4"], show=False)) == 0
+    assert seen == {"temperature": 0.4}
+    assert isinstance(seen["temperature"], float)
+    assert "saved" in capsys.readouterr().out
+
+
+def test_sessions_pause_rejects_unknown_id(monkeypatch, capsys):
+    from saturday import cli
+
+    monkeypatch.setattr(SessionStore, "read_meta", lambda self, sid: None)
+    rc = cli.cmd_sessions(Namespace(pause="nope", unpause=None, search=None))
+    assert rc == 2
+    assert "no such session" in capsys.readouterr().err
+
+
+def test_no_color_env_disables_ansi(monkeypatch):
+    from saturday import ui
+
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True, raising=False)
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    assert "\x1b[" in ui.paint("hi", "cyan")
+    monkeypatch.setenv("NO_COLOR", "1")
+    assert ui.paint("hi", "cyan") == "hi"
+
+
+def test_help_epilog_lists_every_registered_command():
+    """The grouped command map in --help must not drift from reality.
+
+    It is hand written, so a new subcommand would otherwise be silently
+    missing from the only task-shaped view of the CLI."""
+    from saturday import cli
+
+    parser = cli.build_parser()
+    registered = set()
+    for action in parser._actions:
+        if action.dest == "command" and getattr(action, "choices", None):
+            registered = set(action.choices)
+    assert registered, "no subcommands found on the parser"
+
+    listed: set[str] = set()
+    for line in (parser.epilog or "").splitlines():
+        m = re.match(r"\s{2,}\S[\w ]*\s{2,}(.+)$", line)
+        if m and "," in m.group(1):
+            listed |= {x.strip() for x in m.group(1).split(",")}
+
+    assert registered - listed == set(), f"missing from --help epilog: {sorted(registered - listed)}"
+    assert listed - registered == set(), f"listed but not registered: {sorted(listed - registered)}"
