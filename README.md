@@ -301,6 +301,46 @@ saturday mcp            # handshake + list tools per server
 saturday run "..."      # tools appear automatically; collisions alias as <server>_<tool>
 ```
 
+### ...and Saturday is an MCP server too
+
+`saturday mcp-serve` turns the harness around: any MCP-speaking client
+(Claude Code, Cursor, Codex, an editor with an MCP panel) can delegate work
+**into** Saturday. Same protocol version as the client half, stdio, zero deps.
+
+```json
+{
+  "mcpServers": {
+    "saturday": {"command": "saturday", "args": ["mcp-serve"]}
+  }
+}
+```
+
+The client then gets:
+
+| Tool | What it does |
+|---|---|
+| `saturday_run` | Hands a whole task to Saturday's agent loop and returns the final answer, with the session id so you can continue it |
+| `saturday_sessions` | Lists recent Saturday sessions |
+
+Three exposure modes:
+
+```sh
+saturday mcp-serve                       # agent (default): saturday_run + saturday_sessions
+saturday mcp-serve --expose tools        # Saturday's own tools, raw (shell, files, web, ...)
+saturday mcp-serve --expose all          # both
+saturday mcp-serve --expose all --read-only   # plan mode + read-only tools only
+```
+
+`agent` is the default on purpose: `--expose tools` hands the calling client
+`shell`, `write_file` and `python` on this machine. That's a legitimate thing
+to want — it's just not something to switch on without saying so. `--read-only`
+puts delegated runs in plan mode and narrows raw passthrough to the same
+read-only allowlist plan mode uses.
+
+Everything Saturday would normally print goes to **stderr** while serving
+(your client shows it in the server's log pane): on a stdio MCP server stdout
+*is* the protocol, and one stray line of output corrupts the stream.
+
 ## Durability
 
 Every agent step snapshots the conversation atomically to

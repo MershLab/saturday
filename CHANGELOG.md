@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### Added
+- **MCP server mode (`saturday mcp-serve`)**: Saturday now speaks the other half
+  of the protocol it already consumed. Any MCP-speaking client (Claude Code,
+  Cursor, Codex, an editor with an MCP panel) can spawn Saturday over stdio and
+  delegate work in. `--expose agent` (default) offers `saturday_run`, which hands
+  a whole task to the agent loop and returns the answer plus the session id, and
+  `saturday_sessions`; `--expose tools` hands over Saturday's own registry raw;
+  `--expose all` does both. `--read-only` puts delegated runs in plan mode and
+  narrows raw passthrough to the allowlist plan mode already uses, rather than
+  inventing a second read-only concept that would drift from it.
+
+  The default is `agent` deliberately: raw passthrough puts `shell`, `write_file`
+  and `python` on the host in the hands of whatever spawned the process, which is
+  a reasonable thing to want and an unreasonable thing to enable silently.
+  `ask_user` is dropped from passthrough, since with no surface to ask through it
+  would answer that no user is available, which can read to a model as though the
+  human was consulted.
+
+  On a stdio MCP server stdout *is* the protocol channel, so `sys.stdout` is
+  rebound to stderr while serving; Saturday's tools and plugins all assume a CLI
+  and print freely, and one stray line corrupts the frame stream into an
+  unexplained client-side parse error. Protocol version is shared with the client
+  half so the two cannot drift.
+
 ## 0.9.0 — launch hardening, competitive-parity UI, test suite consolidation
 
 ### Fixed
