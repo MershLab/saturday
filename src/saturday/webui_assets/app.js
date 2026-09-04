@@ -266,7 +266,7 @@ function stageShow(tab, auto) {
   if (!auto) stage.manual = true;
   // an explicit tab click in assistant mode peeks the stage open as an
   // overlay - collapses back via stageCloseBtn, never touches persona_mode
-  if (!auto && isAssistant()) document.body.classList.add("stage-peek");
+  if (!auto && stageCompact()) document.body.classList.add("stage-peek");
   stage.tab = tab;
   for (const [k, elp] of Object.entries(stagePanes)) elp.classList.toggle("on", k === tab);
   document.querySelectorAll(".stage-tab").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
@@ -897,6 +897,10 @@ function glyph(name) { return GLYPHS[name] || (name ? name.slice(0, 2) : "?"); }
 /* Assistant mode: full capability underneath, plain-language surface.
    Tool heads show what it's DOING, not which tool does it. */
 function isAssistant() { return !!(state.info && state.info.persona_mode === "assistant"); }
+// the stage collapses to a pinned strip in two situations: assistant mode by
+// design, and narrow viewports by necessity - both peek open as an overlay
+function stageNarrow() { return window.matchMedia("(max-width: 1080px)").matches; }
+function stageCompact() { return isAssistant() || stageNarrow(); }
 const FRIENDLY_VERBS = {
   shell: "running a command",
   python: "working out the logic",
@@ -6322,10 +6326,10 @@ function bindEvents() {
   $("#sendBtn").addEventListener("click", () => (state.busy ? stopRun() : send()));
   $("#newChatBtn").addEventListener("click", newChat);
   $("#sbToggle").addEventListener("click", toggleSidebar);
-  // the collapsed-sidebar scrim is clickable: tapping outside is the standard
+  // the scrim only exists while the drawer is open: tapping it is the standard
   // mobile dismiss gesture, not just a visual dim layer
   $("#sbScrim").addEventListener("click", () => {
-    if ($("#sidebar").classList.contains("collapsed")) toggleSidebar();
+    if (!$("#sidebar").classList.contains("collapsed")) toggleSidebar();
   });
   $("#settingsClose").addEventListener("click", closeSettings);
   $("#settingsModal").addEventListener("mousedown", (e) => { if (e.target === $("#settingsModal")) closeSettings(); });
@@ -6541,6 +6545,11 @@ function bindEvents() {
     document.body.classList.remove("stage-peek");
     stage.manual = false;
   });
+  // widening past the breakpoint returns the stage to its normal docked
+  // layout, so a peek left open on a phone does not persist on a desktop
+  window.matchMedia("(max-width: 1080px)").addEventListener("change", (e) => {
+    if (!e.matches && !isAssistant()) document.body.classList.remove("stage-peek");
+  });
   $("#fileInput").addEventListener("change", (e) => { addImages([...e.target.files]); e.target.value = ""; });
   document.addEventListener("paste", (e) => {
     const files = [...(e.clipboardData?.items || [])].filter((i) => i.kind === "file").map((i) => i.getAsFile()).filter(Boolean);
@@ -6682,7 +6691,7 @@ function applyModeFlavor() {
   // visible simplification, not just relabeling: assistant mode drops the
   // whole technical stage + developer pills; the chat becomes the app
   document.body.classList.toggle("mode-assistant", assistant);
-  if (!assistant) document.body.classList.remove("stage-peek");
+  if (!assistant && !stageNarrow()) document.body.classList.remove("stage-peek");
   const tag = document.querySelector("#emptyState .tagline");
   if (tag) {
     tag.textContent = assistant

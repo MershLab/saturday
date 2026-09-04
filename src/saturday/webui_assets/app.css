@@ -775,8 +775,25 @@ kbd {
 #sbScrim { display: none; }
 
 @media (max-width: 1080px) {
-  #stage { display: none; }
-  #rail { flex: 1; width: auto; min-width: 0; }
+  /* narrow viewports get the same pinned-strip + peek affordance assistant
+     mode uses, for every persona. Hiding the stage outright stranded 8 of the
+     9 surfaces (Activity/Changes/Plan/Preview/Files/Memory/Pipelines/Runs)
+     with no fallback, which matters because `saturday remote` puts this UI on
+     a phone. */
+  #stage {
+    position: absolute; left: 0; right: 0; top: 42px; height: 40px; overflow: hidden;
+    /* 4 keeps the stage above #rail (auto) but below #topbar's z-index:5
+       stacking context, whose children include the header dropdowns */
+    z-index: 4; background: var(--bg1); border-bottom: 1px solid var(--line);
+    transition: height 0.15s ease;
+  }
+  body.stage-peek #stage { height: calc(100% - 42px); overflow: visible; background: var(--bg0); }
+  body.stage-peek #stageCloseBtn { display: inline-flex; }
+  /* nine tabs do not fit a phone: let the strip scroll rather than clip */
+  #stageTabs { overflow-x: auto; scrollbar-width: none; }
+  #stageTabs::-webkit-scrollbar { display: none; }
+  .stage-tab { flex: 0 0 auto; }
+  #rail { flex: 1; width: auto; min-width: 0; max-width: none; margin-top: 40px; }
 }
 
 /* ------------------------------------------------------------- assistant UI
@@ -789,7 +806,9 @@ body.mode-assistant #stage {
   /* absolute relative to #main's padding box, which starts above #topbar -
      top must clear it or the collapsed strip covers the real header buttons */
   position: absolute; left: 0; right: 0; top: 42px; height: 40px; overflow: hidden;
-  z-index: 30; background: var(--bg1); border-bottom: 1px solid var(--line);
+  /* below #topbar's z-index:5 stacking context: the header dropdowns are its
+     children, so a stage above it hid and swallowed their first row */
+  z-index: 4; background: var(--bg1); border-bottom: 1px solid var(--line);
   transition: height 0.15s ease;
 }
 body.mode-assistant.stage-peek #stage { height: calc(100% - 42px); overflow: visible; background: var(--bg0); }
@@ -810,7 +829,11 @@ body.mode-assistant #emptyState { max-width: 768px; margin: 0 auto; width: 100%;
 body.mode-assistant .thread { padding-top: 14px; }
 @media (max-width: 900px) {
   #sidebar { position: fixed; z-index: 40; top: 0; bottom: 0; left: 0; box-shadow: var(--shadow-pop); }
-  #sidebar.collapsed ~ #sbScrim { display: block; position: fixed; inset: 0; z-index: 35; background: rgba(0, 0, 0, 0.5); }
+  /* the scrim belongs to the OPEN drawer: it dims the chat behind it and is
+     the tap target that closes it. Keyed off .collapsed it did the reverse -
+     covering the viewport while the sidebar was hidden, swallowing every tap
+     including the one on the toggle that would have opened it. */
+  #sidebar:not(.collapsed) ~ #sbScrim { display: block; position: fixed; inset: 0; z-index: 35; background: rgba(0, 0, 0, 0.5); }
 }
 
 /* ------------------------------------------------------------------ modal */
@@ -1057,11 +1080,11 @@ details.adv > summary {
 }
 details.adv > summary::-webkit-details-marker { margin-right: 4px; }
 .hide { display: none !important; }
-.plan-badge:hover { background: var(--accent-soft, rgba(232,112,74,.12)); }
+.plan-badge:hover { background: var(--accent-soft); }
 .rule-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 6px; border: 1px solid var(--line, #2a2a30); margin-bottom: 4px; }
 .rule-row code { font-size: 12px; overflow-wrap: anywhere; }
 .rule-x { background: none; border: none; color: var(--dim, #888); cursor: pointer; font-size: 14px; padding: 0 4px; }
-.rule-x:hover { color: var(--bad, #e5534b); }
+.rule-x:hover { color: var(--err); }
 .mono-area { width: 100%; font-family: var(--mono, monospace); font-size: 12px; padding: 8px; resize: vertical; }
 .toggle input { accent-color: var(--accent); }
 .mcp-list { display: flex; flex-direction: column; gap: 6px; }
@@ -2285,18 +2308,18 @@ body.mode-assistant #composerModes { display: none; }
 
 /* ---- trust modal -------------------------------------------------- */
 .trust-card { width: min(540px, 94vw); }
-.trust-head { gap: 10px; justify-content: flex-start; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+.trust-head { gap: 10px; justify-content: flex-start; padding-bottom: 12px; border-bottom: 1px solid var(--line2); }
 .trust-head h2 { font-size: 13px; }
 .trust-icon { width: 22px; height: 22px; flex-shrink: 0; fill: var(--accent); }
 .trust-body { gap: 10px; max-height: 45vh; overflow-y: auto; }
-.trust-workspace { font-size: 12px; word-break: break-all; color: var(--fg); margin: 0; }
+.trust-workspace { font-size: 12px; word-break: break-all; color: var(--text); margin: 0; }
 .trust-desc { font-size: 12px; color: var(--dim); margin: 0; line-height: 1.55; }
 .trust-items { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
-.trust-item { display: flex; flex-direction: column; gap: 3px; background: var(--bg2); border: 1px solid var(--border); border-radius: 5px; padding: 8px 10px; }
+.trust-item { display: flex; flex-direction: column; gap: 3px; background: var(--bg2); border: 1px solid var(--line2); border-radius: 5px; padding: 8px 10px; }
 .trust-item-kind { font-family: var(--mono); font-size: 11px; font-weight: 600; color: var(--accent); }
 .trust-item-path { font-size: 11px; color: var(--dim); word-break: break-all; }
 .trust-detail { margin: 4px 0 0; padding-left: 14px; font-family: var(--mono); font-size: 11px; color: var(--dim); display: flex; flex-direction: column; gap: 2px; }
-.trust-foot { flex-direction: column; align-items: stretch; gap: 10px; padding-top: 12px; border-top: 1px solid var(--border); }
+.trust-foot { flex-direction: column; align-items: stretch; gap: 10px; padding-top: 12px; border-top: 1px solid var(--line2); }
 .trust-foot-hint { font-size: 11px; color: var(--dim); }
 .trust-foot-hint code { font-family: var(--mono); background: var(--bg2); padding: 1px 5px; border-radius: 3px; }
 .trust-foot-actions { display: flex; justify-content: flex-end; gap: 10px; }
