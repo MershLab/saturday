@@ -774,6 +774,17 @@ const STAGE_EMPTY_COPY = {
   plan: "The agent's plan appears here \u2014 toggle plan mode to make it plan before acting.",
 };
 
+// The four panes ship as empty divs in the markup and are seeded by
+// stageReset(), which only runs on new chat or a session switch - so on a
+// first load the user's first click landed on a genuinely blank panel.
+// Seeds only panes that are still empty, so restored content is untouched.
+function stageSeedEmpty() {
+  for (const k of ["activity", "changes", "preview", "plan"]) {
+    const p = stagePanes[k];
+    if (p && !p.children.length) p.replaceChildren(el("div", "stage-empty", STAGE_EMPTY_COPY[k]));
+  }
+}
+
 function stageReset() {
   for (const k of ["activity", "changes", "preview", "plan"]) {
     stagePanes[k].replaceChildren(el("div", "stage-empty", STAGE_EMPTY_COPY[k]));
@@ -6881,6 +6892,7 @@ async function init() {
   if (last && state.sessions.some((s) => s.id === last)) await openSession(last);
   else showEmptyState();
   updateProjChip();
+  stageSeedEmpty();
   // sidebar starts collapsed only by stored preference — or on phone-width
   // viewports, where the expanded sidebar is a full-screen overlay that would
   // hide the chat on first load (the ☰ button or scrim reveals it)
