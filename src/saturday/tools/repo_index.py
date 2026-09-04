@@ -134,28 +134,70 @@ def _index_path(workspace_root: str | Path) -> Path:
     return Path(workspace_root) / ".saturday" / INDEX_NAME
 
 
-def _scan_files(root: Path) -> list[Path]:
-    """os.walk, not Path.rglob: rglob yields every entry under root before any
-    filtering runs, so it still descends into node_modules/.next/.git/etc and
-    can spend most of its time enumerating files that were always going to be
-    skipped. os.walk lets SKIP_DIRS prune dirnames in place, so those trees
-    are never entered at all - the difference is an order of magnitude on a
-    real JS/Python monorepo."""
-    files: list[Path] = []
+def _iter_subtree(root: Path):
+    """Every matching file under root, lazily - one bucket's worth for the
+    round-robin in _scan_files. os.walk lets SKIP_DIRS prune dirnames in
+    place, so those trees are never entered at all - the difference is an
+    order of magnitude on a real JS/Python monorepo."""
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS)
         for name in sorted(filenames):
-            if len(files) >= MAX_FILES:
-                return files
             p = Path(dirpath) / name
             if p.suffix.lower() not in CODE_EXTS:
                 continue
             try:
                 if not p.is_file() or p.stat().st_size > MAX_FILE_BYTES:
                     continue
-                files.append(p)
             except OSError:
                 continue
+            yield p
+
+
+def _scan_files(root: Path) -> list[Path]:
+    """os.walk, not Path.rglob: see _iter_subtree.
+
+    A workspace root is often several sibling projects, not one repo - and a
+    single depth-first walk from root hits MAX_FILES while still inside
+    whichever top-level entry sorts first, silently starving every other
+    project of even one indexed file (a real case: a 10k-file repo named
+    'MershLab' sorts before 'agency-agents' and 'personal', so those two
+    never got a single node in the memory graph). Round-robin one file at a
+    time across root's top-level entries instead, so MAX_FILES is a shared
+    budget rather than a first-come first-served one - and stop pulling from
+    a bucket the moment the budget is spent, so a huge sibling still doesn't
+    cost a full uncapped walk of itself."""
+    try:
+        entries = sorted(os.scandir(root), key=lambda e: e.name)
+    except OSError:
+        return []
+    buckets = []
+    for e in entries:
+        if e.is_dir():
+            if e.name not in SKIP_DIRS:
+                buckets.append(_iter_subtree(Path(e.path)))
+        else:
+            p = Path(e.path)
+            if p.suffix.lower() not in CODE_EXTS:
+                continue
+            try:
+                if p.is_file() and p.stat().st_size <= MAX_FILE_BYTES:
+                    buckets.append(iter((p,)))
+            except OSError:
+                pass
+
+    files: list[Path] = []
+    active = buckets
+    while active and len(files) < MAX_FILES:
+        nxt = []
+        for gen in active:
+            if len(files) >= MAX_FILES:
+                break
+            try:
+                files.append(next(gen))
+                nxt.append(gen)
+            except StopIteration:
+                pass
+        active = nxt
     return files
 
 

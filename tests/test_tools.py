@@ -1764,6 +1764,27 @@ def test_scan_files_prunes_skip_dirs_instead_of_just_filtering(tmp_path, monkeyp
     assert not any("node_modules" in d for d in visited_dirpaths), visited_dirpaths
 
 
+def test_scan_files_shares_max_files_across_sibling_projects(tmp_path, monkeypatch):
+    """Real case: a workspace root holding several sibling repos of very
+    uneven size (one 10k-file repo next to a few hundred-file ones) indexed
+    zero files from every sibling but the big one - a single depth-first
+    walk hit MAX_FILES while still inside whichever top-level directory
+    sorts first, so the small repos never got a single node in the memory
+    graph, even though MAX_FILES was nowhere near their own combined size."""
+    from saturday.tools import repo_index
+
+    monkeypatch.setattr(repo_index, "MAX_FILES", 12)
+    (tmp_path / "big").mkdir()
+    for i in range(50):
+        (tmp_path / "big" / f"f{i}.py").write_text("x = 1\n")
+    (tmp_path / "small").mkdir()
+    (tmp_path / "small" / "real.py").write_text("x = 1\n")
+
+    found = {p.relative_to(tmp_path).as_posix() for p in repo_index._scan_files(tmp_path)}
+    assert "small/real.py" in found
+    assert len(found) == 12
+
+
 # ------------------------------------------------------------------ app --no-token
 
 def test_cmd_app_no_token_maps_to_empty_not_none(monkeypatch):
