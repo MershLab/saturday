@@ -6914,7 +6914,11 @@ function mgAdopt(g) {
   mg.alpha = 1;
   mg.framed = false;
   mg.sel = -1; mg.hover = -1;
-  mgFit();
+  // a query typed while this load was still in flight built mg.match against
+  // the empty node list that existed at the time - every node then failed
+  // that stale match forever, leaving the canvas blank even once real nodes
+  // arrived. Recompute it against the nodes that actually just landed.
+  if (mg.query) mgSearch(mg.query); else mgFit();
   mgStats(g.stats || {});
   mgTick();
 }
