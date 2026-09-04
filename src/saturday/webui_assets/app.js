@@ -2202,13 +2202,30 @@ async function stopRun() {
   detachTail(); // a re-attached tail ends with this stop as well
 }
 
+/* Screen-reader status. Streaming into an aria-live #thread would narrate
+   every token fragment, so announce the run's state transitions and the
+   finished reply instead - the useful signal, once. */
+function srSay(msg) {
+  const n = $("#srStatus");
+  if (!n || !msg) return;
+  n.textContent = "";                 // re-announce even if the text repeats
+  setTimeout(() => { n.textContent = msg; }, 40);
+}
+
 function setBusy(v) {
+  const was = state.busy;
   state.busy = v;
   if (v) {
     state.stepNow = 0;
     state.busySince = Date.now();
+    if (!was) srSay("Working…");
   } else {
     state.busySince = 0;
+    if (was) {
+      const last = document.querySelector("#thread .msg-assistant:last-of-type");
+      const text = (last && last.textContent.trim()) || "";
+      srSay(text ? "Reply ready. " + text.slice(0, 300) : "Finished.");
+    }
   }
   const btn = $("#sendBtn");
   btn.disabled = v ? false : !$("#input").value.trim();
@@ -2462,14 +2479,26 @@ function mkSessItem(s) {
   const acts = el("div", "sess-acts");
   const pinB = el("button", "", "\u2605");
   pinB.title = state.pins.includes(s.id) ? "Unpin" : "Pin";
+  // without this the accessible name is the glyph itself, announced as "star"
+  pinB.setAttribute("aria-label", pinB.title);
   pinB.addEventListener("click", (e) => { e.stopPropagation(); togglePin(s.id); });
   const delB = el("button", "", "\u00d7");
   delB.title = "Delete session";
+  delB.setAttribute("aria-label", "Delete session");
   delB.addEventListener("click", (e) => { e.stopPropagation(); deleteSession(s.id); });
   acts.append(pinB, delB);
   item.appendChild(acts);
   item.title = s.id;
+  // a div with a click handler is invisible to keyboard and screen readers:
+  // make the row a real control, and keep Enter/Space working like a button
+  item.setAttribute("role", "button");
+  item.tabIndex = 0;
+  item.setAttribute("aria-label", (s.task || "interactive session") + ", " + relTime(s.id));
+  if (s.id === state.sid) item.setAttribute("aria-current", "true");
   item.addEventListener("click", () => openSession(s.id));
+  item.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openSession(s.id); }
+  });
   return item;
 }
 
@@ -6305,6 +6334,70 @@ function toggleSidebar() {
   localStorage.setItem("df_sb", $("#sidebar").classList.contains("collapsed") ? "0" : "1");
 }
 
+/* ---------------------------------------------------------- focus trapping
+   Every dialog here is a .modal toggled by a `hidden` class, so one observer
+   covers all ten rather than each open/close path growing its own wiring.
+   Without this, Tab walked straight out of an open dialog into the page
+   behind it - including out of the approval prompt, which is a safety gate. */
+const FOCUSABLE_SEL = [
+  "a[href]", "button:not([disabled])", "textarea:not([disabled])",
+  "input:not([disabled]):not([type=hidden])", "select:not([disabled])",
+  '[tabindex]:not([tabindex="-1"])',
+].join(",");
+
+let _focusBeforeModal = null;
+
+function modalIsOpen(m) { return m && !m.classList.contains("hidden"); }
+function openModalStack() { return [...document.querySelectorAll(".modal")].filter(modalIsOpen); }
+function topOpenModal() { const s = openModalStack(); return s.length ? s[s.length - 1] : null; }
+function modalFocusables(m) {
+  return [...m.querySelectorAll(FOCUSABLE_SEL)].filter(
+    (e) => e.offsetWidth || e.offsetHeight || e.getClientRects().length);
+}
+
+function initFocusTrap() {
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Tab") return;
+    const m = topOpenModal();
+    if (!m) return;
+    const f = modalFocusables(m);
+    if (!f.length) { e.preventDefault(); return; }
+    const first = f[0], last = f[f.length - 1];
+    const inside = m.contains(document.activeElement);
+    if (e.shiftKey && (!inside || document.activeElement === first)) {
+      e.preventDefault(); last.focus();
+    } else if (!e.shiftKey && (!inside || document.activeElement === last)) {
+      e.preventDefault(); first.focus();
+    }
+  }, true);
+
+  const obs = new MutationObserver((records) => {
+    for (const r of records) {
+      const m = r.target;
+      if (!m.classList || !m.classList.contains("modal")) continue;
+      const nowOpen = modalIsOpen(m);
+      const wasOpen = m.dataset.trapOpen === "1";
+      if (nowOpen === wasOpen) continue;
+      m.dataset.trapOpen = nowOpen ? "1" : "0";
+      if (nowOpen) {
+        _focusBeforeModal = document.activeElement;
+        const f = modalFocusables(m);
+        // prefer a text input so typing lands where the user expects
+        const pref = f.find((e) => e.tagName === "INPUT" || e.tagName === "TEXTAREA") || f[0];
+        if (pref) setTimeout(() => pref.focus(), 0);
+      } else if (_focusBeforeModal && document.contains(_focusBeforeModal)) {
+        const back = _focusBeforeModal;
+        _focusBeforeModal = null;
+        setTimeout(() => back.focus(), 0);
+      }
+    }
+  });
+  for (const m of document.querySelectorAll(".modal")) {
+    m.dataset.trapOpen = modalIsOpen(m) ? "1" : "0";
+    obs.observe(m, { attributes: true, attributeFilter: ["class"] });
+  }
+}
+
 function bindEvents() {
   const input = $("#input");
   input.addEventListener("input", () => {
@@ -6758,6 +6851,7 @@ async function init() {
   initThemeListener();
   initTitleBar();
   bindEvents();
+  initFocusTrap();
   if (!(window.SpeechRecognition || window.webkitSpeechRecognition)) $("#micBtn").classList.add("hidden");
   try {
     state.info = await api("/api/state");
