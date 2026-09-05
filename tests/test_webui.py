@@ -5241,3 +5241,31 @@ def test_localstorage_arrays_survive_a_stored_null():
 
     bare = re.findall(r"JSON\.parse\(localStorage\.getItem\([^)]*\)[^)]*\)", js)
     assert len(bare) == 1, bare  # only the one inside lsArray itself
+
+
+def test_approval_key_hints_match_the_actual_bindings():
+    """The UI must not advertise a shortcut the handler no longer accepts.
+
+    "Always allow" persists a standing approval, so it was moved off a bare
+    keystroke onto Shift+A. Two places kept telling users a plain A would do
+    it, and nothing caught that: the change was verified functionally, but
+    no test compared the interface's claims against the code.
+    """
+    js = (ASSETS / "app.js").read_text(encoding="utf-8")
+    html = (ASSETS / "index.html").read_text(encoding="utf-8")
+
+    # the binding: always requires Shift, allow/deny must not
+    assert 'k === "a" && e.shiftKey' in js, "'always' must require Shift"
+    assert 'k === "y" && !e.shiftKey' in js
+    assert 'k === "n" && !e.shiftKey' in js
+
+    # the hints: wherever A is offered for approvals, Shift is named with it
+    for m in re.finditer(r"<kbd>A</kbd>", html):
+        window = html[max(0, m.start() - 120): m.end() + 120]
+        assert "Shift" in window, (
+            "a bare A is advertised for approvals at offset "
+            f"{m.start()}; the handler requires Shift"
+        )
+
+    # and the Y/N pair is still offered, since those did not change
+    assert "<kbd>Y</kbd>" in html and "<kbd>N</kbd>" in html

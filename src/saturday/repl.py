@@ -249,7 +249,10 @@ class Repl:
                     user = self.read_line(prompt_str)
                 except (EOFError, KeyboardInterrupt):
                     return 0
-                if user.lower() in ("exit", "quit"):
+                # every other command is slash-prefixed, so /exit and /quit are
+                # what people try first; rejecting them as "unknown command"
+                # made leaving look harder than it is
+                if user.lower().strip() in ("exit", "quit", "/exit", "/quit", ":q"):
                     return 0
                 if not user:
                     continue

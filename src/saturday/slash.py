@@ -75,7 +75,7 @@ HELP_TEXT = """commands:
   /revert [n]           list recent file edits, or restore the n-th (0 = latest)
   /branch [n]           fork this conversation into a new session (first n messages)
   /toggle <name|family> enable/disable a tool for this session (families: web, browser, computer_use, shell, python, file_writes, subagents, memory)
-  exit / quit           leave (Ctrl-C also works)
+  exit / quit           leave (or /exit; Ctrl-C and Ctrl-D also work)
 tips: end a line with \\ to continue on the next line; Up-arrow recalls history."""
 
 # Web-surface /help: one 'command — description' line per entry (see _cmd_help).
@@ -103,7 +103,7 @@ WEB_HELP_TEXT = """commands:
   /revert [n] — list recent file edits, or restore the n-th (0 = latest)
   /branch [n] — fork this conversation into a new session (first n messages)
   /toggle <name|family> — enable/disable a tool for this session (families: web, browser, computer_use, shell, python, file_writes, subagents, memory)
-  exit / quit — leave
+  exit or quit — leave (/exit works too)
 tips: type / in the composer for command autocomplete."""
 
 
