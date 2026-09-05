@@ -1843,6 +1843,32 @@ function recoverAfterStreamEnd(sid) {
   }, 1500);
 }
 
+/* A send that never reached the server must not eat the message. The composer
+   is cleared optimistically, so on a failure with nothing streamed we put the
+   text and any attachments back rather than destroying work the user typed. */
+function restoreUnsentMessage(text, imgs) {
+  const input = $("#input");
+  if (!input.value.trim() && text) {
+    input.value = text;
+    autoGrow(input);
+    saveDraft();
+    updateSendEnabled();
+    const eb = $("#enhanceBtn");
+    if (eb) eb.classList.toggle("hidden", !input.value.trim() || state.busy);
+  }
+  if (imgs && imgs.length) { state.images = imgs.slice(); renderAttachRow(); }
+  // nothing ever landed in the thread: bring the starter screen back rather
+  // than leaving a blank pane (showEmptyState() would also wipe the session)
+  if (!thread.firstChild) $("#emptyState").classList.remove("hidden");
+  input.focus();
+}
+
+// fetch rejects with a bare TypeError when the server cannot be reached; the
+// raw "Failed to fetch" told the user nothing they could act on
+function netErrorText(err) {
+  return err instanceof TypeError ? "Cannot reach the Saturday server" : err.message;
+}
+
 async function send() {
   const input = $("#input");
   const first = input.value.trim();
@@ -1917,10 +1943,16 @@ async function send() {
       setBusy(false);
     } else {
       connOff();
-      if (live) live.turn.appendChild(makeSysline("[connection lost] " + err.message, "error"));
-      if (live) liveEnd({ final: "", stop_reason: "error", steps: 0, tokens: 0 });
+      if (live) {
+        live.turn.appendChild(makeSysline("[connection lost] " + netErrorText(err), "error"));
+        liveEnd({ final: "", stop_reason: "error", steps: 0, tokens: 0 });
+      } else {
+        // the request never produced a single event, so the message exists
+        // nowhere except the composer we already cleared
+        restoreUnsentMessage(text, imgs);
+      }
       setBusy(false);
-      toast(err.message, "err");
+      toast(netErrorText(err), "err");
     }
   } finally {
     aborter = null;
@@ -2611,6 +2643,17 @@ async function exportSession(fmt) {
 }
 
 /* ---------------------------------------------------------------- menus */
+
+// The three composer popups behave like menus, so Escape should dismiss them
+// like every other overlay. #treePop had neither Escape nor outside-click.
+function closeComposerPops() {
+  let closed = false;
+  for (const [pop, close] of [["#treePop", closeTree], ["#skillsPop", closeSkillsPop], ["#memoryPop", closeMemoryPop]]) {
+    const e = $(pop);
+    if (e && !e.classList.contains("hidden")) { close(); closed = true; }
+  }
+  return closed;
+}
 
 function closeMenus() {
   $("#kebabMenu").classList.add("hidden");
@@ -3530,9 +3573,35 @@ function openSettings() {
   loadRemote();
   $("#settingsWarn").classList.add("hidden");
   $("#settingsModal").classList.remove("hidden");
+  settingsDirtyFlag = false;
   $("#cfgModel").focus();
 }
-function closeSettings() { $("#settingsModal").classList.add("hidden"); }
+/* Settings apply on Save, so dismissing the dialog throws away pending edits.
+   A stray click on the backdrop used to do that silently.
+
+   Dirtiness is tracked from real input/change events rather than by diffing a
+   snapshot: openSettings() fills the form from several async loads that land
+   after it returns, so any snapshot taken at open time is stale and every
+   close would ask to discard edits nobody made. Programmatic value
+   assignment fires neither event, so this only trips on the user. */
+let settingsDirtyFlag = false;
+
+function settingsDirty() { return settingsDirtyFlag; }
+
+async function closeSettingsGuarded() {
+  if (settingsDirty() && !(await uiConfirm({
+    title: "Discard changes?",
+    message: "Your settings edits have not been saved yet.",
+    ok: "Discard", danger: true,
+  }))) return false;
+  closeSettings();
+  return true;
+}
+
+function closeSettings() {
+  settingsDirtyFlag = false;
+  $("#settingsModal").classList.add("hidden");
+}
 
 /* ------------------------------------------------- auto-delegation agents */
 
@@ -6495,8 +6564,13 @@ function bindEvents() {
   $("#sbScrim").addEventListener("click", () => {
     if (!$("#sidebar").classList.contains("collapsed")) toggleSidebar();
   });
-  $("#settingsClose").addEventListener("click", closeSettings);
-  $("#settingsModal").addEventListener("mousedown", (e) => { if (e.target === $("#settingsModal")) closeSettings(); });
+  $("#settingsClose").addEventListener("click", () => closeSettingsGuarded());
+  $("#settingsModal").addEventListener("mousedown", (e) => { if (e.target === $("#settingsModal")) closeSettingsGuarded(); });
+  for (const ev of ["input", "change"]) {
+    $("#settingsModal").addEventListener(ev, (e) => {
+      if (e.target.closest("input, select, textarea")) settingsDirtyFlag = true;
+    });
+  }
   $("#settingsSave").addEventListener("click", saveSettings);
   for (const b of document.querySelectorAll("#setNav button")) {
     b.addEventListener("click", () => settingsShow(b.dataset.sec));
@@ -6585,6 +6659,7 @@ function bindEvents() {
     if (!e.target.closest("#atPop") && !e.target.closest("#input")) closeAt();
     if (!e.target.closest("#skillsPop") && !e.target.closest("#skillsBtn")) closeSkillsPop();
     if (!e.target.closest("#memoryPop") && !e.target.closest("#memoryBtn")) closeMemoryPop();
+    if (!e.target.closest("#treePop") && !e.target.closest("#treeBtn")) closeTree();
   });
 
   $("#newProjBtn").addEventListener("click", () => openProjModal(null));
@@ -6791,7 +6866,7 @@ function bindEvents() {
       if (!$("#findBar").classList.contains("hidden")) { closeFind(); return; }
       if (!$("#cmpModal").classList.contains("hidden")) { closeCompare(); return; }
       if (!$("#shortcutsModal").classList.contains("hidden")) { shortcutsClose(); return; }
-      if (!$("#settingsModal").classList.contains("hidden")) { closeSettings(); return; }
+      if (!$("#settingsModal").classList.contains("hidden")) { closeSettingsGuarded(); return; }
       if (!$("#folderModal").classList.contains("hidden")) { folderClose(); return; }
       if (!$("#projModal").classList.contains("hidden")) { closeProjModal(); return; }
       if (!$("#ctxModal").classList.contains("hidden")) { ctxClose(); return; }
@@ -6800,6 +6875,10 @@ function bindEvents() {
       closeMenus();
       closeSlash();
       closeAt();
+      if (closeComposerPops()) return;
+      // the mobile drawer is an overlay like any other: Escape should shut it
+      if (window.matchMedia("(max-width: 900px)").matches
+          && !$("#sidebar").classList.contains("collapsed")) { toggleSidebar(); return; }
       // Before the stop-the-run fallback: Esc out of a peeked panel must never
       // be able to kill the agent the user is watching.
       if (closeStagePeek()) { $("#input").focus(); return; }
@@ -6809,15 +6888,18 @@ function bindEvents() {
     }    const typing = ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName);
     const anyModal = ["#settingsModal", "#projModal", "#ctxModal", "#onboardModal", "#paletteOverlay", "#shortcutsModal", "#cmpModal", "#trustModal", "#askModal", "#lightbox"].some(
       (s) => !$(s).classList.contains("hidden")
-    );
+    ) || stagePeekOpen();
     if (!typing && !anyModal && state.approvals.size) {
       const k = e.key.toLowerCase();
       const firstId = [...state.approvals.keys()][0];
       const fn = state.approvals.get(firstId);
       const decide = (decision) => api("/api/approve", { method: "POST", body: JSON.stringify({ id: firstId, decision }) }).catch(() => {});
-      if (k === "y") { fn(true, false); decide("allow"); }
-      else if (k === "a") { fn(true, false); decide("always"); }
-      else if (k === "n") { fn(false, false); decide("deny"); }
+      // y and n decide this one action. "always" persists a standing approval
+      // with no undo, so it is not a bare keystroke away from a stray keypress:
+      // it needs Shift, or the button on the approval card.
+      if (k === "y" && !e.shiftKey) { fn(true, false); decide("allow"); }
+      else if (k === "n" && !e.shiftKey) { fn(false, false); decide("deny"); }
+      else if (k === "a" && e.shiftKey) { fn(true, false); decide("always"); }
     }
   });
 
