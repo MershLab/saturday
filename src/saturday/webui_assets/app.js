@@ -266,7 +266,11 @@ function stageShow(tab, auto) {
   if (!auto) stage.manual = true;
   // an explicit tab click in assistant mode peeks the stage open as an
   // overlay - collapses back via stageCloseBtn, never touches persona_mode
-  if (!auto && stageCompact()) document.body.classList.add("stage-peek");
+  // clicking the tab that is already showing toggles the panel shut
+  if (!auto && stageCompact()) {
+    if (stagePeekOpen() && stage.tab === tab) { closeStagePeek(); return; }
+    document.body.classList.add("stage-peek");
+  }
   stage.tab = tab;
   for (const [k, elp] of Object.entries(stagePanes)) elp.classList.toggle("on", k === tab);
   document.querySelectorAll(".stage-tab").forEach((b) => {
@@ -6343,6 +6347,23 @@ function updateSendEnabled() {
 function autoGrow(ta) {
   ta.style.height = "auto";
   ta.style.height = Math.min(ta.scrollHeight, 220) + "px";
+  syncComposerHeight();
+}
+
+// The peeked stage stops above the composer (see --composer-h in app.css), so
+// the chat stays visible and clicking it is a way back out.
+function syncComposerHeight() {
+  const c = $("#composerWrap");
+  if (c) document.documentElement.style.setProperty("--composer-h", c.offsetHeight + "px");
+}
+
+function stagePeekOpen() { return document.body.classList.contains("stage-peek"); }
+
+function closeStagePeek() {
+  if (!stagePeekOpen()) return false;
+  document.body.classList.remove("stage-peek");
+  stage.manual = false;
+  return true;
 }
 function connOk() { $("#connDot").classList.remove("off"); }
 function connOff() { $("#connDot").classList.add("off"); }
@@ -6685,9 +6706,12 @@ function bindEvents() {
   }
   $("#stageCloseBtn").addEventListener("click", (e) => {
     e.stopPropagation();
-    document.body.classList.remove("stage-peek");
-    stage.manual = false;
+    closeStagePeek();
+    $("#input").focus();
   });
+  // clicking the chat below the panel is the other obvious way back
+  $("#composerWrap").addEventListener("mousedown", () => closeStagePeek(), true);
+  window.addEventListener("resize", syncComposerHeight);
   // widening past the breakpoint returns the stage to its normal docked
   // layout, so a peek left open on a phone does not persist on a desktop
   window.matchMedia("(max-width: 1080px)").addEventListener("change", (e) => {
@@ -6776,6 +6800,9 @@ function bindEvents() {
       closeMenus();
       closeSlash();
       closeAt();
+      // Before the stop-the-run fallback: Esc out of a peeked panel must never
+      // be able to kill the agent the user is watching.
+      if (closeStagePeek()) { $("#input").focus(); return; }
       // nothing left to dismiss: Esc means "stop what you're doing"
       if (state.busy) { stopRun(); return; }
       return;
@@ -6933,6 +6960,7 @@ async function init() {
   else showEmptyState();
   updateProjChip();
   stageSeedEmpty();
+  syncComposerHeight();
   // sidebar starts collapsed only by stored preference — or on phone-width
   // viewports, where the expanded sidebar is a full-screen overlay that would
   // hide the chat on first load (the ☰ button or scrim reveals it)

@@ -790,7 +790,10 @@ kbd {
     z-index: 4; background: var(--bg1); border-bottom: 1px solid var(--line);
     transition: height 0.15s ease;
   }
-  body.stage-peek #stage { height: calc(100% - 42px); overflow: visible; background: var(--bg0); }
+  body.stage-peek #stage {
+    height: auto; bottom: var(--composer-h, 96px);
+    overflow: visible; background: var(--bg0);
+  }
   body.stage-peek #stageCloseBtn { display: inline-flex; }
   /* nine tabs do not fit a phone: let the strip scroll rather than clip */
   #stageTabs { overflow-x: auto; scrollbar-width: none; }
@@ -814,7 +817,12 @@ body.mode-assistant #stage {
   z-index: 4; background: var(--bg1); border-bottom: 1px solid var(--line);
   transition: height 0.15s ease;
 }
-body.mode-assistant.stage-peek #stage { height: calc(100% - 42px); overflow: visible; background: var(--bg0); }
+/* The peeked panel stops above the composer, so the chat stays visible and
+   clicking it is a way back - not just the close button. */
+body.mode-assistant.stage-peek #stage {
+  height: auto; bottom: var(--composer-h, 96px);
+  overflow: visible; background: var(--bg0);
+}
 body.mode-assistant #tokMeter { display: none !important; }
 body.mode-assistant #rail { flex: 1; width: auto; min-width: 0; max-width: none; margin-top: 40px; }
 #stageCloseBtn { display: none; }
@@ -2315,6 +2323,14 @@ mark.find-hit.on { background: var(--accent); color: var(--bg0); }
 .side-foot { gap: 6px; }
 /* the version and the tagline are each a single token: never break mid-phrase */
 .side-foot > span { white-space: nowrap; }
+
+/* "Back to chat" reads as an exit; a 20px x in the corner did not */
+#stageCloseBtn {
+  width: auto; height: 24px; gap: 5px; padding: 0 9px; margin-left: 10px;
+  border: 1px solid var(--line2); border-radius: var(--r-sm);
+  font-family: var(--mono); font-size: 11px; white-space: nowrap;
+}
+#stageCloseBtn svg { width: 11px; height: 11px; }
 .side-foot .icon-btn.sm { color: var(--faint); }
 .side-foot .icon-btn.sm:hover { color: var(--text); }
 
