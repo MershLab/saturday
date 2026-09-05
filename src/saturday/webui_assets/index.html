@@ -104,9 +104,9 @@
         <div id="findBar" class="find-bar hidden">
           <input id="findInput" type="text" placeholder="Find in chat&hellip;" spellcheck="false" autocomplete="off">
           <span id="findCount" class="find-count mono"></span>
-          <button id="findPrev" class="icon-btn sm" title="Previous match (Shift+Enter)">&uarr;</button>
-          <button id="findNext" class="icon-btn sm" title="Next match (Enter)">&darr;</button>
-          <button id="findClose" class="icon-btn sm" title="Close (Esc)">&times;</button>
+          <button id="findPrev" class="icon-btn sm" title="Previous match (Shift+Enter)" aria-label="Previous match">&uarr;</button>
+          <button id="findNext" class="icon-btn sm" title="Next match (Enter)" aria-label="Next match">&darr;</button>
+          <button id="findClose" class="icon-btn sm" title="Close (Esc)" aria-label="Close find bar">&times;</button>
         </div>
         <div id="transcript" tabindex="-1">
           <div id="emptyState" class="empty-state">
@@ -173,24 +173,24 @@
       </section>
 
       <section id="stage">
-        <div id="stageTabs">
-          <button class="stage-tab on" data-tab="home" title="Workbench">Workbench</button>
-          <button class="stage-tab" data-tab="activity" title="Activity &mdash; Ctrl+Shift+U">Activity <span class="tab-badge hidden" id="badgeActivity"></span></button>
-          <button class="stage-tab" data-tab="changes" title="Changes &mdash; Ctrl+Shift+G">Changes <span class="tab-badge hidden" id="badgeChanges"></span></button>
-          <button class="stage-tab" data-tab="plan" title="Plan">Plan <span class="tab-badge hidden" id="badgePlan"></span></button>
-          <button class="stage-tab" data-tab="preview" title="Preview &mdash; Ctrl+Shift+V">Preview <span class="tab-badge hidden" id="badgePreview"></span></button>
+        <div id="stageTabs" role="tablist" aria-label="Workspace panels">
+          <button class="stage-tab on" role="tab" data-tab="home" aria-selected="true" aria-controls="stageHome" tabindex="0" title="Workbench">Workbench</button>
+          <button class="stage-tab" role="tab" data-tab="activity" aria-selected="false" aria-controls="stageActivity" tabindex="-1" title="Activity &mdash; Ctrl+Shift+U">Activity <span class="tab-badge hidden" id="badgeActivity"></span></button>
+          <button class="stage-tab" role="tab" data-tab="changes" aria-selected="false" aria-controls="stageChanges" tabindex="-1" title="Changes &mdash; Ctrl+Shift+G">Changes <span class="tab-badge hidden" id="badgeChanges"></span></button>
+          <button class="stage-tab" role="tab" data-tab="plan" aria-selected="false" aria-controls="stagePlan" tabindex="-1" title="Plan">Plan <span class="tab-badge hidden" id="badgePlan"></span></button>
+          <button class="stage-tab" role="tab" data-tab="preview" aria-selected="false" aria-controls="stagePreview" tabindex="-1" title="Preview &mdash; Ctrl+Shift+V">Preview <span class="tab-badge hidden" id="badgePreview"></span></button>
           <span class="stage-tab-sep" aria-hidden="true"></span>
-          <button class="stage-tab" data-tab="files" title="Files &mdash; Ctrl+Shift+E">Files</button>
-          <button class="stage-tab" data-tab="memory" title="Memory graph">Memory</button>
-          <button class="stage-tab" data-tab="pipelines" title="Pipelines">Pipelines</button>
-          <button class="stage-tab" data-tab="runs" title="Runs &mdash; Ctrl+Shift+D">Runs <span class="tab-badge hidden" id="badgeRuns"></span></button>
-          <div id="stageMeta"></div>
+          <button class="stage-tab" role="tab" data-tab="files" aria-selected="false" aria-controls="stageFiles" tabindex="-1" title="Files &mdash; Ctrl+Shift+E">Files</button>
+          <button class="stage-tab" role="tab" data-tab="memory" aria-selected="false" aria-controls="stageMemory" tabindex="-1" title="Memory graph">Memory</button>
+          <button class="stage-tab" role="tab" data-tab="pipelines" aria-selected="false" aria-controls="stagePipelines" tabindex="-1" title="Pipelines">Pipelines</button>
+          <button class="stage-tab" role="tab" data-tab="runs" aria-selected="false" aria-controls="stageRuns" tabindex="-1" title="Runs &mdash; Ctrl+Shift+D">Runs <span class="tab-badge hidden" id="badgeRuns"></span></button>
+          <div id="stageMeta" role="none"></div>
           <button id="stageCloseBtn" class="icon-btn sm" title="Back to chat">
             <svg viewBox="0 0 24 24"><path d="M6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12 19 6.4 17.6 5 12 10.6z"/></svg>
           </button>
         </div>
         <div id="stageBody">
-          <div id="stageHome" class="stage-pane on">
+          <div id="stageHome" class="stage-pane on" role="tabpanel" aria-label="Workbench" tabindex="0">
             <div class="stage-home-inner">
               <svg class="stage-mark" viewBox="0 0 32 32" aria-hidden="true"><path d="M22.3 5.75 5.09 5.75 17.59 21.75 9.7 21.75 9.7 26.25 26.81 26.25 14.31 10.25 22.3 10.25Z" fill="currentColor"/></svg>
               <h2>Workbench</h2>
@@ -223,12 +223,12 @@
               </div>
             </div>
           </div>
-          <div id="stageActivity" class="stage-pane"></div>
-          <div id="stageChanges" class="stage-pane"></div>
-          <div id="stagePreview" class="stage-pane"></div>
-          <div id="stagePlan" class="stage-pane"></div>
-          <div id="stageFiles" class="stage-pane"></div>
-          <div id="stageMemory" class="stage-pane">
+          <div id="stageActivity" class="stage-pane" role="tabpanel" aria-label="Activity" tabindex="0"></div>
+          <div id="stageChanges" class="stage-pane" role="tabpanel" aria-label="Changes" tabindex="0"></div>
+          <div id="stagePreview" class="stage-pane" role="tabpanel" aria-label="Preview" tabindex="0"></div>
+          <div id="stagePlan" class="stage-pane" role="tabpanel" aria-label="Plan" tabindex="0"></div>
+          <div id="stageFiles" class="stage-pane" role="tabpanel" aria-label="Files" tabindex="0"></div>
+          <div id="stageMemory" class="stage-pane" role="tabpanel" aria-label="Memory" tabindex="0">
             <div class="mg-bar">
               <input id="mgSearch" class="mg-search" type="search" placeholder="find a file, chat or fact&hellip;" spellcheck="false">
               <div id="mgLegend" class="mg-legend"></div>
@@ -254,7 +254,7 @@
               <div id="mgStatus" class="mg-status">building the graph&hellip;</div>
             </div>
           </div>
-          <div id="stagePipelines" class="stage-pane">
+          <div id="stagePipelines" class="stage-pane" role="tabpanel" aria-label="Pipelines" tabindex="0">
             <div class="pipe-bar">
               <span class="pipe-title" id="pipeTitle">Pipelines</span>
               <select id="pipeAdd" class="pipe-select hidden">
@@ -271,7 +271,7 @@
               <div id="pipeHint" class="pipe-hint"></div>
             </div>
           </div>
-          <div id="stageRuns" class="stage-pane"></div>
+          <div id="stageRuns" class="stage-pane" role="tabpanel" aria-label="Runs" tabindex="0"></div>
         </div>
       </section>
 

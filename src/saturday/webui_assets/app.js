@@ -269,7 +269,14 @@ function stageShow(tab, auto) {
   if (!auto && stageCompact()) document.body.classList.add("stage-peek");
   stage.tab = tab;
   for (const [k, elp] of Object.entries(stagePanes)) elp.classList.toggle("on", k === tab);
-  document.querySelectorAll(".stage-tab").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
+  document.querySelectorAll(".stage-tab").forEach((b) => {
+    const on = b.dataset.tab === tab;
+    b.classList.toggle("on", on);
+    // a tablist exposes its selection through aria-selected, and keeps a
+    // single tab stop so Tab moves past the strip instead of through all 9
+    b.setAttribute("aria-selected", on ? "true" : "false");
+    b.tabIndex = on ? 0 : -1;
+  });
   if (tab === "activity") stagePanes.activity.scrollTop = stagePanes.activity.scrollHeight;
   if (tab === "changes") stagePanes.changes.scrollTop = 0; // newest file sits on top
   // the graph animates, so it only runs while it is the visible pane
@@ -6340,9 +6347,18 @@ function autoGrow(ta) {
 function connOk() { $("#connDot").classList.remove("off"); }
 function connOff() { $("#connDot").classList.add("off"); }
 
+// A collapsed sidebar is slid off-screen with a negative margin, so it stayed
+// keyboard reachable: Tab walked through ~20 invisible controls. `inert`
+// removes it from the tab order and the accessibility tree while hidden.
+function syncSidebarInert() {
+  const sb = $("#sidebar");
+  if (sb) sb.inert = sb.classList.contains("collapsed");
+}
+
 function toggleSidebar() {
   $("#sidebar").classList.toggle("collapsed");
   localStorage.setItem("df_sb", $("#sidebar").classList.contains("collapsed") ? "0" : "1");
+  syncSidebarInert();
 }
 
 /* ---------------------------------------------------------- focus trapping
@@ -6364,6 +6380,29 @@ function topOpenModal() { const s = openModalStack(); return s.length ? s[s.leng
 function modalFocusables(m) {
   return [...m.querySelectorAll(FOCUSABLE_SEL)].filter(
     (e) => e.offsetWidth || e.offsetHeight || e.getClientRects().length);
+}
+
+/* Arrow-key navigation across the stage tabs, as a tablist requires: Left and
+   Right move and activate, Home and End jump to the ends. */
+function initTabKeys() {
+  const strip = $("#stageTabs");
+  if (!strip) return;
+  strip.addEventListener("keydown", (e) => {
+    const keys = ["ArrowLeft", "ArrowRight", "Home", "End"];
+    if (!keys.includes(e.key)) return;
+    const tabs = [...strip.querySelectorAll(".stage-tab")];
+    if (!tabs.length) return;
+    const cur = tabs.indexOf(document.activeElement);
+    if (cur < 0) return;
+    let next = cur;
+    if (e.key === "ArrowLeft") next = (cur - 1 + tabs.length) % tabs.length;
+    else if (e.key === "ArrowRight") next = (cur + 1) % tabs.length;
+    else if (e.key === "Home") next = 0;
+    else next = tabs.length - 1;
+    e.preventDefault();
+    tabs[next].focus();
+    tabs[next].click();
+  });
 }
 
 function initFocusTrap() {
@@ -6863,6 +6902,7 @@ async function init() {
   initTitleBar();
   bindEvents();
   initFocusTrap();
+  initTabKeys();
   if (!(window.SpeechRecognition || window.webkitSpeechRecognition)) $("#micBtn").classList.add("hidden");
   try {
     state.info = await api("/api/state");
@@ -6899,6 +6939,7 @@ async function init() {
   const sbPref = localStorage.getItem("df_sb");
   const narrow = window.matchMedia("(max-width: 900px)").matches;
   if (sbPref === "0" || (narrow && sbPref !== "1")) $("#sidebar").classList.add("collapsed");
+  syncSidebarInert();
   updateTokMeter();
   loadCtx();
   wireAgentsUi();
