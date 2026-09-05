@@ -2477,19 +2477,19 @@ def test_round6_spacing_system():
     header bar instead of covering the pills."""
     css = (ASSETS / "app.css").read_text(encoding="utf-8")
     # sidebar: every region shares the 12px gutter
-    assert "padding: 2px 12px 8px" in css            # .session-list
-    assert "padding: 0 11px 4px" in css              # .sess-group-label
-    assert "padding: 8px 12px 0" in css              # .proj-head
-    assert "padding: 10px 12px; border-top" in css   # .side-foot
-    assert "padding: 8px 16px 0" not in css          # old proj-head gutter
+    assert "padding: var(--space-2) var(--space-12) var(--space-8)" in css            # .session-list
+    assert "padding: 0 11px var(--space-4)" in css              # .sess-group-label
+    assert "padding: var(--space-8) var(--space-12) 0" in css              # .proj-head
+    assert "padding: var(--space-10) var(--space-12); border-top" in css   # .side-foot
+    assert "padding: var(--space-8) var(--space-16) 0" not in css          # old proj-head gutter
     # composer: mode chips align with the input text (textarea pad-left 2px)
-    assert "padding: 8px 2px 0" in css               # #composerModes
+    assert "padding: var(--space-8) var(--space-2) 0" in css               # #composerModes
     # font sizes come from the type-scale tokens now (17 ad-hoc sizes -> 10)
-    assert ".hint { flex: 1; font-family: var(--mono); font-size: var(--fs-2xs); color: var(--faint); padding-left: 2px;" in css
+    assert ".hint { flex: 1; font-family: var(--mono); font-size: var(--fs-2xs); color: var(--faint); padding-left: var(--space-2);" in css
     # stage tabs match the topbar's 12px gutter. Toasts must clear the 42px
     # header AND the 40px stage tab strip beneath it: at 48px a long-lived
     # notice sat on top of the tabs (design audit finding 43).
-    assert "padding: 0 12px; border-bottom" in css   # #stageTabs
+    assert "padding: 0 var(--space-12); border-bottom" in css   # #stageTabs
     assert ".toasts { position: fixed; top: 90px;" in css
     # workbench values prefer natural break points over mid-word breaks
     assert "overflow-wrap: anywhere; word-break: normal" in css
@@ -2511,7 +2511,7 @@ def test_round7_composer_button_placement_and_states():
     assert ".send-btn:disabled { background: var(--accent); border-color: transparent;" in css
     assert ".send-btn:disabled { background: var(--bg3);" not in css
     # breathing room above the first text line (was 1px)
-    assert "max-height: 180px; padding: 4px 2px 6px;" in css
+    assert "max-height: 180px; padding: var(--space-4) var(--space-2) var(--space-6);" in css
     html = (ASSETS / "index.html").read_text(encoding="utf-8")
     assert 'placeholder="Message Saturday&hellip; ( / for commands )"' in html
 
