@@ -446,7 +446,8 @@ class SessionStore:
             out.append(
                 {
                     "id": first.get("id", p.stem),
-                    "task": str(first.get("task", ""))[:80],
+                    # not truncated here: the CLI sizes it to the real terminal width
+                    "task": str(first.get("task", "")),
                     "file": p.name,
                     "project": str(first.get("project", "") or ""),
                     "archived": bool(first.get("archived", False)),

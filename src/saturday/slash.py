@@ -254,9 +254,22 @@ def _cmd_help(ctx, arg):
 
 
 def _cmd_tools(ctx, arg):
-    names = ctx.agent.effective_registry().names()
+    import shutil
+
+    names = list(ctx.agent.effective_registry().names())
     disabled = sorted(ctx.agent.disabled_tools)
-    ctx.out(f"{len(names)} tools active: " + ", ".join(names), "dim")
+    ctx.out(f"{len(names)} tools active", "dim")
+    # a comma-run is the least scannable layout for a list whose whole job is
+    # to be scanned: lay it out in columns sized to the terminal
+    if names:
+        width = shutil.get_terminal_size(fallback=(80, 24)).columns
+        cell = max(len(n) for n in names) + 2
+        cols = max(1, min(len(names), (width - 2) // cell))
+        rows = (len(names) + cols - 1) // cols
+        for r in range(rows):
+            line = "".join(names[r + c * rows].ljust(cell)
+                           for c in range(cols) if r + c * rows < len(names))
+            ctx.out("  " + line.rstrip(), "dim")
     if disabled:
         ctx.out(f"disabled this session: {', '.join(disabled)}", "dim")
 

@@ -2484,10 +2484,13 @@ def test_round6_spacing_system():
     assert "padding: 8px 16px 0" not in css          # old proj-head gutter
     # composer: mode chips align with the input text (textarea pad-left 2px)
     assert "padding: 8px 2px 0" in css               # #composerModes
-    assert ".hint { flex: 1; font-family: var(--mono); font-size: 10px; color: var(--faint); padding-left: 2px;" in css
-    # stage tabs match the topbar's 12px gutter; toasts clear the 42px header
+    # font sizes come from the type-scale tokens now (17 ad-hoc sizes -> 10)
+    assert ".hint { flex: 1; font-family: var(--mono); font-size: var(--fs-2xs); color: var(--faint); padding-left: 2px;" in css
+    # stage tabs match the topbar's 12px gutter. Toasts must clear the 42px
+    # header AND the 40px stage tab strip beneath it: at 48px a long-lived
+    # notice sat on top of the tabs (design audit finding 43).
     assert "padding: 0 12px; border-bottom" in css   # #stageTabs
-    assert ".toasts { position: fixed; top: 48px;" in css
+    assert ".toasts { position: fixed; top: 90px;" in css
     # workbench values prefer natural break points over mid-word breaks
     assert "overflow-wrap: anywhere; word-break: normal" in css
 

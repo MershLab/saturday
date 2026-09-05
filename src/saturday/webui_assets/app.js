@@ -320,7 +320,7 @@ function stageEnsureHead(pane, title) {
     const emptyNote = pane.querySelector(".stage-empty");
     if (emptyNote) emptyNote.remove();
     head = el("div", "stage-head");
-    head.appendChild(el("span", "stage-head-title", title));
+    head.appendChild(el("h2", "stage-head-title", title));
     head.appendChild(el("span", "stage-head-sub", ""));
     pane.appendChild(head);
     const list = el("div", "stage-list");
@@ -1152,7 +1152,7 @@ function makeApproval(evt) {
   });
   actions.append(bAllow, bAlways, bDeny, bNote);
   const keys = el("span", "appr-key");
-  keys.append("kbd ", mkK("Y"), " ", mkK("A"), " ", mkK("N"));
+  keys.append(mkK("Y"), " ", mkK("N"), " ", mkK("Shift+A"));
   actions.appendChild(keys);
   box.appendChild(actions);
   box.appendChild(noteInput);
@@ -1449,7 +1449,8 @@ function makeStats(steps, tokens, stop, cost, costTotal) {
 }
 
 function toast(msg, kind) {
-  const box = $("#toasts");
+  // errors announce assertively; anything else waits its turn
+  const box = kind === "err" ? $("#toastsAlert") : $("#toasts");
   const t = el("div", "toast " + (kind || "info"), msg);
   box.appendChild(t);
   setTimeout(() => t.remove(), 4200);
@@ -2317,9 +2318,12 @@ function sessTitleFromId(id) {
   return id;
 }
 
+let sessionsLoaded = false;
+
 async function loadSessions() {
   try {
     const data = await api("/api/sessions");
+    sessionsLoaded = true;
     state.sessions = data.sessions || [];
     renderSessions();
   } catch {}
@@ -2454,7 +2458,15 @@ function renderSessions() {
   }
   const rest = unpinnedRows(rows);
   if (!rows.length) {
-    list.appendChild(el("div", "empty", q ? "No matches." : state.proj ? "No chats in this project yet." : "No sessions yet. Say something to begin."));
+    if (!sessionsLoaded && !q) {
+      // still fetching: a skeleton, so this reads as "loading" rather than
+      // as the genuine "no sessions yet" state below
+      const sk = el("div", "sess-skeleton");
+      for (let i = 0; i < 3; i++) sk.appendChild(el("div", "sk-bar"));
+      list.appendChild(sk);
+    } else {
+      list.appendChild(el("div", "empty", q ? "No matches." : state.proj ? "No chats in this project yet." : "No sessions yet. Say something to begin."));
+    }
     return;
   }
   let curBucket = null;
@@ -3036,7 +3048,7 @@ async function filesList(rel) {
   const pane = stagePanes.files;
   pane.replaceChildren();
   const head = el("div", "stage-head");
-  head.appendChild(el("span", "stage-head-title", curProject() ? "Project files" : "Workspace files"));
+  head.appendChild(el("h2", "stage-head-title", curProject() ? "Project files" : "Workspace files"));
   const crumbs = el("div", "crumbs");
   const rootB = el("button", "crumb", "/");
   rootB.title = "Workspace root";

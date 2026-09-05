@@ -1033,8 +1033,16 @@ def cmd_sessions(args: argparse.Namespace) -> int:
     if not rows:
         _print("no sessions yet")
         return 0
+    import shutil
+
+    width = shutil.get_terminal_size(fallback=(100, 24)).columns
+    idw = max((len(str(r["id"])) for r in rows), default=8)
+    room = max(20, width - idw - 3)
     for r in rows:
-        _print(f"{r['id']}  {r['task']}")
+        task = str(r["task"])
+        if len(task) > room:
+            task = task[: room - 1] + "\u2026"
+        _print(f"{str(r['id']).ljust(idw)}  {task}")
     return 0
 
 
@@ -1521,6 +1529,14 @@ def cmd_verify(args: argparse.Namespace) -> int:
     from saturday.verify import detect_project, run_verification
 
     root = Path(getattr(args, "path", None) or ".")
+    # a typo'd path and a real directory with no recipes used to print the same
+    # message and both exit 0, so a mistake was indistinguishable from a result
+    if not root.exists():
+        _print(f"error: no such path: {root}", err=True)
+        return 2
+    if not root.is_dir():
+        _print(f"error: not a directory: {root}", err=True)
+        return 2
     detections = detect_project(root)
     if not detections:
         _print(f"no project recipes detected in {root.resolve()} (pytest / npm / cargo / go / make)")
@@ -1667,14 +1683,14 @@ def build_parser() -> argparse.ArgumentParser:
 run `saturday <command> --help` for a command's own options.
 """,
     )
-    parser.add_argument("--version", action="store_true")
+    parser.add_argument("--version", action="store_true", help="print the installed version and exit")
     sub = parser.add_subparsers(dest="command", metavar="<command>")
 
     def common(p: argparse.ArgumentParser) -> argparse.ArgumentParser:
         p.add_argument("--provider", choices=sorted(PROVIDERS), help="LLM provider")
         p.add_argument("--model", help="model name override")
-        p.add_argument("--temperature", type=float)
-        p.add_argument("--max-steps", type=int, dest="max_steps")
+        p.add_argument("--temperature", type=float, help="sampling temperature (higher is more varied)")
+        p.add_argument("--max-steps", type=int, dest="max_steps", help="stop after this many agent steps")
         p.add_argument("--assistant", action="store_true", help="personal assistant mode: curated everyday toolset + assistant persona")
         p.add_argument("--env", help="path to .env file")
         return p
@@ -1737,7 +1753,7 @@ run `saturday <command> --help` for a command's own options.
     p_models.add_argument("--free", action="store_true", help="only models that cost nothing")
     p_models.add_argument("--add-free", dest="add_free", action="store_true", help="add free models to agents.json for auto-delegation")
     p_models.add_argument("--json", dest="json_out", action="store_true", help="machine-readable output")
-    p_models.add_argument("--timeout", type=float, default=8.0)
+    p_models.add_argument("--timeout", type=float, default=8.0, help="seconds to wait per provider probe")
     p_models.set_defaults(fn=cmd_models)
 
     p_agents = sub.add_parser("agents", help="show external CLI agents, tiers, and auto-delegation state")
@@ -1754,7 +1770,7 @@ run `saturday <command> --help` for a command's own options.
     p_remote = sub.add_parser("remote", help="reach this Saturday from your phone via a tunnel")
     common(p_remote)
     p_remote.add_argument("--tunnel", choices=["cloudflared", "tailscale"], help="tunnel provider (default: first found on PATH)")
-    p_remote.add_argument("--port", type=int, default=8679)
+    p_remote.add_argument("--port", type=int, default=8679, help="port to listen on")
     p_remote.add_argument("--token", help="fixed access token (default: random per launch)")
     p_remote.add_argument("--no-token", action="store_true", help="disable the access token (dangerous over a public tunnel)")
     p_remote.set_defaults(fn=cmd_remote)
@@ -1778,16 +1794,16 @@ run `saturday <command> --help` for a command's own options.
 
     p_serve = sub.add_parser("serve", help="HTTP server exposing POST /message {text}")
     common(p_serve)
-    p_serve.add_argument("--host", default="127.0.0.1")
-    p_serve.add_argument("--port", type=int, default=8787)
+    p_serve.add_argument("--host", default="127.0.0.1", help="interface to bind (127.0.0.1 keeps it local)")
+    p_serve.add_argument("--port", type=int, default=8787, help="port to listen on")
     p_serve.add_argument("--token", help="require this access token (default: random per launch)")
     p_serve.add_argument("--no-token", action="store_true", help="disable the access token (local bind only; dangerous)")
     p_serve.set_defaults(fn=cmd_serve)
 
     p_app = sub.add_parser("app", help="desktop app UI (native window over the local agent)")
     common(p_app)
-    p_app.add_argument("--host", default="127.0.0.1")
-    p_app.add_argument("--port", type=int, default=8679)
+    p_app.add_argument("--host", default="127.0.0.1", help="interface to bind (127.0.0.1 keeps it local)")
+    p_app.add_argument("--port", type=int, default=8679, help="port to listen on")
     p_app.add_argument("--no-window", action="store_true", help="do not launch an app window; just print the URL")
     p_app.add_argument("--width", type=int, default=1220, help="app window width")
     p_app.add_argument("--height", type=int, default=840, help="app window height")
@@ -1826,7 +1842,7 @@ run `saturday <command> --help` for a command's own options.
     p_skill.add_argument("action", nargs="?", default="list",
                          choices=["list", "search", "install", "update", "remove", "pin", "bury", "unpin"])
     p_skill.add_argument("args", nargs="*", help="query, git URL or skill name")
-    p_skill.add_argument("--limit", type=int, default=10)
+    p_skill.add_argument("--limit", type=int, default=10, help="maximum results to show")
     p_skill.add_argument("--force", action="store_true", help="install: replace an existing skill")
     p_skill.set_defaults(fn=cmd_skill)
 
@@ -1839,7 +1855,7 @@ run `saturday <command> --help` for a command's own options.
     p_mem.add_argument("action", nargs="?", default="search",
                        choices=["search", "graph", "consolidate", "reindex"])
     p_mem.add_argument("query", nargs="*", help="words to search for")
-    p_mem.add_argument("--limit", type=int, default=8)
+    p_mem.add_argument("--limit", type=int, default=8, help="maximum results to show")
     p_mem.add_argument("--json", action="store_true", help="graph: machine-readable output")
     p_mem.add_argument("--dry-run", action="store_true", help="consolidate: report, change nothing")
     p_mem.set_defaults(fn=cmd_memory)
@@ -1851,8 +1867,8 @@ run `saturday <command> --help` for a command's own options.
     p_audit.set_defaults(fn=cmd_audit)
 
     p_cfg = sub.add_parser("config", help="show/save configuration")
-    p_cfg.add_argument("--show", action="store_true")
-    p_cfg.add_argument("--set", nargs="+", metavar="KEY=VALUE")
+    p_cfg.add_argument("--show", action="store_true", help="print the resolved configuration as JSON")
+    p_cfg.add_argument("--set", nargs="+", metavar="KEY=VALUE", help="set one or more settings, e.g. --set temperature=0.4")
     p_cfg.set_defaults(fn=cmd_config)
 
     p_setup = sub.add_parser("setup", help="interactive first-run setup: provider + API key + model, connection-tested")
@@ -1860,8 +1876,8 @@ run `saturday <command> --help` for a command's own options.
     p_setup.set_defaults(fn=cmd_setup)
 
     p_export = sub.add_parser("export", help="merge trajectory JSONs into JSONL dataset")
-    p_export.add_argument("--dir", default="eval_runs")
-    p_export.add_argument("--out", default="trajectories.jsonl")
+    p_export.add_argument("--dir", default="eval_runs", help="directory of trajectory JSON files to merge")
+    p_export.add_argument("--out", default="trajectories.jsonl", help="path of the JSONL dataset to write")
     p_export.add_argument("--keep-unknown", action="store_true", help="keep trajectories using unregistered tools")
     p_export.add_argument(
         "--compress",
@@ -1935,7 +1951,12 @@ def main(argv: list[str] | None = None) -> int:
         _print("\n[interrupted]")
         return 130
     except Exception as exc:
-        _print(f"error: {type(exc).__name__}: {exc}")
+        # SATURDAY_DEBUG=1 re-raises so a user can produce a real traceback for
+        # a bug report; the default stays a one-line message.
+        if os.environ.get("SATURDAY_DEBUG", "").strip().lower() in ("1", "true", "yes", "on"):
+            raise
+        _print(f"error: {type(exc).__name__}: {exc}", err=True)
+        _print("set SATURDAY_DEBUG=1 for a full traceback", err=True)
         return 1
 
 

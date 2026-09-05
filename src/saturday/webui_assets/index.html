@@ -20,6 +20,7 @@
     <button id="tbClose" class="tb-btn tb-close" title="Close" aria-label="Close"><svg viewBox="0 0 12 12"><path d="M2.8 2.8l6.4 6.4M9.2 2.8L2.8 9.2" fill="none" stroke="currentColor" stroke-width="1.2"/></svg></button>
   </div>
 </div>
+<a href="#input" class="skip-link">Skip to composer</a>
 <div id="app">
 
   <aside id="sidebar">
@@ -43,7 +44,7 @@
       </button>
     </div>
     <nav id="sessionList" class="session-list" aria-label="Sessions and projects">
-      <input id="sessFilter" class="sess-filter" type="text" placeholder="Filter sessions&hellip;" spellcheck="false" autocomplete="off">
+      <input id="sessFilter" class="sess-filter" type="text" aria-label="Filter sessions" placeholder="Filter sessions&hellip;" spellcheck="false" autocomplete="off">
     </nav>
     <div class="side-foot">
       <button id="archToggle" class="arch-toggle hidden"></button>
@@ -99,78 +100,6 @@
     </header>
 
     <div id="workarea">
-
-      <section id="rail">
-        <div id="findBar" class="find-bar hidden">
-          <input id="findInput" type="text" placeholder="Find in chat&hellip;" spellcheck="false" autocomplete="off">
-          <span id="findCount" class="find-count mono"></span>
-          <button id="findPrev" class="icon-btn sm" title="Previous match (Shift+Enter)" aria-label="Previous match">&uarr;</button>
-          <button id="findNext" class="icon-btn sm" title="Next match (Enter)" aria-label="Next match">&darr;</button>
-          <button id="findClose" class="icon-btn sm" title="Close (Esc)" aria-label="Close find bar">&times;</button>
-        </div>
-        <div id="transcript" tabindex="-1">
-          <div id="emptyState" class="empty-state">
-            <svg class="empty-mark" viewBox="0 0 32 32" aria-hidden="true"><path d="M22.3 5.75 5.09 5.75 17.59 21.75 9.7 21.75 9.7 26.25 26.81 26.25 14.31 10.25 22.3 10.25Z" fill="currentColor"/></svg>
-            <h1>saturday</h1>
-            <p class="tagline">the auditable minimal harness.</p>
-            <div class="suggests" id="suggests"></div>
-            <button id="keyHint" class="key-hint hidden"></button>
-          </div>
-          <div id="thread" class="thread"></div>
-        </div>
-        <button id="scrollBtn" class="scroll-btn hidden" title="Scroll to bottom">
-          <svg viewBox="0 0 24 24"><path d="M12 16.5 5 9.5l1.4-1.4L12 13.7l5.6-5.6L19 9.5z"/></svg>
-        </button>
-        <div id="queueRow" class="queue-row hidden"></div>
-
-        <div id="composerWrap">
-          <div id="followRow" class="follow-row hidden" aria-label="Suggested follow-ups"></div>
-          <div id="attachRow" class="attach-row hidden"></div>
-          <div id="slashPop" class="slash-pop hidden" role="listbox"></div>
-          <div id="atPop" class="slash-pop at-pop hidden" role="listbox"></div>
-          <div id="treePop" class="slash-pop tree-pop hidden" role="tree"></div>
-          <div id="skillsPop" class="slash-pop skills-pop hidden" role="listbox"></div>
-          <div id="memoryPop" class="slash-pop skills-pop hidden" role="listbox"></div>
-          <div class="composer">
-            <div id="composerModes">
-              <button id="planChip" class="mode-chip" title="Plan mode — read-only planning, approve before it acts" aria-label="plan mode">plan</button>
-              <button id="safetyChip" class="mode-chip" title="Safety mode — click to pick explicitly" aria-label="safety mode">ask<svg viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg></button>
-              <span class="composer-modes-sep" aria-hidden="true"></span>
-              <button id="modelChip" class="mode-chip model-chip" title="Switch model">
-                <span class="model-name" id="modelChipLabel">&hellip;</span>
-                <svg viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg>
-              </button>
-            </div>
-            <textarea id="input" rows="1" placeholder="Message Saturday&hellip; ( / for commands )" spellcheck="false"></textarea>
-            <div class="composer-actions">
-              <div class="hint" id="composerHint">Enter to send &middot; Shift+Enter newline</div>
-              <button id="enhanceBtn" class="icon-btn hidden" title="Enhance prompt (Bolt parity — rewrites this message to be clearer; click again to undo)">
-                <svg viewBox="0 0 24 24"><path d="M12 2l1.8 5.6L19 9.4l-4.3 3.4 1.4 5.7L12 15.4l-4.1 3.1 1.4-5.7L5 9.4l5.2-1.8zM19 15l.9 2.6L22.5 18l-2.1 1.7.7 2.6-2.6-1.5-2.6 1.5.7-2.6L14.5 18l2.6-.4z"/></svg>
-              </button>
-              <button id="micBtn" class="icon-btn hidden" title="Voice input">
-                <svg viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11z"/></svg>
-              </button>
-              <button id="treeBtn" class="icon-btn" title="Browse workspace files and folders">
-                <svg viewBox="0 0 24 24"><path d="M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2z"/></svg>
-              </button>
-              <button id="skillsBtn" class="icon-btn" title="Installed skills">
-                <svg viewBox="0 0 24 24"><path d="M12 2 2 7l10 5 10-5zM2 17l10 5 10-5M2 12l10 5 10-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
-              </button>
-              <button id="memoryBtn" class="icon-btn" title="What Saturday remembers">
-                <svg viewBox="0 0 24 24"><path d="M12 3a5 5 0 0 0-5 5v.3A4 4 0 0 0 5 16a4 4 0 0 0 3 3.86V21h1v-2h1v2h2v-2h1v2h1v-1.14A4 4 0 0 0 19 16a4 4 0 0 0-2-6.7V8a5 5 0 0 0-5-5z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
-              </button>
-              <button id="attachBtn" class="icon-btn" title="Attach image or text file">
-                <svg viewBox="0 0 24 24"><path d="M16.5 6v11.5a4 4 0 0 1-8 0V5a2.5 2.5 0 0 1 5 0v10.5a1 1 0 0 1-2 0V6H10v9.5a2.5 2.5 0 0 0 5 0V5a4 4 0 0 0-8 0v12.5a5.5 5.5 0 0 0 11 0V6z"/></svg>
-              </button>
-              <button id="sendBtn" class="send-btn" title="Send" disabled>
-                <svg viewBox="0 0 24 24" class="ic-send"><path d="M3 20.5v-17l18 8.5zM5 17.2L16.9 12 5 6.8z"/></svg>
-                <svg viewBox="0 0 24 24" class="ic-stop hidden"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg>
-              </button>
-            </div>
-          </div>
-          <input id="fileInput" type="file" accept="image/*,.txt,.md,.py,.js,.ts,.jsx,.tsx,.json,.yaml,.yml,.toml,.csv,.log,.html,.css,.sh,.bat,.ps1" multiple hidden>
-        </div>
-      </section>
 
       <section id="stage">
         <div id="stageTabs" role="tablist" aria-label="Workspace panels">
@@ -231,7 +160,7 @@
           <div id="stageFiles" class="stage-pane" role="tabpanel" aria-label="Files" tabindex="0"></div>
           <div id="stageMemory" class="stage-pane" role="tabpanel" aria-label="Memory" tabindex="0">
             <div class="mg-bar">
-              <input id="mgSearch" class="mg-search" type="search" placeholder="find a file, chat or fact&hellip;" spellcheck="false">
+              <input id="mgSearch" class="mg-search" type="search" aria-label="Find a file, chat or fact" placeholder="find a file, chat or fact&hellip;" spellcheck="false">
               <div id="mgLegend" class="mg-legend"></div>
               <div class="mg-actions">
                 <button id="mgLabels" class="mg-btn on" title="show names">names</button>
@@ -275,6 +204,78 @@
           <div id="stageRuns" class="stage-pane" role="tabpanel" aria-label="Runs" tabindex="0"></div>
         </div>
       </section>
+      <section id="rail">
+        <div id="findBar" class="find-bar hidden">
+          <input id="findInput" type="text" aria-label="Find in chat" placeholder="Find in chat&hellip;" spellcheck="false" autocomplete="off">
+          <span id="findCount" class="find-count mono"></span>
+          <button id="findPrev" class="icon-btn sm" title="Previous match (Shift+Enter)" aria-label="Previous match">&uarr;</button>
+          <button id="findNext" class="icon-btn sm" title="Next match (Enter)" aria-label="Next match">&darr;</button>
+          <button id="findClose" class="icon-btn sm" title="Close (Esc)" aria-label="Close find bar">&times;</button>
+        </div>
+        <div id="transcript" tabindex="-1">
+          <div id="emptyState" class="empty-state">
+            <svg class="empty-mark" viewBox="0 0 32 32" aria-hidden="true"><path d="M22.3 5.75 5.09 5.75 17.59 21.75 9.7 21.75 9.7 26.25 26.81 26.25 14.31 10.25 22.3 10.25Z" fill="currentColor"/></svg>
+            <h1>saturday</h1>
+            <p class="tagline">the auditable minimal harness.</p>
+            <div class="suggests" id="suggests"></div>
+            <button id="keyHint" class="key-hint hidden"></button>
+          </div>
+          <div id="thread" class="thread"></div>
+        </div>
+        <button id="scrollBtn" class="scroll-btn hidden" title="Scroll to bottom">
+          <svg viewBox="0 0 24 24"><path d="M12 16.5 5 9.5l1.4-1.4L12 13.7l5.6-5.6L19 9.5z"/></svg>
+        </button>
+        <div id="queueRow" class="queue-row hidden"></div>
+
+        <div id="composerWrap">
+          <div id="followRow" class="follow-row hidden" aria-label="Suggested follow-ups"></div>
+          <div id="attachRow" class="attach-row hidden"></div>
+          <div id="slashPop" class="slash-pop hidden" role="listbox"></div>
+          <div id="atPop" class="slash-pop at-pop hidden" role="listbox"></div>
+          <div id="treePop" class="slash-pop tree-pop hidden" role="tree"></div>
+          <div id="skillsPop" class="slash-pop skills-pop hidden" role="listbox"></div>
+          <div id="memoryPop" class="slash-pop skills-pop hidden" role="listbox"></div>
+          <div class="composer">
+            <div id="composerModes">
+              <button id="planChip" class="mode-chip" title="Plan mode — read-only planning, approve before it acts" aria-label="plan mode">plan</button>
+              <button id="safetyChip" class="mode-chip" title="Safety mode — click to pick explicitly" aria-label="safety mode">ask<svg viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg></button>
+              <span class="composer-modes-sep" aria-hidden="true"></span>
+              <button id="modelChip" class="mode-chip model-chip" title="Switch model">
+                <span class="model-name" id="modelChipLabel">&hellip;</span>
+                <svg viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg>
+              </button>
+            </div>
+            <textarea id="input" rows="1" placeholder="Message Saturday&hellip; ( / for commands )" spellcheck="false"></textarea>
+            <div class="composer-actions">
+              <div class="hint" id="composerHint">Enter to send &middot; Shift+Enter newline</div>
+              <button id="enhanceBtn" class="icon-btn hidden" title="Enhance prompt (Bolt parity — rewrites this message to be clearer; click again to undo)">
+                <svg viewBox="0 0 24 24"><path d="M12 2l1.8 5.6L19 9.4l-4.3 3.4 1.4 5.7L12 15.4l-4.1 3.1 1.4-5.7L5 9.4l5.2-1.8zM19 15l.9 2.6L22.5 18l-2.1 1.7.7 2.6-2.6-1.5-2.6 1.5.7-2.6L14.5 18l2.6-.4z"/></svg>
+              </button>
+              <button id="micBtn" class="icon-btn hidden" title="Voice input">
+                <svg viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11z"/></svg>
+              </button>
+              <button id="treeBtn" class="icon-btn" title="Browse workspace files and folders" aria-label="Browse workspace files">
+                <svg viewBox="0 0 24 24"><path d="M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2z"/></svg>
+              </button>
+              <button id="skillsBtn" class="icon-btn" title="Installed skills" aria-label="Installed skills">
+                <svg viewBox="0 0 24 24"><path d="M12 2 2 7l10 5 10-5zM2 17l10 5 10-5M2 12l10 5 10-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+              </button>
+              <button id="memoryBtn" class="icon-btn" title="What Saturday remembers" aria-label="What Saturday remembers">
+                <svg viewBox="0 0 24 24"><path d="M12 3a5 5 0 0 0-5 5v.3A4 4 0 0 0 5 16a4 4 0 0 0 3 3.86V21h1v-2h1v2h2v-2h1v2h1v-1.14A4 4 0 0 0 19 16a4 4 0 0 0-2-6.7V8a5 5 0 0 0-5-5z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+              </button>
+              <button id="attachBtn" class="icon-btn" title="Attach image or text file" aria-label="Attach image or text file">
+                <svg viewBox="0 0 24 24"><path d="M16.5 6v11.5a4 4 0 0 1-8 0V5a2.5 2.5 0 0 1 5 0v10.5a1 1 0 0 1-2 0V6H10v9.5a2.5 2.5 0 0 0 5 0V5a4 4 0 0 0-8 0v12.5a5.5 5.5 0 0 0 11 0V6z"/></svg>
+              </button>
+              <button id="sendBtn" class="send-btn" title="Send" disabled>
+                <svg viewBox="0 0 24 24" class="ic-send"><path d="M3 20.5v-17l18 8.5zM5 17.2L16.9 12 5 6.8z"/></svg>
+                <svg viewBox="0 0 24 24" class="ic-stop hidden"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg>
+              </button>
+            </div>
+          </div>
+          <input id="fileInput" type="file" accept="image/*,.txt,.md,.py,.js,.ts,.jsx,.tsx,.json,.yaml,.yml,.toml,.csv,.log,.html,.css,.sh,.bat,.ps1" multiple hidden>
+        </div>
+      </section>
+
 
     </div>
   </main>
@@ -1009,7 +1010,7 @@
   </div>
 </div>
 
-<div id="askModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="askTitle">
+<div id="askModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="askTitle" aria-describedby="askMsg">
   <div class="modal-card modal-card-sm">
     <div class="modal-head">
       <h2 id="askTitle">Confirm</h2>
@@ -1029,6 +1030,7 @@
 
 <div id="srStatus" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
 <div id="toasts" class="toasts" aria-live="polite"></div>
+<div id="toastsAlert" class="toasts" role="alert" aria-live="assertive"></div>
 
 <div id="trustModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="trustTitle">
   <div class="modal-card trust-card">

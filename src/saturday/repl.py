@@ -122,6 +122,9 @@ class Repl:
         input_fn: Callable[[str], str] = input,
         output_fn: Callable[..., None] = print,
     ) -> None:
+        # tracks whether the current stream is inside a reasoning span, so
+        # the plain-text marker is written once rather than per token
+        self._reasoning_marked = False
         self.agent = agent
         self.tui = tui
         self.store = store or agent.session_store
@@ -165,9 +168,31 @@ class Repl:
 
         if os.name == "posix" and sys.stdin.isatty():
             try:
-                import readline  # noqa: F401
+                import readline
             except ImportError:
-                pass
+                return
+            if getattr(self, "_completer_ready", False):
+                return
+            self._completer_ready = True
+            # slash.py already holds the single source of truth for command
+            # names; without a completer the user had to know them by heart
+            try:
+                from saturday.slash import COMMANDS
+
+                # registry keys may already carry the leading slash
+                names = sorted(n if n.startswith("/") else "/" + n for n in COMMANDS)
+            except Exception:
+                return
+
+            def complete(text: str, state: int):
+                if not text.startswith("/"):
+                    return None
+                hits = [n for n in names if n.startswith(text)]
+                return hits[state] + " " if state < len(hits) else None
+
+            readline.set_completer(complete)
+            readline.set_completer_delims(" \t\n")
+            readline.parse_and_bind("tab: complete")
 
     def read_line(self, prompt_str: str) -> str:
         parts = [self._input(prompt_str)]
@@ -314,6 +339,16 @@ class Repl:
                 t.exit_alt_screen()
 
     def _stream(self, delta: str, reasoning: bool) -> None:
+        # colour alone separated thinking from the answer, so under NO_COLOR,
+        # a pipe or a monochrome terminal the two ran together
+        if reasoning and not self._reasoning_marked:
+            from saturday.ui import _color_ok
+
+            if not _color_ok():
+                sys.stdout.write("\nthinking> ")
+            self._reasoning_marked = True
+        elif not reasoning and self._reasoning_marked:
+            self._reasoning_marked = False
         sys.stdout.write(paint(delta, "dim") if reasoning else delta)
         sys.stdout.flush()
 
