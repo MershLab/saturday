@@ -5390,3 +5390,33 @@ def test_auto_routing_actually_switches_the_agent_mid_turn(tmp_path, monkeypatch
     # and the selection stays on auto for the next turn
     with app._cfg_lock:
         assert app.session_models[rt.sid] == "auto"
+
+
+def test_finish_and_announce_ends_the_run_before_publishing():
+    """The terminal event must not reach a client while the runtime is busy.
+
+    session_runtime documents this and notes the race shipped once: stream
+    pumps exit on done/error only when the runtime is already idle, so
+    publishing first left a viewer hanging until the next ping failed. The
+    pipeline worker had the order reversed; both paths share this helper now."""
+    from saturday.webui import finish_and_announce
+
+    seen = []
+
+    class _Bus:
+        def publish(self, e):
+            seen.append(("publish", rt.busy))
+
+    class _RT:
+        busy = True
+        bus = _Bus()
+
+        def finish_run(self):
+            seen.append(("finish", self.busy))
+            type(self).busy = False
+
+    rt = _RT()
+    finish_and_announce(rt, {"t": "done"})
+
+    assert [k for k, _ in seen] == ["finish", "publish"], "finish_run must come first"
+    assert seen[1][1] is False, "the runtime must be idle when the client is told"

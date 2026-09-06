@@ -479,6 +479,19 @@ def _auto_title(app: "AppState", rt: SessionRuntime, user_text: str, final: str)
         pass  # best-effort: the truncated first message remains the fallback
 
 
+def finish_and_announce(rt, event: dict) -> None:
+    """End a run, then tell the client - in that order, always.
+
+    session_runtime documents the invariant and notes the race shipped once:
+    stream pumps exit on done/error only when the runtime is already idle, so
+    publishing first leaves a viewer hanging until the next ping fails. Both
+    the chat worker and the pipeline worker end runs, and the pipeline one had
+    the order reversed. One helper so they cannot drift apart again.
+    """
+    rt.finish_run()
+    rt.bus.publish(event)
+
+
 def _delegate_turn(app: "AppState", rt: SessionRuntime, aid: str, prompt: str, emit_delta):
     """Run one turn inside an installed CLI agent instead of the model loop.
 
@@ -2831,9 +2844,14 @@ class Handler(BaseHTTPRequestHandler):
                 stop = "error"
                 rt.bus.publish({"t": "notice", "s": f"[{name}] failed: {type(exc).__name__}: {exc}"})
             finally:
-                rt.bus.publish({"t": "done", "final": final, "stop_reason": stop,
-                                "steps": 0, "tokens": 0, "sid": rt.sid})
-                rt.finish_run()
+                # STATE MACHINE INVARIANT (session_runtime.py): finish_run()
+                # happens BEFORE the terminal event. Stream pumps exit on
+                # done/error only once the runtime is idle, so publishing first
+                # left a viewer hanging on the stream until the next ping
+                # failed. The chat path already does this; the pipeline path
+                # had it the wrong way round.
+                finish_and_announce(rt, {"t": "done", "final": final, "stop_reason": stop,
+                                          "steps": 0, "tokens": 0, "sid": rt.sid})
 
         threading.Thread(target=work, daemon=True,
                          name=f"saturday-pipeline-{name}").start()
