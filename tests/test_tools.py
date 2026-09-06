@@ -4515,3 +4515,28 @@ def test_shell_workdir_is_relative_to_the_workspace_not_the_process_cwd(tmp_path
     # an absolute path outside the workspace is still refused
     ok, out = tool.run({"command": "pwd", "workdir": str(elsewhere / "src")})
     assert not ok and "escapes workspace root" in out
+
+
+def test_verify_runs_the_interpreter_saturday_is_running_on(tmp_path):
+    """T20: it ran "python", a name absent on many distros and never the venv
+    Saturday is in, so the verify step used a different interpreter than the
+    one holding the project's dependencies."""
+    import sys
+
+    from saturday.verify import detect_project, _has_pytest
+
+    (tmp_path / "tests").mkdir()
+    recipes = dict((label, argv) for label, argv in detect_project(tmp_path))
+    assert "pytest" in recipes
+    assert recipes["pytest"][0] == sys.executable, recipes["pytest"]
+    assert recipes["pytest"][0] != "python"
+
+    # _has_pytest said `"pytest" in text and ("tool.pytest" in text or
+    # "pytest" in text)` - the second half implied by the first
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    assert _has_pytest(plain) is False
+    (plain / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+    assert _has_pytest(plain) is False
+    (plain / "pyproject.toml").write_text("[project]\ndependencies=['pytest']\n", encoding="utf-8")
+    assert _has_pytest(plain) is True

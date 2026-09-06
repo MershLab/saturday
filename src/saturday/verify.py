@@ -7,6 +7,7 @@ outcomes. Stdlib-only; missing toolchains are simply skipped at detection.
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -17,9 +18,12 @@ def _has_pytest(root: Path) -> bool:
         return True
     try:
         text = (root / "pyproject.toml").read_text(encoding="utf-8", errors="replace")
-        return "pytest" in text and ("tool.pytest" in text or "pytest" in text)
     except OSError:
         return False
+    # The old expression was `"pytest" in text and ("tool.pytest" in text or
+    # "pytest" in text)`, whose second half is implied by its first: it said
+    # "pytest" in text twice and meant nothing more. Say that once. (T20)
+    return "pytest" in text
 
 
 def _which(name: str) -> bool:
@@ -33,7 +37,11 @@ def detect_project(root: Path) -> list[tuple[str, list[str]]]:
     root = Path(root)
     out: list[tuple[str, list[str]]] = []
     if _has_pytest(root):
-        out.append(("pytest", ["python", "-m", "pytest", "-q"]))
+        # sys.executable, not "python": that name is absent on many distros
+        # (python3 only) and, where it exists, is never the venv Saturday is
+        # running in - so the verify step ran a different interpreter than
+        # the one holding the project's dependencies. (T20)
+        out.append(("pytest", [sys.executable, "-m", "pytest", "-q"]))
     if (root / "package.json").is_file() and _which("npm"):
         out.append(("npm test", ["npm", "test"]))
     if (root / "Cargo.toml").is_file() and _which("cargo"):
