@@ -5642,3 +5642,56 @@ def test_deleting_a_session_unregisters_its_attention_sink(tmp_path):
         assert status == 200, body
 
     assert len(attention._sinks) == before, "the deleted session's sink is still registered"
+
+
+def test_a_setting_that_could_not_be_saved_does_not_report_a_clean_apply(tmp_path, monkeypatch):
+    """S11: save_config's OSError was swallowed, so the UI reported "applied"
+    for a setting that would be gone on the next restart."""
+    import saturday.webui as webui_mod
+
+    app = make_app(tmp_path, [{"text": "hi"}])
+
+    def full_disk(partial):
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(webui_mod, "save_config", full_disk, raising=False)
+    import saturday.config as cfgmod
+    monkeypatch.setattr(cfgmod, "save_config", full_disk)
+
+    with _Server(app) as srv:
+        status, body = _req(srv.base, "/api/config", "POST", {"temperature": 0.42})
+        assert status == 200, body
+        assert "temperature" in body["applied"], "it is live for this session"
+        assert body.get("persist_error"), "the failed save was reported as a clean apply"
+        assert "No space left" in body["persist_error"]
+        assert app.base_cfg.temperature == 0.42
+
+    # and a save that works says nothing
+    app2 = make_app(tmp_path / "b", [{"text": "hi"}])
+    monkeypatch.setattr(cfgmod, "save_config", lambda partial: None)
+    with _Server(app2) as srv:
+        status, body = _req(srv.base, "/api/config", "POST", {"temperature": 0.5})
+        assert status == 200 and not body.get("persist_error")
+
+
+def test_bad_hooks_reject_the_whole_save_rather_than_half_of_it(tmp_path, monkeypatch):
+    """S11: hooks were validated AFTER the rest of the patch was persisted, so
+    a rejected save answered 400 while every other setting in it had already
+    gone to disk."""
+    saved = []
+    import saturday.config as cfgmod
+    monkeypatch.setattr(cfgmod, "save_config", lambda partial: saved.append(dict(partial)))
+
+    app = make_app(tmp_path, [{"text": "hi"}])
+    before = app.base_cfg.temperature
+
+    with _Server(app) as srv:
+        status, body = _req(srv.base, "/api/config", "POST", {
+            "temperature": 0.99,
+            "hooks": {"pre_tool_call": "not-a-list"},
+        })
+        assert status == 400, body
+        assert "list of command strings" in body["error"]
+
+    assert not saved, f"a rejected save still wrote: {saved}"
+    assert app.base_cfg.temperature == before, "the rejected save changed live config"

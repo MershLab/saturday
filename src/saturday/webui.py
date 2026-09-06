@@ -766,6 +766,8 @@ class AppState:
         self.session_models: dict[str, str] = {}
         # delegate chosen before any session existed; the next chat inherits it
         self.default_agent: str = ""
+        # last save_config failure, surfaced by the config routes (S11)
+        self.config_persist_error: str = ""
         self.store = SessionStore(root=store_root) if store_root else SessionStore()
         self.projects = projects_store if projects_store is not None else ProjectStore()
         self.base_cfg = AgentConfig.load(self.cfg_overrides)
@@ -1148,6 +1150,15 @@ class AppState:
         known_families = set(ToolRegistry.TOOL_FAMILIES)
         reg_names = self._registry_names()
 
+        # Validate hooks BEFORE anything is written. They used to be validated
+        # after the rest of the patch had already been persisted, so a bad
+        # hooks value answered 400 while every other setting in the same save
+        # had quietly gone to disk - the user saw a rejection and got a
+        # partial apply.
+        hooks_in = patch.get("hooks") if "hooks" in patch else None
+        if hooks_in is not None:
+            self._validate_hooks(hooks_in)
+
         applied: list[str] = []
         with self._cfg_lock:
             cfg = self.base_cfg
@@ -1169,14 +1180,21 @@ class AppState:
                 # identical state before persistence/reload either way
                 cfg.model = PROVIDERS[cfg.provider].resolve_default_model()
             persisted = {k: getattr(cfg, k) for k in applied}
+        self.config_persist_error = ""
         if persisted:
             try:
                 save_config(persisted)
-            except OSError:
-                pass
+            except OSError as exc:
+                # The change IS live for this session, so this is not a
+                # failure to apply - but it was swallowed entirely, and the UI
+                # reported "applied" for a setting that would be gone on the
+                # next restart. Record it so the route can say so.
+                self.config_persist_error = (
+                    f"applied for this session but could not be saved: {exc}"
+                )
         self._reload_runtime_state(applied)
-        if "hooks" in patch and patch["hooks"] is not None:
-            self._write_hooks(patch["hooks"])
+        if hooks_in is not None:
+            self._write_hooks(hooks_in)
         return applied
 
     def _reload_runtime_state(self, applied: list[str]) -> None:
@@ -1238,8 +1256,14 @@ class AppState:
             for rt in rts:
                 rt._ctx_base = None
 
-    def _write_hooks(self, hooks_in) -> None:
-        """Validate + persist global lifecycle hooks (Settings > Hooks)."""
+    @staticmethod
+    def _validate_hooks(hooks_in) -> dict[str, list[str]]:
+        """Check a hooks patch and return it cleaned. Raises ValueError.
+
+        Split out of _write_hooks so apply_config can reject a bad value
+        BEFORE it persists the rest of the patch: validating afterwards meant
+        a rejected save had already written every other setting in it.
+        """
         valid = {"pre_tool_call", "post_tool_call"}
         if not isinstance(hooks_in, dict) or set(hooks_in.keys()) - valid:
             raise ValueError(f"hooks must be an object with keys: {', '.join(sorted(valid))}")
@@ -1254,6 +1278,11 @@ class AppState:
             if any(len(c) > 500 or "\n" in c for c in cmds):
                 raise ValueError(f"{k} commands must be single lines of at most 500 chars")
             cleaned[k] = cmds
+        return cleaned
+
+    def _write_hooks(self, hooks_in) -> None:
+        """Persist global lifecycle hooks (Settings > Hooks)."""
+        cleaned = self._validate_hooks(hooks_in)
         from saturday.config import get_config_dir
 
         path = get_config_dir() / "hooks.json"
@@ -3397,6 +3426,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         out = app.state_payload()
         out["applied"] = applied
+        if app.config_persist_error:
+            out["persist_error"] = app.config_persist_error
         self._send_json(out)
 
     def _post_rename(self, payload: dict) -> None:
@@ -3542,6 +3573,8 @@ class Handler(BaseHTTPRequestHandler):
         out["models"] = models
         out["probe"] = detail
         out["probe_ok"] = ok
+        if app.config_persist_error:
+            out["persist_error"] = app.config_persist_error
         self._send_json(out)
 
     def _handle_chat(self, payload: dict) -> None:
