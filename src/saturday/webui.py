@@ -978,6 +978,18 @@ class AppState:
             return
         self.build_agent_for(rt)
 
+    def hello_fields(self) -> tuple[str, str]:
+        """The (provider, model) the hello event announces.
+
+        S10: every chat called the whole state_payload() for exactly these two
+        strings, and that resolves an API key for every configured provider,
+        stats every session to build the project list, parses usage.jsonl and
+        loads the custom commands - all on the request thread, before the run
+        even starts. This reads the two fields it needs.
+        """
+        with self._cfg_lock:
+            return self.base_cfg.provider, self.base_cfg.model
+
     def state_payload(self) -> dict:
         from saturday import __version__
         from saturday.config import PROVIDERS
@@ -3730,7 +3742,7 @@ class Handler(BaseHTTPRequestHandler):
             finally:
                 rt.bus.unsubscribe(q)
             return None
-        snap = app.state_payload()
+        hello_provider, hello_model = app.hello_fields()
         start_seq = rt.bus.last_seq
         # remember where this run's events begin so a re-attaching viewer
         # (user switched sessions mid-run) can replay exactly the live turn
@@ -3746,8 +3758,8 @@ class Handler(BaseHTTPRequestHandler):
         hello = {
             "t": "hello",
             "sid": rt.sid,
-            "provider": snap["provider"],
-            "model": snap["model"],
+            "provider": hello_provider,
+            "model": hello_model,
             "project": rt.project_id or "",
         }
         worker = threading.Thread(target=_run_chat, args=(app, rt, text, image_paths), daemon=True)

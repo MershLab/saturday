@@ -5542,14 +5542,17 @@ def test_a_failure_before_the_worker_starts_does_not_wedge_the_session(tmp_path,
     app = make_app(tmp_path, [{"text": "hello"}])
     boom = {"on": True}
 
-    real_state = app.state_payload
+    # hello_fields is the last read on the request thread before the worker
+    # takes over (it was state_payload() until S10 cut that cost); a session
+    # deleted right here is what raised out of do_POST
+    real_fields = app.hello_fields
 
-    def flaky_state():
+    def flaky_fields():
         if boom["on"]:
             raise OSError("session deleted mid-request")
-        return real_state()
+        return real_fields()
 
-    monkeypatch.setattr(app, "state_payload", flaky_state)
+    monkeypatch.setattr(app, "hello_fields", flaky_fields)
 
     with _Server(app) as srv:
         sid = app.store.create({"task": "t"})
@@ -5844,3 +5847,31 @@ def test_saving_an_unrelated_setting_does_not_erase_blocked_apps(tmp_path, monke
 
     # and the deny rules that are restored on the next line still are
     assert getattr(rt.agent.approval_policy, "deny_rules", None) is not None
+
+
+def test_starting_a_chat_does_not_build_the_whole_state_payload(tmp_path, monkeypatch):
+    """S10: every chat called the full state_payload() for the two strings the
+    hello event needs. That resolves an API key for every configured provider,
+    stats every session for the project list, parses usage.jsonl and loads the
+    custom commands - all on the request thread before the run starts."""
+    app = make_app(tmp_path, [{"text": "hi"}])
+    calls = []
+    real = app.state_payload
+    monkeypatch.setattr(app, "state_payload", lambda: calls.append(1) or real())
+
+    with _Server(app) as srv:
+        sid = app.store.create({"task": "t"})
+        req = urllib.request.Request(
+            srv.base + "/api/chat",
+            data=json.dumps({"text": "hi", "session_id": sid}).encode(),
+            method="POST",
+            headers={"X-Saturday-Token": TOKEN, "Content-Type": "application/json"},
+        )
+        body = urllib.request.urlopen(req, timeout=15).read().decode()
+
+    assert not calls, f"the chat path still builds the full state payload ({len(calls)}x)"
+    # and the hello event still carries the two fields it always did
+    hello = json.loads(body.splitlines()[0])
+    assert hello["t"] == "hello"
+    assert hello["provider"] == app.base_cfg.provider
+    assert hello["model"] == app.base_cfg.model
