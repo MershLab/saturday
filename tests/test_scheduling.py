@@ -129,6 +129,22 @@ def transport_sent_last_text(gw):
     return gw.transport.sent[-1][1]
 
 
+def _wait_for(cond, message, timeout=5.0):
+    """Wait for a gateway worker thread to land its reply.
+
+    The gateway answers on a daemon thread by design - the poll loop must keep
+    polling while a chat works - so every assertion about transport.sent is a
+    race unless it waits."""
+    import time as _t
+
+    deadline = _t.monotonic() + timeout
+    while _t.monotonic() < deadline:
+        if cond():
+            return
+        _t.sleep(0.01)
+    raise AssertionError(message)
+
+
 def test_telegram_gateway_end_to_end():
     from saturday.gateway import TelegramGateway
 
@@ -141,6 +157,12 @@ def test_telegram_gateway_end_to_end():
 
     handled = gw.poll_once()
     assert handled == 1
+    # handle_update dispatches to a daemon thread and returns, so the reply is
+    # not on the transport yet. Reading transport.sent straight after
+    # poll_once() only passed because the rest of the suite happened to give
+    # that thread time; running this file alone it failed outright.
+    _wait_for(lambda: any(t[0] == 42 for t in transport.sent), "no reply to the allowed chat")
+    _wait_for(lambda: any(t[0] == 43 for t in transport.sent), "no liveness reply to the stranger")
     sent = [t for t in transport.sent if t[0] == 42]
     blocked = [t for t in transport.sent if t[0] == 43]
     assert sent and sent[0][1] == "echo:hello bot"
