@@ -331,9 +331,22 @@ class Agent:
     def _make_task_tool(self) -> SubagentTask:
         from saturday.sessions import EphemeralSessionStore
 
-        def child_factory():
+        def child_factory(model: str = "", max_steps: int | None = None):
+            # C19: a child ran on the parent's model with the parent's full
+            # 200 step budget and no way to ask for less. Both are now the
+            # caller's to choose, clamped so a child can never be granted a
+            # longer run than the parent it was spawned from.
+            cfg = self.cfg
+            if model or max_steps is not None:
+                import copy as _copy
+
+                cfg = _copy.copy(cfg)
+                if model:
+                    cfg.model = model
+                if max_steps is not None:
+                    cfg.max_steps = max(1, min(int(max_steps), int(self.cfg.max_steps)))
             sub = Agent(
-                cfg=self.cfg,
+                cfg=cfg,
                 memory=WorkingMemory(),
                 hooks=None,
                 plugins=[core_plugin(self.cfg)],

@@ -16,20 +16,46 @@ from typing import Callable
 
 
 class _Child:
-    def __init__(self, cid: str, agent_factory: Callable[[], object] | None) -> None:
+    def __init__(self, cid: str, agent_factory: Callable[..., object] | None,
+                 *, model: str = "", max_steps: int | None = None) -> None:
         self.id = cid
         self.history: list[dict] = []
         self.turns = 0
         self.created = time.time()
-        # one agent INSTANCE per child for the child's whole life
+        # one agent INSTANCE per child for the child's whole life, so the
+        # model and step budget are fixed when the child is created and every
+        # continuation of it runs the same way
+        self.model = model
+        self.max_steps = max_steps
         self._agent = None
         self._factory = agent_factory
 
     @property
     def agent(self):
         if self._agent is None and self._factory is not None:
-            self._agent = self._factory()
+            self._agent = _build(self._factory, self.model, self.max_steps)
         return self._agent
+
+
+def _build(factory: Callable[..., object], model: str, max_steps: int | None):
+    """Call a factory with only the arguments it actually accepts.
+
+    The factory is supplied by the caller, and legacy ones (and the fakes in
+    the tests) take none - so the choice is passed only where it can land,
+    the same duck-typing the progress callbacks already use.
+    """
+    import inspect
+
+    try:
+        params = inspect.signature(factory).parameters
+    except (TypeError, ValueError):
+        return factory()
+    kwargs = {}
+    if model and "model" in params:
+        kwargs["model"] = model
+    if max_steps is not None and "max_steps" in params:
+        kwargs["max_steps"] = max_steps
+    return factory(**kwargs)
 
 
 class SubagentTask:
@@ -47,6 +73,8 @@ class SubagentTask:
             "prompt": {"type": "string", "description": "Full standalone instructions"},
             "continue_id": {"type": "string", "description": "id from a previous call to continue that child"},
             "background": {"type": "boolean", "description": "run asynchronously; poll via job_output"},
+            "model": {"type": "string", "description": "model for this child (default: the same one you are running on)"},
+            "max_steps": {"type": "integer", "description": "tool-turn budget for this child; capped at your own"},
         },
         "required": ["description", "prompt"],
     }
@@ -80,10 +108,10 @@ class SubagentTask:
         except Exception:
             pass
 
-    def _new_child(self) -> _Child:
+    def _new_child(self, *, model: str = "", max_steps: int | None = None) -> _Child:
         with self._lock:
             self._seq += 1
-            child = _Child(f"sub-{self._seq}", self._factory)
+            child = _Child(f"sub-{self._seq}", self._factory, model=model, max_steps=max_steps)
             self._children[child.id] = child
         return child
 
@@ -130,17 +158,34 @@ class SubagentTask:
         try:
             continue_id = str(args.get("continue_id") or "").strip()
             background = bool(args.get("background"))
+            model = str(args.get("model") or "").strip()
+            raw_steps = args.get("max_steps")
+            try:
+                max_steps = int(raw_steps) if raw_steps is not None else None
+            except (TypeError, ValueError):
+                return False, f"max_steps must be a whole number, got {raw_steps!r}"
+            if max_steps is not None and max_steps < 1:
+                return False, "max_steps must be at least 1"
             notice = ""
             if continue_id:
                 child = self._children.get(continue_id)
                 if child is None:
-                    child = self._new_child()
+                    child = self._new_child(model=model, max_steps=max_steps)
                     notice = (
                         f"[note: unknown continue_id '{continue_id}'; "
                         f"started a fresh child {child.id}]\n"
                     )
+                elif (model and model != child.model) or (
+                    max_steps is not None and max_steps != child.max_steps
+                ):
+                    # the agent instance is built once and lives for the whole
+                    # child, so honouring this would silently not apply
+                    notice = (
+                        f"[note: {child.id} keeps the model and step budget it was "
+                        f"created with; start a new child to change them]\n"
+                    )
             else:
-                child = self._new_child()
+                child = self._new_child(model=model, max_steps=max_steps)
 
             if self._running_background_job(child) is not None:
                 # two threads mutating child.history concurrently corrupts the

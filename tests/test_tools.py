@@ -4131,3 +4131,79 @@ def test_agents_json_is_a_privileged_file():
 
     assert is_privileged_path(".saturday/agents.json")
     assert is_privileged_path(".saturday/agents-enabled.json")
+
+
+def test_task_passes_model_and_step_budget_to_the_factory():
+    """C19: a child ran on the parent's model with the parent's full 200 step
+    budget, and `task` exposed no way to ask for anything else."""
+    seen = []
+
+    def factory(model="", max_steps=None):
+        seen.append((model, max_steps))
+        return _FakeChildAgent()
+
+    task = SubagentTask(agent_factory=factory)
+    ok, _ = task.run({"description": "d", "prompt": "p", "model": "gpt-4o-mini", "max_steps": 12})
+    assert ok and seen == [("gpt-4o-mini", 12)]
+
+    seen.clear()
+    ok, _ = task.run({"description": "d", "prompt": "p"})
+    assert ok and seen == [("", None)], "an unasked-for choice must not be invented"
+
+
+def test_task_still_works_with_a_factory_that_takes_no_arguments():
+    """The factory comes from the caller; the older ones take nothing."""
+    def factory():
+        return _FakeChildAgent()
+
+    task = SubagentTask(agent_factory=factory)
+    ok, out = task.run({"description": "d", "prompt": "p", "model": "gpt-4o-mini", "max_steps": 5})
+    assert ok and "turn=1" in out
+
+
+def test_task_rejects_a_nonsense_step_budget():
+    def factory(model="", max_steps=None):
+        return _FakeChildAgent()
+
+    task = SubagentTask(agent_factory=factory)
+    ok, msg = task.run({"description": "d", "prompt": "p", "max_steps": "loads"})
+    assert not ok and "whole number" in msg
+    ok, msg = task.run({"description": "d", "prompt": "p", "max_steps": 0})
+    assert not ok and "at least 1" in msg
+
+
+def test_continuing_a_child_says_so_rather_than_silently_ignoring_a_new_model():
+    """One agent instance lives for the child's whole life, so a model passed
+    on a continuation cannot take effect. Say that instead of dropping it."""
+    def factory(model="", max_steps=None):
+        return _FakeChildAgent()
+
+    task = SubagentTask(agent_factory=factory)
+    _, out = task.run({"description": "d", "prompt": "first", "model": "a"})
+    cid = out.split("continue_id=")[1].split()[0]
+    ok, out2 = task.run({"description": "d", "prompt": "next", "continue_id": cid, "model": "b"})
+    assert ok
+    assert "keeps the model and step budget" in out2
+
+    _, out3 = task.run({"description": "d", "prompt": "next", "continue_id": cid, "model": "a"})
+    assert "keeps the model" not in out3, "the same model is not a change"
+
+
+def test_a_child_cannot_be_granted_a_longer_run_than_its_parent(tmp_path):
+    """"The parent's run budget is not shared down": a child could be handed
+    more steps than the parent that spawned it had to give."""
+    from saturday.agent.core import Agent
+    from saturday.config import AgentConfig
+
+    cfg = AgentConfig(workspace_root=str(tmp_path))
+    cfg.max_steps = 30
+    parent = Agent(cfg=cfg)
+    factory = parent._make_task_tool()._factory
+
+    assert factory(max_steps=5).cfg.max_steps == 5, "a smaller budget is honoured"
+    assert factory(max_steps=500).cfg.max_steps == 30, "the parent's budget is the ceiling"
+    assert factory().cfg.max_steps == 30, "unasked, the child inherits as before"
+    assert parent.cfg.max_steps == 30, "the parent's own config was mutated"
+
+    assert factory(model="gpt-4o-mini").cfg.model == "gpt-4o-mini"
+    assert factory().cfg.model == parent.cfg.model
