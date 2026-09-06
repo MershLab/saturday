@@ -919,8 +919,18 @@ class AppState:
     def _evict_idle_runtimes_locked(self) -> None:
         if len(self.runtimes) < self.MAX_RUNTIMES:
             return
+        # A runtime with a live stream subscriber is NOT idle even when no run
+        # is in flight: the tail holds that runtime's bus, so evicting it means
+        # the next run publishes on the rebuilt runtime's new bus and the
+        # viewer watches a dead one forever (S8).
+        def watched(rt) -> bool:
+            try:
+                return bool(rt.bus.subs)
+            except Exception:
+                return False
+
         idle = sorted(
-            (r for r in self.runtimes.values() if not r.busy),
+            (r for r in self.runtimes.values() if not r.busy and not watched(r)),
             key=lambda r: getattr(r, "last_used", 0.0),
         )
         for stale in idle[: len(self.runtimes) - self.MAX_RUNTIMES + 1]:
@@ -2042,6 +2052,12 @@ class Handler(BaseHTTPRequestHandler):
         running); without it the stream is live-only from now."""
         from urllib.parse import parse_qs, urlparse
 
+        # S8: any id matching the route charset used to mint a runtime here -
+        # an agent and a full registry, cached and permanent - for a session
+        # that does not exist. /api/context already refuses exactly this.
+        if not self.app.store._path(sid).is_file():
+            self._send_json({"error": "unknown session"}, 404)
+            return
         rt = self.app.runtime_for(sid)
         qs = parse_qs(urlparse(self.path).query)
         from_run = (qs.get("from") or [""])[0] == "run"

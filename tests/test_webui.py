@@ -5875,3 +5875,36 @@ def test_starting_a_chat_does_not_build_the_whole_state_payload(tmp_path, monkey
     assert hello["t"] == "hello"
     assert hello["provider"] == app.base_cfg.provider
     assert hello["model"] == app.base_cfg.model
+
+
+def test_streaming_an_unknown_session_does_not_mint_a_runtime(tmp_path):
+    """S8: any id matching the route charset minted a runtime here - an agent
+    and a full registry, cached and permanent - for a session that does not
+    exist. /api/context already refuses exactly this."""
+    app = make_app(tmp_path, [{"text": "hi"}])
+    with _Server(app) as srv:
+        status, body = _req(srv.base, "/api/stream/no-such-session", "GET")
+        assert status == 404, body
+    assert "no-such-session" not in app.runtimes, "it built a runtime anyway"
+
+
+def test_a_watched_idle_session_is_not_evicted(tmp_path):
+    """S8: a tail holds that runtime's bus. Evicting it while someone is
+    watching means the next run publishes on the rebuilt runtime's new bus and
+    the viewer watches a dead one forever."""
+    app = make_app(tmp_path, [{"text": "hi"}])
+    app.MAX_RUNTIMES = 3
+
+    watched = app.runtime_for("watched")
+    q = watched.bus.subscribe()          # a live tail
+    for i in range(6):
+        app.runtime_for(f"other-{i}")
+
+    assert "watched" in app.runtimes, "the session someone was streaming was evicted"
+    assert len(app.runtimes) <= app.MAX_RUNTIMES + 1
+
+    # once the tail goes, it is evictable like anything else
+    watched.bus.unsubscribe(q)
+    for i in range(6, 12):
+        app.runtime_for(f"other-{i}")
+    assert "watched" not in app.runtimes, "an unwatched idle runtime is pinned forever"
