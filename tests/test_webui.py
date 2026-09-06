@@ -5340,4 +5340,53 @@ def test_delegated_turn_reports_no_fabricated_usage():
     assert traj.steps == []
     assert traj.stop_reason in ("done", "error")
     assert seen, "the delegate's output must reach the transcript"
-    assert any(e.get("t") == "sysline" for e in rt.bus.events), "the user is told it was delegated"
+    assert any(e.get("t") == "notice" for e in rt.bus.events), "the user is told it was delegated"
+
+
+def test_auto_routing_actually_switches_the_agent_mid_turn(tmp_path, monkeypatch):
+    """Routing has to change the model that runs, not just announce one.
+
+    `_rebuild_runtime_agent` opens with `if rt.busy: return`, and a turn is
+    already busy by the time routing happens, so it returned silently: the
+    notice was published, session_models flipped to the target and back, and
+    the turn ran on the previous model while routing credited the routed one.
+
+    This drives the real _run_chat auto path and asserts on the cfg the turn
+    was actually built with - asserting on the notice text does not catch it,
+    and neither does calling build_agent_for directly."""
+    import saturday.config as cfgmod
+    from saturday import routing, webui
+
+    monkeypatch.setattr(cfgmod, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(cfgmod, "CONFIG_FILE", None)
+    monkeypatch.setattr(routing, "route", lambda **k: ("model", "openrouter/some/model"))
+
+    app = AppState(cfg_overrides={"workspace_root": str(tmp_path)})
+    rt = app.runtime_for("sess-route")
+    with app._cfg_lock:
+        app.session_models[rt.sid] = "auto"
+
+    built_with = {}
+    real_new_agent = app._new_agent
+
+    def spy(cfg):
+        built_with["provider"] = cfg.provider
+        built_with["model"] = cfg.model
+        agent = real_new_agent(cfg)
+        # no network: the turn returns immediately
+        agent.run = lambda *a, **k: Trajectory(
+            task="t", system_prompt="", steps=[], final_answer="ok", stop_reason="done")
+        return agent
+
+    from saturday.types import Trajectory
+
+    monkeypatch.setattr(app, "_new_agent", spy)
+    rt.try_begin_run()
+    webui._run_chat(app, rt, "hello", [])
+
+    assert built_with.get("provider") == "openrouter", (
+        f"the turn must be built on the routed provider, got {built_with}")
+    assert built_with.get("model") == "some/model"
+    # and the selection stays on auto for the next turn
+    with app._cfg_lock:
+        assert app.session_models[rt.sid] == "auto"

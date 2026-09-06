@@ -2791,6 +2791,25 @@ function openModelMenu() {
   // Everything a configured key actually bought, plus the CLI agents that can
   // take a turn. This used to be reachable only through a checkbox browser in
   // settings, so a fresh key showed nothing new here.
+  // the delegator: one ladder over agents and models, cheapest capable first
+  const autoRow = el("div", "mm-row mm-auto");
+  const autoBtn = el("button", "", "auto \u2014 pick per task");
+  autoBtn.title = "Route each turn to the cheapest capable option you already have";
+  if ((state.sessionModels[state.sid] || "") === "auto") autoBtn.classList.add("cur");
+  autoBtn.addEventListener("click", async () => {
+    closeMenus();
+    try {
+      const b3 = { model: "auto" };
+      if (state.sid) b3.session_id = state.sid;
+      await api("/api/config", { method: "POST", body: JSON.stringify(b3) });
+      state.sessionModels[state.sid] = "auto";
+      toast("Auto: Saturday picks per task", "ok");
+      renderHeaderPills();
+    } catch (e) { toast(e.message, "err"); }
+  });
+  autoRow.appendChild(autoBtn);
+  m.appendChild(autoRow);
+
   const body = el("div", "mm-catalog");
   m.appendChild(body);
   const filter = el("input", "mm-filter");
@@ -3549,9 +3568,11 @@ function renderHeaderPills() {
   const sessModel = state.sessionModels[state.sid];
   // a delegated chat is not running a provider model: say which agent has it
   const sel = sessModel || "";
-  $("#modelChipLabel").textContent = sel.startsWith("agent:")
-    ? "agent / " + sel.slice(6)
-    : (info.provider || "") + " / " + (sel || info.model || "?");
+  $("#modelChipLabel").textContent = sel === "auto"
+    ? "auto"
+    : sel.startsWith("agent:")
+      ? "agent / " + sel.slice(6)
+      : (info.provider || "") + " / " + (sel || info.model || "?");
   if (sessModel) $("#modelChip").title = "Model for THIS chat: " + sessModel + " (global: " + info.model + ") — click to switch";
   else $("#modelChip").title = "Switch model";
   const sc = $("#safetyChip");

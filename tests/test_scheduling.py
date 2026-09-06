@@ -348,3 +348,70 @@ def test_reusing_a_schedule_id_is_reported_as_a_replacement(tmp_path, monkeypatc
 
     rows = ScheduleStore(tmp_path / "schedules.json").list()
     assert [(r.id, r.expr, r.task) for r in rows] == [("job", "*/9 * * * *", "second")]
+
+
+# --- routing: one ladder over agents and models -----------------------------
+
+def _fake_providers(monkeypatch, tmp_path):
+    """A two-provider world with a free and a metered tier, no network."""
+    from saturday import catalog, routing
+
+    monkeypatch.setattr(routing, "_db_path", lambda: tmp_path / "routing.db")
+    monkeypatch.setattr(catalog, "providers", lambda timeout=8.0, only=None, refresh=False: [
+        catalog.ProviderEntry(name="openrouter", configured=True, reachable=True, detail="ok",
+                              models=["x/a:free", "x/b:free", "x/paid"], usable=True),
+        catalog.ProviderEntry(name="deepseek", configured=True, reachable=True, detail="ok",
+                              models=["ds-pro"], usable=True),
+    ])
+    return routing
+
+
+def test_route_prefers_the_cheaper_tier(monkeypatch, tmp_path):
+    routing = _fake_providers(monkeypatch, tmp_path)
+    kind, target = routing.route()
+    assert kind == "model"
+    assert target.endswith(":free"), f"a free model should outrank a metered one, got {target}"
+
+
+def test_a_payment_failure_parks_the_whole_tier_not_one_model(monkeypatch, tmp_path):
+    """Parking a single model made auto walk every free model in turn.
+
+    "Insufficient balance" is a fact about a provider's tier, so one failure
+    has to remove its siblings too - otherwise the router re-learns the same
+    thing once per model."""
+    routing = _fake_providers(monkeypatch, tmp_path)
+    assert routing.group_of("openrouter/x/a:free") == "openrouter:free"
+    assert routing.group_of("openrouter/x/paid") == "openrouter:metered"
+    assert routing.group_of("claude-code") == "claude-code", "agents stay individual"
+
+    routing.mark_unusable("openrouter/x/a:free")
+    left = {c.agent for c in routing.model_candidates()}
+    assert "openrouter/x/a:free" not in left
+    assert "openrouter/x/b:free" not in left, "the sibling free model must go too"
+    assert "openrouter/x/paid" in left, "the metered tier is a different question"
+
+    kind, target = routing.route()
+    assert target != "openrouter/x/a:free"
+
+
+def test_a_stale_backoff_never_disables_auto(monkeypatch, tmp_path):
+    """With everything parked, routing must still choose something.
+
+    Refusing would let a 15-minute-old failure switch the feature off, when
+    the reason may well have been fixed since."""
+    routing = _fake_providers(monkeypatch, tmp_path)
+    for ident in ("openrouter/x/a:free", "openrouter/x/paid", "deepseek/ds-pro"):
+        routing.mark_unusable(ident)
+    assert routing.model_candidates() == [], "everything really is parked"
+    choice = routing.route()
+    assert choice is not None, "auto must still pick something rather than give up"
+    assert choice[0] == "model"
+
+
+def test_unusable_detection_reads_real_provider_errors():
+    from saturday import routing
+
+    assert routing.looks_unusable('{"error":{"message":"Insufficient Balance"}}')
+    assert routing.looks_unusable("HTTP Error 402: Payment Required")
+    assert routing.looks_unusable("401 Unauthorized")
+    assert not routing.looks_unusable("connection reset by peer")

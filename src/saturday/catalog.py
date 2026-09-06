@@ -56,34 +56,21 @@ class AgentEntry:
 
 
 def _usability(name: str, key: str, timeout: float) -> tuple[bool, str]:
-    """Can this key actually run a paid model, or only list them?
+    """Deliberately does not guess.
 
-    Reachability is not usability. OpenRouter's model catalogue answers HTTP
-    200 with no credentials at all, so a listing proved nothing: the menu
-    happily offered 431 models on an account with zero credit, and every one
-    of them failed at send time with 402. Where a provider exposes a cheap
-    authenticated balance check, use it; otherwise assume usable rather than
-    invent a failure."""
-    if name != "openrouter":
-        return True, ""
-    import json as _json
-    import urllib.error
-    import urllib.request
+    An earlier version read OpenRouter's credits endpoint and treated a zero
+    balance as unusable. Measured against a real completion, that was exactly
+    backwards: the zero-credit OpenRouter key returns 200, while the DeepSeek
+    key - which reports nothing unusual - returns 402 "Insufficient Balance".
+    A balance endpoint answers a different question than "will a request
+    work", and it was wrong in both directions.
 
-    req = urllib.request.Request(
-        "https://openrouter.ai/api/v1/credits", headers={"Authorization": f"Bearer {key}"}
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            d = (_json.loads(r.read()) or {}).get("data", {})
-        remaining = float(d.get("total_credits", 0) or 0) - float(d.get("total_usage", 0) or 0)
-        if remaining <= 0:
-            return False, "no credit on this key - only :free models will run"
-        return True, ""
-    except urllib.error.HTTPError as e:
-        return False, f"key rejected (HTTP {e.code})"
-    except Exception:
-        return True, ""            # a failed check must not hide a working key
+    The only honest predictor is a real request, which costs money to make on
+    every menu open. So usability is learned at use time instead: a failure is
+    recorded by the router, which then escalates past that candidate (see
+    routing.route and the auto path in webui._run_chat).
+    """
+    return True, ""
 
 
 def _probe(name: str, timeout: float) -> ProviderEntry:

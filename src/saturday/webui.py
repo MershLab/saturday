@@ -492,7 +492,7 @@ def _delegate_turn(app: "AppState", rt: SessionRuntime, aid: str, prompt: str, e
     from saturday.types import Trajectory, Usage
 
     bus = rt.bus
-    bus.publish({"t": "sysline", "s": f"delegating this turn to {aid}", "kind": "info"})
+    bus.publish({"t": "notice", "s": f"delegated to {aid}"})
     tool = ExternalAgentTool()
     try:
         ok, out = tool.run({"agent": aid, "prompt": prompt, "timeout": 900})
@@ -513,6 +513,7 @@ def _delegate_turn(app: "AppState", rt: SessionRuntime, aid: str, prompt: str, e
 
 
 def _run_chat(app: "AppState", rt: SessionRuntime, text: str, image_paths: list[str]) -> None:
+    routed = ""          # set when this turn was auto-routed; used by the handler
     agent = rt.agent
     store = rt.store
     bus = rt.bus
@@ -566,14 +567,43 @@ def _run_chat(app: "AppState", rt: SessionRuntime, text: str, image_paths: list[
         attachments = list(image_paths) + list(rt.pending_images)
         rt.pending_images.clear()
         delegate = ""
+        routed = ""
         try:
             with app._cfg_lock:
                 sel = app.session_models.get(rt.sid, "") or ""
                 fallback = getattr(app, "default_agent", "") or ""
-            if sel.startswith("agent:"):
+                # A selection made before this chat existed has no session to
+                # live in. Adopt it here, BEFORE dispatching on it: resolving
+                # it further down left the mode set but never acted on.
+                if not sel and fallback:
+                    sel = fallback if fallback == "auto" else "agent:" + fallback
+                    app.session_models[rt.sid] = sel
+            if sel == "auto":
+                # The delegator proper: one ladder over installed CLI agents and
+                # provider models, cheapest capable tier first, and what it
+                # picks is recorded so the choice improves per kind of task.
+                from saturday import routing
+
+                choice = routing.route(task_kind="general")
+                if choice:
+                    kind, target = choice
+                    routed = target
+                    if kind == "agent":
+                        delegate = target
+                    else:
+                        with app._cfg_lock:
+                            app.session_models[rt.sid] = target
+                        try:
+                            agent = app.build_agent_for(rt)
+                        finally:
+                            with app._cfg_lock:
+                                app.session_models[rt.sid] = "auto"  # stay on auto
+                    bus.publish({"t": "notice", "s": f"auto \u2192 {kind}: {target}"})
+                else:
+                    bus.publish({"t": "notice",
+                                 "s": "auto: nothing available to route to"})
+            elif sel.startswith("agent:"):
                 delegate = sel.split(":", 1)[1]
-            elif fallback and not sel:
-                delegate = fallback
         except Exception:
             delegate = ""
         if delegate:
@@ -593,6 +623,16 @@ def _run_chat(app: "AppState", rt: SessionRuntime, text: str, image_paths: list[
         # the terminal event is published â€” the pump exits on done/error only
         # when the runtime is idle again, so publishing first would race and
         # can leave the client hanging on the stream.
+        if routed:
+            try:
+                from saturday import routing
+
+                ok_turn = traj.stop_reason == "done"
+                routing.record(routed, "general", ok_turn)
+                if not ok_turn and routing.looks_unusable(traj.final_answer or ""):
+                    routing.mark_unusable(routed)
+            except Exception:
+                pass
         rt.finish_run()
         from saturday.provenance import apply_visible_footer
 
@@ -667,6 +707,21 @@ def _run_chat(app: "AppState", rt: SessionRuntime, text: str, image_paths: list[
         rt.finish_run()
         bus.publish({"t": "done", "final": "", "stop_reason": "stopped", "steps": 0, "tokens": 0, "sid": rt.sid})
     except Exception as exc:
+        # An auto-routed candidate that raised is the clearest usability signal
+        # there is - better than any balance endpoint. Park it so the next turn
+        # routes past it instead of repeating the same failure.
+        if routed:
+            try:
+                from saturday import routing
+
+                routing.record(routed, "general", False, note=str(exc)[:200])
+                if routing.looks_unusable(f"{type(exc).__name__}: {exc}"):
+                    routing.mark_unusable(routed)
+                    bus.publish({"t": "notice",
+                                 "s": f"{routed} is not usable right now - "
+                                      "auto will route past it"})
+            except Exception:
+                pass
         rt.finish_run()
         bus.publish({"t": "error", "message": f"{type(exc).__name__}: {exc}", "sid": rt.sid})
 
@@ -764,9 +819,20 @@ class AppState:
         # "agent:<id>" selects an external CLI agent, not a model. It must never
         # reach cfg.model: the LLM client would try to call a provider with a
         # model name that does not exist.
-        if override and not override.startswith("agent:"):
+        if override and not override.startswith("agent:") and override != "auto":
             cfg = copy.copy(cfg)
-            cfg.model = override
+            # the router names a model as "<provider>/<model>", since the
+            # cheapest capable option is often not on the configured provider
+            if "/" in override:
+                head, rest = override.split("/", 1)
+                from saturday.config import PROVIDERS as _P
+
+                if head in _P:
+                    cfg.provider, cfg.model = head, rest
+                else:
+                    cfg.model = override
+            else:
+                cfg.model = override
         proj = self.session_project(sid)
         if proj is None:
             return cfg, self._persona_for(cfg, None), None
@@ -825,10 +891,15 @@ class AppState:
 
         return Agent(cfg=cfg, persona_extra=getattr(cfg, "persona_extra", "") or "", session_store=self.store)
 
-    def _rebuild_runtime_agent(self, rt: _SessionRuntime) -> None:
-        """Fresh agent for a runtime honoring its project (workspace/scopes/persona)."""
-        if rt.busy:
-            return
+    def build_agent_for(self, rt: "_SessionRuntime") -> object:
+        """Build this runtime's agent from its current selection, ignoring busy.
+
+        _rebuild_runtime_agent starts with `if rt.busy: return`, which is right
+        for a config change arriving from the UI mid-run. It is wrong for
+        routing inside a turn, which happens *after* try_begin_run(): the
+        rebuild returned silently, the old agent stayed in place, and auto
+        published a route it had not taken while crediting the result to a
+        model that never ran."""
         cfg, persona, pid = self._cfg_for_session(rt.sid)
         agent = self._new_agent(cfg)
         agent.persona_extra = persona
@@ -838,8 +909,15 @@ class AppState:
         agent._build_registry()
         rt.project_id = pid
         rt.agent = agent
-        rt._ctx_base = None  # system/tool overhead may have changed
+        rt._ctx_base = None
         _install_web_surface(rt, agent)
+        return agent
+
+    def _rebuild_runtime_agent(self, rt: _SessionRuntime) -> None:
+        """Fresh agent for a runtime honoring its project (workspace/scopes/persona)."""
+        if rt.busy:
+            return
+        self.build_agent_for(rt)
 
     def state_payload(self) -> dict:
         from saturday import __version__
@@ -1541,15 +1619,17 @@ class Handler(BaseHTTPRequestHandler):
             # A listing is not an entitlement. When the key demonstrably cannot
             # run paid models, offering them is a promise the send will break,
             # so only the free tier is listed and the reason is said out loud.
-            free_only_here = only_free or not p.usable
+            # an unusable key runs nothing here, so offer nothing and say why
+            if not p.usable:
+                notes.append({"provider": p.name, "note": p.note, "hidden": len(p.models)})
+                continue
+            free_only_here = only_free
             picked = [
                 {"id": m, "free": _is_free_model(p.name, m)}
                 for m in sorted(p.models)
                 if not free_only_here or _is_free_model(p.name, m)
             ]
-            if p.note:
-                notes.append({"provider": p.name, "note": p.note,
-                              "hidden": len(p.models) - len(picked)})
+
             if picked:
                 out[p.name] = picked
         agents = [
@@ -3150,6 +3230,16 @@ class Handler(BaseHTTPRequestHandler):
         # its first message yet has no session id, and falling through to the
         # global path would write "agent:<id>" into cfg.model, pointing every
         # provider request at a model name that does not exist.
+        if "model" in payload and str(payload.get("model") or "").strip() == "auto":
+            # "auto" is a routing mode, not a model name: same reasoning as
+            # "agent:<id>" below - it must never be persisted as cfg.model.
+            with app._cfg_lock:
+                if sid:
+                    app.session_models[sid] = "auto"
+                else:
+                    app.default_agent = "auto"
+            self._send_json({**app.state_payload(), "auto": True, "session_only": bool(sid)})
+            return
         if "model" in payload and str(payload.get("model") or "").startswith("agent:"):
             from saturday import catalog
 

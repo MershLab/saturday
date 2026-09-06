@@ -222,3 +222,125 @@ def pick(task_kind: str = "general", exclude: set[str] | None = None, tier_overr
         if c.enabled and c.installed and c.agent not in exclude and not quota_exhausted(c.agent):
             return c.agent
     return None
+
+# --------------------------------------------------------------- models
+# The router originally only chose between installed CLI agents, so a free
+# endpoint or a local model - the two cheapest things a user has - could never
+# be routed to. Provider models are candidates too, tiered by what they
+# actually cost the user rather than by vendor.
+
+
+def model_tier(provider: str, model: str) -> int:
+    """Where a provider model sits on the same ladder the agents use."""
+    if provider in ("ollama", "vllm"):
+        return LOCAL
+    if model.endswith(":free"):
+        return FREE
+    return METERED
+
+
+def model_candidates(task_kind: str = "general", timeout: float = 8.0,
+                     ignore_parked: bool = False) -> list[Candidate]:
+    """Provider models that can actually run right now.
+
+    A provider whose key cannot run paid models contributes only its free
+    tier: routing to one would repeat the exact failure the catalogue exists
+    to prevent - a listed model that 402s the moment it is used."""
+    from saturday import catalog
+
+    out: list[Candidate] = []
+    for p in catalog.providers(timeout=timeout):
+        if not p.reachable or not p.usable:
+            # unusable means the key cannot run anything here, free tier
+            # included; routing to it would just reproduce the failure
+            continue
+        for m in p.models:
+            tier = model_tier(p.name, m)
+            if not ignore_parked and quota_exhausted(f"{p.name}:{TIER_NAMES[tier]}"):
+                continue          # this provider's whole tier just failed
+            ident = f"{p.name}/{m}"
+            ema, n = stats(ident, task_kind)
+            out.append(Candidate(agent=ident, tier=tier, installed=True,
+                                 enabled=True, ema_success=ema, n=n))
+    out.sort(key=lambda c: (c.tier, -c.ema_success))
+    return out
+
+
+def route(task_kind: str = "general", exclude: set[str] | None = None,
+          tier_overrides: dict | None = None, timeout: float = 8.0) -> tuple[str, str] | None:
+    """Pick the cheapest capable thing: ("agent", id) or ("model", provider/id).
+
+    One ladder over both kinds, so a local model outranks a metered API even
+    though one is a model and the other a CLI. Ties inside a tier go to the
+    better observed record for this kind of task."""
+    exclude = exclude or set()
+    pool: list[tuple[Candidate, str]] = []
+    for c in candidates(task_kind, tier_overrides):
+        if c.enabled and c.installed and not quota_exhausted(c.agent):
+            pool.append((c, "agent"))
+    for c in model_candidates(task_kind, timeout=timeout):
+        if not quota_exhausted(c.agent):
+            pool.append((c, "model"))
+    pool = [(c, k) for c, k in pool if c.agent not in exclude]
+    if not pool:
+        # Everything is parked. Refusing here would let a stale backoff disable
+        # auto entirely - and a candidate that failed 15 minutes ago is a
+        # better bet than giving up, because the reason may have been fixed.
+        # Retry the ladder ignoring parks, best observed record first.
+        retry: list[tuple[Candidate, str]] = []
+        for c in candidates(task_kind, tier_overrides):
+            if c.enabled and c.installed and c.agent not in exclude:
+                retry.append((c, "agent"))
+        for c in model_candidates(task_kind, timeout=timeout, ignore_parked=True):
+            if c.agent not in exclude:
+                retry.append((c, "model"))
+        if not retry:
+            return None
+        retry.sort(key=lambda t: (t[0].tier, -t[0].ema_success, t[0].agent))
+        best, kind = retry[0]
+        return kind, best.agent
+    pool.sort(key=lambda t: (t[0].tier, -t[0].ema_success, t[0].agent))
+    best, kind = pool[0]
+    return kind, best.agent
+
+_FAIL_BACKOFF_SECONDS = 900.0
+
+
+def group_of(ident: str) -> str:
+    """The blast radius of a usability failure.
+
+    "Insufficient balance" is a fact about a provider's tier, not about one
+    model on it: parking a single model made auto walk 18 free models one at a
+    time, failing identically each turn. Agents stay individual - one broken
+    CLI says nothing about another."""
+    if "/" not in ident:
+        return ident                       # an agent
+    provider = ident.split("/", 1)[0]
+    model = ident.split("/", 1)[1]
+    return f"{provider}:{TIER_NAMES[model_tier(provider, model)]}"
+
+
+def mark_unusable(ident: str, reason: str = "") -> None:
+    """A candidate that just failed at use time is parked for a while.
+
+    Reuses the quota table: the distinction that matters to the router is
+    "do not pick this right now", and a 402 and a rate limit mean the same
+    thing from here. Learned from a real failure, because balance endpoints
+    proved unreliable in both directions."""
+    mark_quota_exhausted(ident)
+    grp = group_of(ident)
+    if grp != ident:
+        mark_quota_exhausted(grp)
+
+
+_UNUSABLE_PHRASES = (
+    "insufficient balance", "payment required", "402",
+    "invalid api key", "unauthorized", "401", "invalid_request_error",
+)
+
+
+def looks_unusable(text: str) -> bool:
+    """Does this error mean the candidate cannot serve requests at all?"""
+    low = (text or "").lower()
+    return any(p in low for p in _UNUSABLE_PHRASES)
+
