@@ -4207,3 +4207,55 @@ def test_a_child_cannot_be_granted_a_longer_run_than_its_parent(tmp_path):
 
     assert factory(model="gpt-4o-mini").cfg.model == "gpt-4o-mini"
     assert factory().cfg.model == parent.cfg.model
+
+
+def test_a_subagent_reuses_the_parents_mcp_instead_of_respawning_it(tmp_path, monkeypatch):
+    """C7: the child inherits the parent's cfg, so its first run reached
+    _ensure_mcp() and respawned every configured stdio server - and nothing
+    ever closed them, so ten task calls across two servers left twenty
+    orphaned processes."""
+    from saturday.agent.core import Agent
+    from saturday.config import AgentConfig
+    from saturday import mcp_plugin
+
+    spawns = []
+
+    class _FakeClient:
+        def __init__(self, alias):
+            self.alias = alias
+            self._dead = False
+
+        def start(self):
+            spawns.append(self.alias)
+
+        def list_tools(self):
+            return [mcp_plugin.McpToolDef(name=f"{self.alias}_ping", description="d", input_schema={"type": "object", "properties": {}})]
+
+        def close(self):
+            pass
+
+    def fake_stdio(command, env=None, call_timeout=60.0):
+        return _FakeClient(command[0])
+
+    monkeypatch.setattr(mcp_plugin, "McpStdioClient", fake_stdio)
+
+    cfg = AgentConfig(workspace_root=str(tmp_path))
+    cfg.mcp_servers = {"srv": {"command": "server-one"}}
+    parent = Agent(cfg=cfg)
+    parent._ensure_mcp()
+    assert spawns == ["server-one"], "the parent connects once"
+    assert "server-one_ping" in parent.registry.names()
+
+    child = parent._make_task_tool()._factory()
+    # the respawn happened lazily on the child's own first run, so drive the
+    # path a run takes rather than trusting construction to have been quiet
+    child._ensure_mcp()
+    child.effective_registry()
+    assert spawns == ["server-one"], f"the child respawned the server: {spawns}"
+    assert "server-one_ping" in child.registry.names(), "the child lost the MCP tool"
+    assert child.registry._tools["server-one_ping"] is parent.registry._tools["server-one_ping"]
+
+    # and it holds across the ten-calls-two-servers shape from the finding
+    for _ in range(10):
+        parent._make_task_tool()._factory()._ensure_mcp()
+    assert spawns == ["server-one"], f"orphaned servers: {spawns}"

@@ -357,9 +357,44 @@ class Agent:
             # child approvals surface through the parent's approver (same human
             # gate) instead of fail-closed blocking with no one to ask
             sub.approval_policy.approver = self.approval_policy.approver
+            self._lend_mcp_to(sub)
             return sub
 
         return SubagentTask(agent_factory=child_factory)
+
+    def _lend_mcp_to(self, child: "Agent") -> None:
+        """Give a subagent the parent's live MCP tools instead of its own.
+
+        The child inherits this cfg, so its first run reached _ensure_mcp()
+        and respawned every configured stdio server - and nothing ever closed
+        them, so ten `task` calls across two servers left twenty orphaned
+        processes behind. A proxy is a stateless bridge over a client whose
+        calls are already serialised under that client's own lock, so the same
+        proxy objects can serve both agents.
+        """
+        from saturday.mcp_plugin import McpToolProxy
+
+        # the factory is replaceable, so the child is only Agent-shaped by
+        # convention; something with no registry has no MCP to lend into
+        if not (hasattr(child, "_build_registry") and hasattr(child, "registry")):
+            return
+        try:
+            parent_registry = self._ensure_mcp()
+        except Exception:
+            return  # the child falls back to its own connection, as before
+        proxies = [
+            t for t in (getattr(parent_registry, "_tools", None) or {}).values()
+            if isinstance(t, McpToolProxy)
+        ]
+        # Mark the child done either way: with no servers configured there is
+        # nothing to lend, and with servers configured but none reachable a
+        # second round of connection attempts only repeats the same failures.
+        child._mcp_ready = True
+        child._mcp_installed = True
+        child._build_registry()
+        for proxy in proxies:
+            if proxy.name not in child.registry.names():
+                child.registry.register(proxy)
 
     @property
     def native_tool_calling(self) -> bool:
