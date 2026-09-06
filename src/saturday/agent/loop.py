@@ -578,18 +578,40 @@ class AgentLoop:
         overflow = history[:cut]
         if not overflow:
             return
-        goal_verbatim = ""
-        for m in overflow:
-            if m.get("role") == "user" and "# Goal" in str(m.get("content") or ""):
-                goal_verbatim = str(m["content"])
-                break
+        # The seed goal is found structurally, not by substring. A compaction
+        # message contains "# Goal (preserved verbatim)", so `"# Goal" in
+        # content` matched the PREVIOUS compaction and preserved the whole of
+        # it as the goal - each round embedding the last. Compaction grew the
+        # context instead of shrinking it and could never converge.
+        goal_verbatim = getattr(self, "_seed_goal", "")
+        if not goal_verbatim:
+            for m in overflow:
+                if m.get("role") != "user" or m.get("compacted"):
+                    continue
+                text = str(m.get("content") or "")
+                if text.startswith("[context was compacted"):
+                    continue
+                if "# Goal" in text:
+                    goal_verbatim = text
+                    break
+            if goal_verbatim:
+                # remember the original: later rounds must not re-derive it
+                # from their own output
+                self._seed_goal = goal_verbatim
+
+        # Nothing to gain from digesting our own previous summary alone.
+        real = [m for m in overflow
+                if not (m.get("compacted")
+                        or str(m.get("content") or "").startswith("[context was compacted"))]
+        if not real:
+            return
 
         digest_lines: list[str] = []
         for m in overflow:
             role = m.get("role")
             if role == "user":
                 text = str(m.get("content") or "").strip()
-                if not text.startswith("[context was compacted"):
+                if not m.get("compacted") and not text.startswith("[context was compacted"):
                     digest_lines.append(f"user said: {text[:400]}")
             elif role == "assistant":
                 calls = ", ".join(
@@ -665,6 +687,7 @@ class AgentLoop:
             [
                 {
                     "role": "user",
+                    "compacted": True,   # structural marker, not a substring probe
                     "content": (
                         "[context was compacted to stay within budget]\n"
                         f"{head_block}"

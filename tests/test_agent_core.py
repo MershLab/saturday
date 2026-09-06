@@ -2926,3 +2926,48 @@ def test_llm_body_encoded_once_per_model(monkeypatch):
         pass
     # no assertion on network; body hoisting exercised implicitly by _chat_once signature
 
+
+
+def test_compaction_converges_instead_of_nesting_itself():
+    """Compaction has to shrink context, and it was growing it.
+
+    The seed goal was found with `"# Goal" in content`, but a compaction
+    message contains "# Goal (preserved verbatim)" - so each round matched its
+    own previous output and preserved the whole of it as the goal. Measured
+    growth over five rounds: 2077, 2652, 3227, 3802, 4355 characters, with
+    "[COMPACTED CONTEXT]" appearing five times in the final message.
+
+    The seed is identified structurally now (a `compacted` marker on the
+    message the loop itself writes) and remembered, so later rounds never
+    re-derive the goal from their own output."""
+    from saturday.agent.loop import AgentLoop
+
+    loop = AgentLoop.__new__(AgentLoop)
+
+    class _Mem:
+        def __init__(self):
+            self.items = []
+
+        def add(self, k, v):
+            self.items.append((k, v))
+
+    loop.memory = _Mem()
+    loop.summarizer = None
+
+    history = [{"role": "user", "content": "# Goal\nbuild the thing"}]
+    for i in range(8):
+        history.append({"role": "assistant", "content": f"step {i}", "tool_calls": [
+            {"function": {"name": "read_file", "arguments": '{"path":"a.py"}'}}]})
+        history.append({"role": "tool", "name": "read_file", "content": "x" * 400})
+
+    sizes = []
+    for _ in range(5):
+        loop._compact(history)
+        sizes.append(len(history[0]["content"]))
+        history.append({"role": "assistant", "content": "next", "tool_calls": []})
+        history.append({"role": "tool", "name": "read_file", "content": "y" * 400})
+
+    assert sizes[-1] <= sizes[0], f"compaction must not grow the context: {sizes}"
+    assert history[0]["content"].count("[COMPACTED CONTEXT]") == 1, "nested its own output"
+    assert history[0]["content"].count("build the thing") == 1, "goal duplicated"
+    assert history[0].get("compacted") is True, "the marker is what makes detection structural"
