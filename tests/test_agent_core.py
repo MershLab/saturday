@@ -3015,3 +3015,77 @@ def test_a_second_context_overflow_ends_the_run_instead_of_raising(tmp_path):
     assert traj.stop_reason == "error"
     assert traj.final_answer and "compacting" in traj.final_answer
     assert traj.task == "do the thing", "the trajectory survives with its task"
+
+
+def test_projection_counts_the_tool_schemas():
+    """Tool schemas ride on every request and were left out of the estimate.
+
+    1.9k tokens with the default registry, 5k-20k once MCP servers attach. The
+    meter learns a MULTIPLICATIVE ratio, which cannot absorb a fixed offset: it
+    inflates the ratio to cover the missing constant, so every projection after
+    a compaction is overstated - which is what made compaction fire again on a
+    history it had just shrunk."""
+    import json
+
+    from saturday.agent.loop import AgentLoop, estimate_tokens
+    from saturday.tools import default_registry
+
+    loop = AgentLoop.__new__(AgentLoop)
+    loop.registry = default_registry()
+
+    expected = estimate_tokens(json.dumps(loop.registry.specs()))
+    assert expected > 500, "the default registry really does cost real tokens"
+    assert loop._tool_schema_tokens() == expected
+    assert loop._tool_schema_tokens() == expected, "cached, since this runs every step"
+
+
+def test_native_mode_sends_the_raw_tool_payload():
+    """The XML envelope is meaningless to a native function-calling model.
+
+    json.dumps escapes every newline, quote and tab, and with ensure_ascii on,
+    800 characters of CJK became 4,869 of six-character escapes - which also
+    tokenise far worse than the text they replaced. The XML retry hint is
+    actively wrong there: it tells a native model to answer in <tool_call>
+    tags."""
+    from saturday.prompts.templates import render_tool_response
+
+    cjk = "内容" * 400
+    native = render_tool_response("read_file", True, cjk, native=True)
+    xml = render_tool_response("read_file", True, cjk, native=False)
+
+    assert native == cjk, "native mode must not re-encode the payload"
+    assert len(xml) > 4 * len(cjk), "the XML path is what inflated it"
+    assert "<tool_call>" not in render_tool_response("x", False, "boom", native=True)
+
+
+def test_native_tool_section_does_not_repeat_the_schemas():
+    """The same schemas ride on the request as the `tools` parameter.
+
+    Rendering the full catalogue into the prompt as well paid for every schema
+    twice on every step of every run."""
+    import json
+
+    from saturday.prompts.system import build_tool_section
+    from saturday.tools import default_registry
+
+    registry = default_registry()
+    section = build_tool_section(registry, native_tool_calling=True)
+    schemas = json.dumps(registry.specs())
+
+    assert len(section) < len(schemas) // 4, "the section still carries the schemas"
+    for name in list(registry._tools)[:3]:
+        assert name in section, "the names are still there to reference"
+    assert "params" not in section, "parameter schemas belong in the tools= field only"
+
+
+def test_hermes_prompt_builds_with_the_default_registry():
+    """C4: the prompt builder called t.spec() on tools that have none.
+
+    registry.specs() already guards todo, subagent task, goal and job tools;
+    building the list by hand raised AttributeError at prompt build, so no
+    Hermes-protocol model could start a run at all."""
+    from saturday.prompts.system import build_tool_section
+    from saturday.tools import default_registry
+
+    section = build_tool_section(default_registry(), native_tool_calling=False)
+    assert "<tools>" in section and len(section) > 500

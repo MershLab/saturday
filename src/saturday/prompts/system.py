@@ -66,14 +66,22 @@ def build_assistant_identity(name: str, user_title: str) -> str:
 
 def build_tool_section(registry: ToolRegistry, native_tool_calling: bool) -> str:
     if native_tool_calling:
+        # Names only. The full descriptions and JSON schemas are already sent
+        # as the `tools` parameter of the same request, so rendering the
+        # catalogue here paid for every schema twice on every step - several
+        # thousand tokens per step once thirty tools are registered.
+        names = ", ".join(t.name for t in registry._tools.values())
         return (
             "# Tools\n"
-            "Tools are provided via function-calling. Issue one tool call per turn.\n"
-            "Available tools:\n" + registry.render_catalog()
+            "Tools are provided via function-calling; their schemas come with the "
+            "request. Issue one tool call per turn.\n"
+            f"Available: {names}"
         )
-    catalog = json.dumps(
-        [{"type": "function", "function": t.spec().schema()} for t in registry._tools.values()]
-    )
+    # registry.specs() already guards the tools that have no spec() (todo,
+    # subagent task, goal and job tools); building the list here by hand meant
+    # any registry containing one of them raised AttributeError at prompt build,
+    # so no Hermes-protocol model could start a run at all.
+    catalog = json.dumps(registry.specs())
     return (
         "# Tools (Hermes XML protocol)\n"
         "You are provided with function signatures within <tools></tools> XML tags:\n"

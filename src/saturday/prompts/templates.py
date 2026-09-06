@@ -61,7 +61,25 @@ RETRY_HINT = (
 )
 
 
-def render_tool_response(name: str, ok: bool, payload: str) -> str:
+NATIVE_RETRY_HINT = (
+    "That tool call failed. Check the arguments against the tool's schema and call it again."
+)
+
+
+def render_tool_response(name: str, ok: bool, payload: str, native: bool = False) -> str:
+    """Wrap a tool result for the wire.
+
+    The Hermes XML envelope is only meaningful to a model being driven through
+    the XML protocol. Native function-calling models already receive the result
+    in a typed tool message, so wrapping cost double for nothing: json.dumps
+    escapes every newline, quote and tab, and with ensure_ascii on, 800
+    characters of CJK became 4,869 of six-character escapes, which also
+    tokenise far worse than the text they replaced. The XML retry hint is
+    worse than useless there
+    too, since it tells a native model to answer in <tool_call> tags.
+    """
+    if native:
+        return payload if ok else f"{payload}\n{NATIVE_RETRY_HINT}"
     body = f'{{"name": "{name}", "error": {json.dumps(payload)}}}' if not ok else f'{{"name": "{name}", "content": {json.dumps(payload)}}}'
     if not ok:
         body += f"\n{RETRY_HINT}"

@@ -579,6 +579,7 @@ class Agent:
             max_run_tokens=int(getattr(self.cfg, "max_run_tokens", 0) or 0),
             max_wall_seconds=int(getattr(self.cfg, "max_wall_seconds", 0) or 0),
             max_run_cost_usd=float(getattr(self.cfg, "max_run_cost_usd", 0.0) or 0.0),
+            native_tool_calling=self.native_tool_calling,
             cost_provider=self.cfg.provider or "",
             cost_model=self.cfg.model or "",
             memory_nudge_interval=int(getattr(self.cfg, "memory_nudge_interval", 0) or 0),

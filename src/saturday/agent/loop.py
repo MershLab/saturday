@@ -145,9 +145,13 @@ class AgentLoop:
         memory_nudge_interval: int = 0,
         tool_call_timeout: float | None = None,
         injection_guard: bool = True,
+        native_tool_calling: bool = False,
     ) -> None:
         self.client = client
         self.registry = registry
+        # native function-calling models get the raw payload; only the XML
+        # protocol needs the <tool_response> envelope (see render_tool_response)
+        self.native_tool_calling = bool(native_tool_calling)
         self.max_steps = max_steps
         self.temperature = temperature
         self.top_p = top_p
@@ -268,8 +272,10 @@ class AgentLoop:
                 self._emit_checkpoint(history)
                 return traj
 
-            est_prompt_tokens = estimate_tokens(system_prompt) + sum(
-                estimate_message_tokens(m) for m in history
+            est_prompt_tokens = (
+                estimate_tokens(system_prompt)
+                + sum(estimate_message_tokens(m) for m in history)
+                + self._tool_schema_tokens()
             )
             # Compaction signal, hermes-style: prefer the provider's own last
             # reported prompt size once one exists (it lags by the newest tool
@@ -450,7 +456,8 @@ class AgentLoop:
                     "tool_call_id": call.id,
                     "name": call.name,
                     "content": render_tool_response(
-                        call.name, result.ok, compress(payload, per_call_budget)),
+                        call.name, result.ok, compress(payload, per_call_budget),
+                        native=self.native_tool_calling),
                 }
                 history.append(tool_msg)
                 step_tool_messages.append(dict(tool_msg))
@@ -590,6 +597,32 @@ class AgentLoop:
             max_tokens=self.max_tokens,
             stream_callback=cb if self.hooks.on_text_delta or self.hooks.on_reasoning_delta else None,
         )
+
+    def _tool_schema_tokens(self) -> int:
+        """Tokens the tool schemas add to every request.
+
+        They were omitted from the projection entirely - 1.9k with the default
+        registry and 5k to 20k once MCP servers are attached. The meter learns
+        a MULTIPLICATIVE ratio, which cannot absorb a fixed offset: it inflates
+        the ratio to cover the missing constant, and every projection after a
+        compaction is then overstated, which is what made compaction fire again
+        on a history it had just shrunk.
+
+        Cached per registry identity, since specs() is stable between rebuilds
+        and this runs on every step."""
+        specs = self.registry.specs() or []
+        key = (id(self.registry), len(specs))
+        cached = getattr(self, "_schema_tok_cache", None)
+        if cached and cached[0] == key:
+            return cached[1]
+        import json as _json
+
+        try:
+            cost = estimate_tokens(_json.dumps(specs))
+        except Exception:
+            cost = 0
+        self._schema_tok_cache = (key, cost)
+        return cost
 
     def _compact(self, history: list[dict], force: bool = False) -> None:
         keep_tail = 6
