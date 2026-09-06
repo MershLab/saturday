@@ -1258,3 +1258,80 @@ def test_windows_liveness_asks_whether_the_process_ended_not_whether_it_opens(
     assert sessions._pid_alive(4321) is expected, why
     if open_result:
         assert fake.closed == [open_result], "the handle must always be closed"
+
+
+def test_a_cross_host_redirect_strips_azures_api_key_too():
+    """C11: the handler popped the header names as written, but urllib stores
+    them capitalised - "api-key" becomes "Api-key" and "X-Api-Key" becomes
+    "X-api-key" - so those pops never matched and only Authorization and
+    Cookie were ever actually stripped."""
+    import urllib.request
+
+    from saturday.llm.client import _SafeRedirectHandler
+
+    def redirect(to):
+        req = urllib.request.Request(
+            "https://good.example/v1/chat/completions",
+            data=b"{}",
+            headers={
+                "Authorization": "Bearer bearer-secret",
+                "api-key": "azure-secret",
+                "X-Api-Key": "anthropic-secret",
+                "X-Request-Id": "req-42",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        return _SafeRedirectHandler().redirect_request(
+            req, None, 302, "Found", {}, to)
+
+    moved = redirect("https://evil.example/v1/chat/completions")
+    assert moved is not None
+    leaked = [v for v in moved.headers.values() if "secret" in str(v)]
+    assert not leaked, f"credentials followed the redirect: {leaked}"
+    # a non-credential header still travels (Content-Type is dropped by urllib
+    # itself on a POST-to-GET redirect, so it is not the witness to use here)
+    assert moved.headers.get("X-request-id") == "req-42", "it stripped too much"
+
+    # a same-host redirect must keep them: the credential belongs to that host
+    same = redirect("https://good.example/v2/chat/completions")
+    assert same is not None
+    assert any("secret" in str(v) for v in same.headers.values())
+
+
+def test_an_http_error_reports_what_the_provider_actually_said():
+    """C11: the body was read into _cached_body for marker matching and then
+    thrown away, so a strict backend rejecting the request shape read as
+    "HTTP Error 400: Bad Request" - and that blank message cascaded through
+    every fallback model."""
+    import io
+    import urllib.error
+
+    from saturday.llm.client import LLMClient
+
+    client = LLMClient(
+        base_url="https://api.example/v1",
+        api_key="bearer-secret",
+        model="m",
+        extra_headers={"api-key": "azure-secret"},
+        max_retries=0,
+    )
+
+    detail = '{"error":{"message":"tools[0].function.parameters: unsupported keyword"}}'
+    exc = urllib.error.HTTPError(
+        "https://api.example/v1/chat/completions", 400, "Bad Request", {},
+        io.BytesIO(detail.encode()),
+    )
+
+    explained = client._explain(exc)
+    assert "unsupported keyword" in explained, f"the body is still hidden: {explained}"
+    assert "400" in explained
+
+    # and neither credential appears in what a log or the UI would show
+    leaky = urllib.error.HTTPError(
+        "https://api.example/v1/chat/completions", 401, "Unauthorized", {},
+        io.BytesIO(b'{"error":"key bearer-secret / azure-secret rejected"}'),
+    )
+    assert "bearer-secret" not in client._explain(leaky)
+    assert "azure-secret" not in client._explain(leaky)
+    assert "***" in client._explain(leaky)

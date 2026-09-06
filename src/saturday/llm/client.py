@@ -42,6 +42,18 @@ class LLMContextOverflow(LLMError):
 _RETRY_AFTER_MAX_SECONDS = 120
 
 
+# Compared against header names lowercased: urllib stores them capitalised
+# ("api-key" becomes "Api-key", "X-Api-Key" becomes "X-api-key"), so a literal
+# pop of the name as written never matched and only Authorization and Cookie
+# were ever actually stripped.
+_SENSITIVE_HEADERS = frozenset({
+    "authorization", "cookie", "proxy-authorization",
+    "api-key",        # Azure OpenAI
+    "x-api-key",      # Anthropic and several gateways
+    "x-goog-api-key",
+})
+
+
 class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
     """Default urllib redirect handling re-sends every header — including
     Authorization — to the redirect target. A misconfigured or compromised
@@ -53,8 +65,8 @@ class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
             old_host = urllib.parse.urlsplit(req.full_url).netloc
             new_host = urllib.parse.urlsplit(new.full_url).netloc
             if old_host.lower() != new_host.lower():
-                for sensitive in ("Authorization", "Cookie", "X-Api-Key"):
-                    new.headers.pop(sensitive, None)
+                for name in [k for k in new.headers if k.lower() in _SENSITIVE_HEADERS]:
+                    new.headers.pop(name, None)
         return new
 
 
@@ -131,10 +143,16 @@ def _error_body(exc: Exception) -> str:
     return body
 
 
-def _redact(text: str, secret: str | None) -> str:
-    """Keep the API key out of error strings that may surface in logs/UI."""
-    if secret and secret in text:
-        return text.replace(secret, "***")
+def _redact(text: str, *secrets: str | None) -> str:
+    """Keep credentials out of error strings that may surface in logs/UI.
+
+    Takes every secret, not just the bearer key: Azure passes its credential
+    in an `api-key` header that this never saw, so an error quoting that
+    header printed the key in full.
+    """
+    for secret in secrets:
+        if secret and len(secret) > 3 and secret in text:
+            text = text.replace(secret, "***")
     return text
 
 
@@ -400,6 +418,33 @@ class LLMClient:
         self.omit_sampling = bool(omit_sampling)
         self.total_usage = Usage()
 
+    def _secrets(self) -> tuple[str, ...]:
+        """Every credential this client sends, for redaction.
+
+        The bearer key was the only one _redact knew about, so an Azure
+        deployment - which authenticates with an `api-key` header instead -
+        printed its credential in full whenever an error quoted the request.
+        """
+        vals = [self.api_key]
+        for name, value in (self.extra_headers or {}).items():
+            if name.lower() in _SENSITIVE_HEADERS or "key" in name.lower() or "token" in name.lower():
+                vals.append(value)
+        return tuple(v for v in vals if v)
+
+    def _explain(self, exc: Exception) -> str:
+        """An error the reader can act on: the status line AND the body.
+
+        The body was read into _cached_body for marker matching and then
+        thrown away, so a strict backend rejecting the request shape read as
+        "HTTP Error 400: Bad Request" and that same blank message cascaded
+        through every fallback model.
+        """
+        text = str(exc)
+        body = _error_body(exc).strip()
+        if body and body not in text:
+            text = f"{text} - {body[:800]}"
+        return _redact(text, *self._secrets())
+
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
         if self.api_key:
@@ -502,11 +547,11 @@ class LLMClient:
                         continue
                     if kind == "auth":
                         raise LLMError(
-                            f"{kind} error for model '{candidate}': {_redact(str(exc), self.api_key)}"
+                            f"{kind} error for model '{candidate}': {self._explain(exc)}"
                         ) from exc
                     if kind == "context_overflow":
                         raise LLMContextOverflow(
-                            f"context overflow on '{candidate}': {_redact(str(exc), self.api_key)}"
+                            f"context overflow on '{candidate}': {self._explain(exc)}"
                         ) from exc
                     if kind == "bad_request":
                         break
@@ -515,12 +560,12 @@ class LLMClient:
                     if guarded_cb is not None and emitted["any"]:
                         raise LLMError(
                             f"stream emitted deltas before failing; not retrying to avoid duplicate output: "
-                            f"{_redact(str(exc), self.api_key)}"
+                            f"{self._explain(exc)}"
                         ) from exc
                     wait = retry_after or min(0.5 * (2**attempt) + random.uniform(0, 0.5), 20.0)
                     time.sleep(wait)
         raise LLMError(
-            f"LLM request failed after retries and fallbacks: {_redact(str(last_err), self.api_key)}"
+            f"LLM request failed after retries and fallbacks: {self._explain(last_err)}"
         ) from last_err
 
     def _post(self, payload: dict[str, Any], body: bytes | None = None, model: str | None = None) -> Any:
