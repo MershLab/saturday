@@ -316,3 +316,35 @@ def test_chat_turn_records_usage_and_state_exposes(tmp_path):
         assert status == 200
         assert state["usage"]["turns"] >= 1
         assert any(m["model"].endswith(app.base_cfg.model or "?") for m in state["usage"]["models"])
+
+
+def test_reusing_a_schedule_id_is_reported_as_a_replacement(tmp_path, monkeypatch, capsys):
+    """Re-adding an id replaces the schedule; saying "added" hid that.
+
+    A schedule is unattended automation, so a silently replaced one is a job
+    that just stops running. Editing by re-adding stays supported - the exit
+    code and the store behaviour are unchanged - but the output now names
+    what it displaced."""
+    from argparse import Namespace
+
+    import saturday.config as cfgmod
+    from saturday import cli
+
+    monkeypatch.setattr(cfgmod, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(cfgmod, "CONFIG_FILE", None)
+
+    def add(expr, task):
+        return cli.cmd_schedule(Namespace(
+            schedule_cmd="add", id="job", expr=expr, task=task, model=None, provider=None))
+
+    assert add("*/5 * * * *", "first") == 0
+    out = capsys.readouterr().out
+    assert "added schedule 'job'" in out and "replaced" not in out
+
+    assert add("*/9 * * * *", "second") == 0          # still succeeds
+    cap = capsys.readouterr()
+    assert "replaced schedule 'job'" in cap.out
+    assert "*/5 * * * *" in cap.err and "first" in cap.err   # names what it displaced
+
+    rows = ScheduleStore(tmp_path / "schedules.json").list()
+    assert [(r.id, r.expr, r.task) for r in rows] == [("job", "*/9 * * * *", "second")]

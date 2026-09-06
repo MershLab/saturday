@@ -1441,12 +1441,22 @@ def cmd_schedule(args: argparse.Namespace) -> int:
     store = ScheduleStore()
     cmd = getattr(args, "schedule_cmd", "list")
     if cmd == "add":
+        # reusing an id replaces the existing schedule. That is a legitimate way
+        # to edit one, but saying "added" made it look like nothing was lost -
+        # and a silently replaced schedule is an unattended job that stops.
+        prior = None
+        if getattr(args, "id", None):
+            prior = next((x for x in store.list() if x.id == args.id), None)
         try:
             s = store.add(args.id, args.expr, args.task, model=args.model or "", provider=args.provider or "")
         except ValueError as exc:
-            _print(f"error: {exc}")
+            _print(f"error: {exc}", err=True)
             return 1
-        _print(f"added schedule '{s.id}': {s.expr} -> {s.task[:80]}")
+        if prior is not None:
+            _print(f"replaced schedule '{s.id}': {s.expr} -> {s.task[:80]}")
+            _print(f"  previous: {prior.expr} -> {prior.task[:60]}", err=True)
+        else:
+            _print(f"added schedule '{s.id}': {s.expr} -> {s.task[:80]}")
         return 0
     if cmd == "remove" or cmd == "rm":
         if not store.remove(args.id):
