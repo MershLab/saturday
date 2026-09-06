@@ -1605,8 +1605,13 @@ def test_checkpoint_each_step_and_crash_resume(tmp_path: Path):
     reg.register(ReadFile(root=str(tmp_path)))
 
     loop1 = AgentLoop(model1, reg, max_steps=5, hooks=LoopHooks(on_checkpoint=snap))
-    with pytest.raises(Exception):
-        loop1.run("sys", "start the task")
+    # the script runs out mid-run, which is how a provider dying mid-request
+    # reaches the loop. It used to escape as an exception; since C21 the run
+    # ends with a trajectory and a checkpoint instead, which is what makes the
+    # work resumable at all rather than only recoverable by luck.
+    crashed = loop1.run("sys", "start the task")
+    assert crashed.stop_reason == "error"
+    assert "failed" in crashed.final_answer
 
     assert len(checkpoints) >= 1
     saved = store.load_checkpoint(sid)
@@ -3178,3 +3183,51 @@ def test_a_native_reasoner_is_not_asked_to_emit_think_tags():
     assert not model_reasons_natively("deepseek-chat")
     assert not model_reasons_natively("gpt-4o")   # must not match the "o" families
     assert not model_reasons_natively("")
+
+
+def test_a_failed_model_request_ends_the_run_with_its_trajectory(tmp_path):
+    """C21: an LLMError out of the chat call had no handler anywhere, so a
+    mid-stream socket reset on a late step threw away every step of work, the
+    usage and the stop reason along with the request. The client has already
+    retried and walked its fallbacks by then, so the turn is over either way -
+    the question is only whether the caller gets to keep what was earned."""
+    from saturday.agent.loop import AgentLoop
+    from saturday.llm.client import LLMError
+    from saturday.tools.base import ToolRegistry
+    from fakes import make_scripted_model
+
+    calls = {"n": 0}
+    scripted = make_scripted_model([
+        {"tool_calls": [{"name": "noop", "arguments": {}}]},
+        {"content": "never reached"},
+    ])
+    real_chat = scripted.chat
+
+    def flaky(*a, **k):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise LLMError("Connection reset by peer")
+        return real_chat(*a, **k)
+
+    scripted.chat = flaky
+
+    class Noop:
+        name = "noop"
+        description = "d"
+        parameters = {"type": "object", "properties": {}}
+
+        def run(self, args):
+            return True, "did a thing"
+
+    reg = ToolRegistry()
+    reg.register(Noop())
+    loop = AgentLoop(scripted, reg, max_steps=5)
+    traj = loop.run("sys", "go")
+
+    assert traj is not None, "the trajectory was lost with the exception"
+    assert traj.stop_reason == "error"
+    assert "Connection reset by peer" in traj.final_answer
+    assert traj.steps, "the work done before the failure was discarded"
+    assert any(
+        r.output == "did a thing" for st in traj.steps for r in (st.results or [])
+    ), "the completed tool call is not in the trajectory"

@@ -10,7 +10,7 @@ from typing import Callable
 
 from saturday.compress import compress
 from saturday.agent.memory import TokenMeter, WorkingMemory, estimate_message_tokens, estimate_tokens
-from saturday.llm.client import LLMClient, LLMContextOverflow, ModelResponse, StreamEvent
+from saturday.llm.client import LLMClient, LLMContextOverflow, LLMError, ModelResponse, StreamEvent
 from saturday.prompts.templates import render_tool_response, split_reasoning
 from saturday.tools.base import ToolRegistry
 from saturday.types import Step, ToolResult, Trajectory
@@ -312,6 +312,24 @@ class AgentLoop:
                     self._compact(history, force=True)
                     if self.hooks.on_compaction:
                         self.hooks.on_compaction("compacted after context overflow")
+                except LLMError as exc:
+                    # The client already retried and walked its fallback
+                    # models, so this is terminal for the turn - but nothing
+                    # caught it, so a mid-stream socket reset on step 199 threw
+                    # away 199 steps of work, the usage and the stop reason
+                    # along with the request. Same trade as the overflow branch
+                    # above: end the run with what was earned.
+                    last_text = next(
+                        (st.assistant.content for st in reversed(traj.steps) if st.assistant.content),
+                        None,
+                    )
+                    traj.stop_reason = "error"
+                    traj.final_answer = (
+                        f"stopped at step {step_index}: the model request failed. {exc}"
+                        + (f" Last output: {last_text}" if last_text else "")
+                    )
+                    self._emit_checkpoint(history)
+                    return traj
             assert response is not None
             assistant = response.message
 
