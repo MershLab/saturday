@@ -395,10 +395,18 @@ class SessionRuntime:
                 pass
             return True
 
-    def finish_run(self) -> None:
+    def finish_run(self, generation: int | None = None) -> None:
         """The ONLY way a run ends. Callers MUST invoke this BEFORE publishing
-        their terminal bus event so pumps see idle-when-done."""
+        their terminal bus event so pumps see idle-when-done.
+
+        Pass the `run_generation` observed at try_begin_run() to end only that
+        run. An unwind path that ends a run it no longer owns - the request
+        thread cleaning up while a retry has already begun its own run - would
+        otherwise mark that live run idle and let a third chat in beside it.
+        """
         with self._run_lock:
+            if generation is not None and generation != self.run_generation:
+                return
             self._phase = self.PHASE_IDLE
             self._stop_requested = False
             self.run_started_at = 0.0

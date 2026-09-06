@@ -3545,6 +3545,39 @@ class Handler(BaseHTTPRequestHandler):
         if not rt.try_begin_run():
             self._send_json({"error": "session busy", "session_id": rt.sid}, 409)
             return
+        # From here to worker.start() everything still runs on the request
+        # thread, and several steps can raise: saving an image is an unguarded
+        # mkdir/write_bytes, state_payload() stats every session so a delete
+        # landing now raises out of the stat, and thread creation can be
+        # refused. The run was already marked RUNNING, so an escape left the
+        # session busy with nobody working on it and every later chat 409ing
+        # until restart. Ownership passes to the worker at handed_off; until
+        # then this frame ends the run itself, against the generation it began
+        # so it cannot end a run some retry has since started.
+        gen = rt.run_generation
+        handed_off = None
+        try:
+            handed_off = self._start_chat_run(app, rt, payload, text)
+        except Exception as exc:
+            self._fail_500(exc)
+        finally:
+            if handed_off is None:
+                rt.finish_run(gen)
+        if handed_off is None:
+            return
+        q, replay, hello = handed_off
+        try:
+            self._pump_bus(rt, q, replay=replay, first_event=hello)
+        finally:
+            rt.bus.unsubscribe(q)
+
+    def _start_chat_run(self, app, rt, payload: dict, text: str):
+        """The body of a chat request up to the moment the worker takes over.
+
+        Returns the (queue, replay, hello) the caller should pump once the
+        worker owns finish_run(), or None when the request answered by itself
+        (slash output, a rejected image) and already ended the run.
+        """
         image_paths: list[str] = []
         data_urls = payload.get("images") or []
         if data_urls:
@@ -3552,7 +3585,7 @@ class Handler(BaseHTTPRequestHandler):
             if err:
                 rt.finish_run()
                 self._send_json({"error": err}, 400)
-                return
+                return None
         try:
             notices = handle_slash(rt, text)
         except Exception as exc:
@@ -3562,29 +3595,29 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 self._begin_stream()
                 if not self._stream_line({"t": "hello", "sid": rt.sid, "slash": True, "project": rt.project_id or ""}):
-                    return
+                    return None
                 err = {"t": "notice", "s": f"[command error] {type(exc).__name__}: {exc}"}
                 rt.bus.publish(err)
                 self._stream_line(err)
                 self._stream_line({"t": "done", "final": "", "stop_reason": "slash", "steps": 0, "tokens": 0, "sid": rt.sid})
             finally:
                 rt.bus.unsubscribe(q)
-            return
+            return None
         if notices:
             rt.finish_run()
             q = rt.bus.subscribe()
             try:
                 self._begin_stream()
                 if not self._stream_line({"t": "hello", "sid": rt.sid, "slash": True, "project": rt.project_id or ""}):
-                    return
+                    return None
                 for evt in notices:
                     rt.bus.publish(evt)
                     if not self._stream_line(evt):
-                        return
+                        return None
                 self._stream_line({"t": "done", "final": "", "stop_reason": "slash", "steps": 0, "tokens": 0, "sid": rt.sid})
             finally:
                 rt.bus.unsubscribe(q)
-            return
+            return None
         snap = app.state_payload()
         start_seq = rt.bus.last_seq
         # remember where this run's events begin so a re-attaching viewer
@@ -3598,19 +3631,18 @@ class Handler(BaseHTTPRequestHandler):
         # subscribe()/replay() — landing the same event in both the replay
         # snapshot and the live queue and double-delivering it to the client.
         q, replay = rt.bus.subscribe_with_replay(start_seq)
+        hello = {
+            "t": "hello",
+            "sid": rt.sid,
+            "provider": snap["provider"],
+            "model": snap["model"],
+            "project": rt.project_id or "",
+        }
         worker = threading.Thread(target=_run_chat, args=(app, rt, text, image_paths), daemon=True)
+        # the last statement that can raise: after it the worker, not this
+        # frame, is responsible for ending the run
         worker.start()
-        try:
-            hello = {
-                "t": "hello",
-                "sid": rt.sid,
-                "provider": snap["provider"],
-                "model": snap["model"],
-                "project": rt.project_id or "",
-            }
-            self._pump_bus(rt, q, replay=replay, first_event=hello)
-        finally:
-            rt.bus.unsubscribe(q)
+        return q, replay, hello
 
 
 # -- routing tables ------------------------------------------------------------

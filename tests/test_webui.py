@@ -5531,3 +5531,73 @@ def test_a_non_object_json_body_is_a_400_not_a_dropped_connection(tmp_path):
             except urllib.error.HTTPError as exc:
                 status = exc.code
             assert status == 400, f"body {body!r} answered {status}"
+
+
+def test_a_failure_before_the_worker_starts_does_not_wedge_the_session(tmp_path, monkeypatch):
+    """try_begin_run() marked the session RUNNING, then several unguarded
+    steps ran on the request thread before worker.start(): saving an image,
+    state_payload() statting every session, thread creation. Anything raising
+    there escaped do_POST with the run still marked live and no worker to end
+    it, so every later chat on that session got 409 busy until restart."""
+    app = make_app(tmp_path, [{"text": "hello"}])
+    boom = {"on": True}
+
+    real_state = app.state_payload
+
+    def flaky_state():
+        if boom["on"]:
+            raise OSError("session deleted mid-request")
+        return real_state()
+
+    monkeypatch.setattr(app, "state_payload", flaky_state)
+
+    with _Server(app) as srv:
+        sid = app.store.create({"task": "t"})
+        status, body = _req(srv.base, "/api/chat", "POST", {"text": "hi", "session_id": sid})
+        assert status == 500, body
+        assert "OSError" in json.dumps(body)
+
+        rt = app.runtime_for(sid)
+        assert not rt.busy, "the run outlived the request that began it"
+
+        # and the session is usable again, not permanently 409 (chat answers
+        # with an ndjson stream, so read the status rather than parse a body)
+        boom["on"] = False
+        req = urllib.request.Request(
+            srv.base + "/api/chat",
+            data=json.dumps({"text": "again", "session_id": sid}).encode(),
+            method="POST",
+            headers={"X-Saturday-Token": TOKEN, "Content-Type": "application/json"},
+        )
+        try:
+            status = urllib.request.urlopen(req, timeout=15).status
+        except urllib.error.HTTPError as exc:
+            status = exc.code
+        assert status == 200, "the session stayed wedged at busy"
+
+
+def test_finish_run_will_not_end_a_run_it_no_longer_owns(tmp_path):
+    """The unwind above runs on the request thread, which may reach it after a
+    retry has already begun its own run. Ending that one would let a third
+    chat in beside a live worker."""
+    from saturday.session_runtime import SessionRuntime
+
+    rt = SessionRuntime.__new__(SessionRuntime)
+    rt._run_lock = threading.RLock()
+    rt._phase = SessionRuntime.PHASE_IDLE
+    rt._stop_requested = False
+    rt.run_started_at = 0.0
+    rt.run_generation = 0
+    rt.run_thread = None
+    rt.sid = "s"
+
+    assert rt.try_begin_run()
+    stale = rt.run_generation
+    rt.finish_run()
+    assert rt.try_begin_run(), "a second run begins"
+
+    rt.finish_run(stale)          # the late unwind of the first run
+    assert rt.busy, "the late unwind ended a run it did not begin"
+
+    rt.finish_run(rt.run_generation)
+    assert not rt.busy
