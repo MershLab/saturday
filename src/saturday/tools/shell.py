@@ -70,8 +70,15 @@ class ShellTool(Tool):
             isolated_argv, refusal = self._isolation_argv(command)
             if isolated_argv is None:
                 return False, refusal
+        # T7: the schema promises "relative to workspace root", and this
+        # resolved against the PROCESS cwd. With project switching in the web
+        # UI those are different directories, so workdir="src" either ran in
+        # the wrong tree or was rejected as an escape from the right one.
         workdir = args.get("workdir") or self.root or "."
-        wd = Path(workdir).resolve()
+        wd = Path(workdir)
+        if not wd.is_absolute() and self.root:
+            wd = Path(self.root) / wd
+        wd = wd.resolve()
         root = Path(self.root).resolve() if self.root else None
         if root is not None and wd != root and root not in wd.parents:
             return False, "workdir escapes workspace root"

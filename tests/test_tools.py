@@ -4488,3 +4488,30 @@ def test_validation_does_not_reject_a_tool_with_no_schema():
     reg.register(Loose())
     r = reg.execute("c", "loose", {"anything": 1})
     assert r.ok and "anything" in r.output
+
+
+def test_shell_workdir_is_relative_to_the_workspace_not_the_process_cwd(tmp_path, monkeypatch):
+    """T7: the schema promises "relative to workspace root" and this resolved
+    against the process cwd. With project switching in the web UI those are
+    different directories, so workdir="src" either ran in the wrong tree or
+    was rejected as an escape from the right one."""
+    from saturday.tools.shell import ShellTool
+
+    workspace = tmp_path / "project"
+    (workspace / "src").mkdir(parents=True)
+    (workspace / "src" / "marker.txt").write_text("here", encoding="utf-8")
+
+    elsewhere = tmp_path / "launched-from"
+    (elsewhere / "src").mkdir(parents=True)
+    (elsewhere / "src" / "marker.txt").write_text("wrong tree", encoding="utf-8")
+    monkeypatch.chdir(elsewhere)
+
+    tool = ShellTool(root=str(workspace))
+    ok, out = tool.run({"command": "cat marker.txt", "workdir": "src"})
+    assert ok, out
+    assert "here" in out, f"it ran in the wrong tree: {out!r}"
+    assert "wrong tree" not in out
+
+    # an absolute path outside the workspace is still refused
+    ok, out = tool.run({"command": "pwd", "workdir": str(elsewhere / "src")})
+    assert not ok and "escapes workspace root" in out
