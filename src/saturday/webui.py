@@ -1481,6 +1481,11 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
+            if self.close_connection:
+                # say so, rather than only closing: a client that reuses a
+                # socket the server has just dropped sees the next request
+                # fail for no visible reason (S16)
+                self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.write(body)
         except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError, OSError):
@@ -1545,13 +1550,30 @@ class Handler(BaseHTTPRequestHandler):
         try:
             n = int(self.headers.get("Content-Length") or 0)
         except (TypeError, ValueError):
+            # S16: we cannot know how many bytes to skip, so this connection
+            # can no longer be trusted to start at a request boundary. Left
+            # keep-alive, the unread body was parsed as the NEXT request line.
+            self.close_connection = True
             return None
-        if n <= 0 or n > MAX_BODY:
+        if n < 0 or n > MAX_BODY:
+            # draining an oversize body is its own denial of service, so the
+            # connection ends instead of being resynchronised
+            self.close_connection = True
+            return None
+        if n == 0:
+            return None  # no body to leave behind; the connection is fine
+        try:
+            body = self.rfile.read(n)
+        except OSError:
+            self.close_connection = True
+            return None
+        if len(body) < n:
+            self.close_connection = True  # short read: the rest is still coming
             return None
         try:
-            return json.loads(self.rfile.read(n) or b"{}")
-        except (json.JSONDecodeError, OSError):
-            return None
+            return json.loads(body or b"{}")
+        except json.JSONDecodeError:
+            return None  # body fully consumed; the connection is still in sync
 
     def _guard(self, *, check_origin: bool = False) -> bool:
         if not self._token_ok():

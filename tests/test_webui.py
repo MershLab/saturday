@@ -5963,3 +5963,49 @@ def test_the_token_cookie_is_httponly_and_not_written_from_script(tmp_path):
 
     js = (ASSETS / "app.js").read_text(encoding="utf-8")
     assert "document.cookie" not in js, "app.js still writes the token cookie"
+
+
+def test_an_oversize_body_ends_the_connection_instead_of_desyncing_it(tmp_path):
+    """S16: _read_json returned on an oversize or unparseable Content-Length
+    without reading the body, so on a keep-alive connection the unread bytes
+    were parsed as the next request line."""
+    import http.client
+
+    from saturday.webui import MAX_BODY
+
+    app = make_app(tmp_path, [{"text": "hi"}])
+    with _Server(app) as srv:
+        host, port = srv.http.server_address[0], srv.http.server_address[1]
+
+        # oversize: answered, then the connection must end
+        conn = http.client.HTTPConnection(host, port, timeout=15)
+        payload = b"x" * 64
+        conn.putrequest("POST", "/api/config")
+        conn.putheader("Host", f"{host}:{port}")
+        conn.putheader("X-Saturday-Token", TOKEN)
+        conn.putheader("Content-Type", "application/json")
+        conn.putheader("Content-Length", str(MAX_BODY + 1))
+        conn.endheaders()
+        conn.send(payload)
+        resp = conn.getresponse()
+        resp.read()
+        assert resp.status == 400
+        assert resp.will_close, "the connection stayed open with an unread body on it"
+        conn.close()
+
+        # a body that IS read, but is not JSON, leaves the connection usable
+        conn = http.client.HTTPConnection(host, port, timeout=15)
+        conn.request("POST", "/api/config", body=b"{not json",
+                     headers={"Host": f"{host}:{port}", "X-Saturday-Token": TOKEN,
+                              "Content-Type": "application/json"})
+        resp = conn.getresponse()
+        resp.read()
+        assert resp.status == 400
+        assert not resp.will_close, "a fully-consumed bad body should not end the connection"
+        # the same connection still serves the next request correctly
+        conn.request("GET", "/api/state", headers={"Host": f"{host}:{port}",
+                                                   "X-Saturday-Token": TOKEN})
+        resp2 = conn.getresponse()
+        assert resp2.status == 200
+        assert json.loads(resp2.read().decode())["provider"] == app.base_cfg.provider
+        conn.close()
