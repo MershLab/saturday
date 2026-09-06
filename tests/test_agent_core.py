@@ -3480,3 +3480,36 @@ def test_compaction_summaries_replace_rather_than_stack():
     # other kinds still accumulate: only the self-superseding one is replaced
     mem.add("fact", "and the port is 8080")
     assert [it.kind for it in mem.items].count("fact") == 2
+
+
+def test_an_invented_finish_call_ends_the_run_without_a_bogus_failure():
+    """C22 called this branch dead. It is not: `finish` is not registered, but
+    models trained against other harnesses emit finish(answer=...) anyway and
+    the branch honours it. What was wrong is that the call reached the
+    registry first and came back as "unknown tool 'finish'", putting a failure
+    in the trajectory for a call that in fact succeeded."""
+    from saturday.agent.loop import AgentLoop
+    from saturday.tools.base import ToolRegistry
+    from fakes import make_scripted_model
+
+    model = make_scripted_model([
+        {"tool_calls": [{"name": "finish", "arguments": {"answer": "all done"}}]},
+    ])
+    traj = AgentLoop(model, ToolRegistry(), max_steps=3).run("sys", "go")
+
+    assert traj.stop_reason == "done" and traj.final_answer == "all done"
+    errors = [r.error for st in traj.steps for r in st.results if r.error]
+    assert not errors, f"a successful finish was recorded as a failure: {errors}"
+
+
+def test_an_empty_finish_falls_back_to_the_text_the_model_did_produce():
+    from saturday.agent.loop import AgentLoop
+    from saturday.tools.base import ToolRegistry
+    from fakes import make_scripted_model
+
+    model = make_scripted_model([
+        {"content": "the summary is in notes.md",
+         "tool_calls": [{"name": "finish", "arguments": {}}]},
+    ])
+    traj = AgentLoop(model, ToolRegistry(), max_steps=3).run("sys", "go")
+    assert traj.final_answer == "the summary is in notes.md", "the run ended with nothing"

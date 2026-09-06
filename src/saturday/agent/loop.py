@@ -436,6 +436,17 @@ class AgentLoop:
                     return traj
 
             executed = assistant.tool_calls[:MAX_TOOL_CALLS_PER_STEP]
+            # `finish` is not a registered tool and deliberately is not one:
+            # the prompt asks for a plain-text answer to end a run. But models
+            # trained against other harnesses emit finish(answer=...) anyway,
+            # and honouring it beats stalling, so this is a recognised way to
+            # end. It was reaching the registry first and coming back as
+            # "unknown tool 'finish'", which put a failure in the trajectory
+            # for a call that in fact succeeded. Take it out of the batch and
+            # let the branch below end the run.
+            finish_calls = [c for c in executed if c.name == "finish"]
+            if finish_calls:
+                executed = [c for c in executed if c.name != "finish"]
             # stall detector: three consecutive steps issuing the exact same
             # tool calls means the model is spinning, not progressing (2026
             # convergence: loop detection + step caps). Abort BEFORE running
@@ -548,11 +559,14 @@ class AgentLoop:
             )
             self._emit_checkpoint(history)
 
-            if any(call.name == "finish" for call in executed):
-                traj.final_answer = next(
-                    (c.arguments.get("answer", "") for c in assistant.tool_calls if c.name == "finish"),
+            if finish_calls:
+                answer = next(
+                    (str(c.arguments.get("answer", "") or "") for c in finish_calls if c.arguments),
                     "",
                 )
+                # an empty finish(): fall back to whatever text the model did
+                # produce rather than ending the run with nothing at all
+                traj.final_answer = answer or (assistant.content or "").strip()
                 traj.stop_reason = "done"
                 return traj
 
