@@ -2985,13 +2985,28 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"error": "task is required"}, 400)
             return
         session_id = str(payload.get("session") or "").strip() or time.strftime("hook-%Y%m%d-%H%M%S")
-        log_dir = Path(".saturday") / "bg"
+        # The id names a log file, so it must be a single safe path segment.
+        # Taken raw it escaped the directory - session="../../../../home/u/.bashrc"
+        # appended run output there - and the token that gates this route is the
+        # same one a remote tunnel URL hands out.
+        safe_id = re.sub(r"[^A-Za-z0-9._-]", "-", session_id).strip(".-")[:80]
+        if not safe_id:
+            self._send_json({"error": "session must contain usable characters"}, 400)
+            return
+        session_id = safe_id
+        # relative to the workspace, not the process cwd, so a webhook-started
+        # run logs where `saturday run --detach` puts its logs
+        ws = getattr(self.app.base_cfg, "workspace_root", "") or "."
+        log_dir = Path(ws) / ".saturday" / "bg"
         try:
             log_dir.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             self._send_json({"error": f"could not prepare log directory: {exc}"}, 500)
             return
         log_path = (log_dir / f"{session_id}.log").resolve()
+        if not str(log_path).startswith(str(log_dir.resolve()) + os.sep):
+            self._send_json({"error": "invalid session id"}, 400)
+            return
         argv = [sys.executable, "-m", "saturday", "run", task, "--session", session_id]
         model = str(payload.get("model") or "").strip()
         provider = str(payload.get("provider") or "").strip()

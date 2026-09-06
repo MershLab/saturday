@@ -5449,3 +5449,48 @@ def test_rename_survives_the_metadata_sidecar(tmp_path):
 
     assert store.set_task(sid, "renamed properly") is True
     assert title_of() == "renamed properly"
+
+
+def test_trigger_session_id_cannot_escape_the_log_directory(tmp_path, monkeypatch):
+    """/api/trigger took the caller's session id straight into a file path.
+
+    session="../../../../home/user/.bashrc" appended run output there. The
+    route is token gated, but that token is exactly what a remote tunnel URL
+    hands out, so the gate is not the boundary here. It also rooted the log
+    directory at the process cwd rather than the workspace."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    started = []
+
+    class _FakeProc:
+        pid = 4321
+
+    def _no_spawn(argv, **kw):
+        started.append(argv)
+        return _FakeProc()
+
+    monkeypatch.setattr(webui.subprocess, "Popen", _no_spawn)
+    app = make_app(tmp_path, [{"text": "done"}], workspace=ws)
+    bg = (ws / ".saturday" / "bg").resolve()
+
+    with _Server(app) as srv:
+        for hostile in ("../../../../outside/pwned", "../../.bashrc", "a/b", "..\\..\\win"):
+            status, body = _req(srv.base, "/api/trigger", "POST", {"task": "hi", "session": hostile})
+            assert status == 200, (hostile, body)
+            assert Path(body["log"]).parent == bg, f"{hostile!r} logged to {body['log']}"
+            assert "/" not in body["session_id"] and ".." not in body["session_id"]
+
+        # nothing usable survives sanitising, so there is no name to log under
+        status, body = _req(srv.base, "/api/trigger", "POST", {"task": "hi", "session": "..."})
+        assert status == 400, body
+
+        # an ordinary id is passed through untouched and lands in the workspace
+        status, body = _req(srv.base, "/api/trigger", "POST", {"task": "hi", "session": "nightly-run"})
+        assert status == 200, body
+        assert body["session_id"] == "nightly-run"
+        assert Path(body["log"]) == bg / "nightly-run.log"
+
+    assert not list(outside.iterdir()), "a run wrote outside the workspace"
+    assert started, "the route never reached the spawn it is supposed to make"
