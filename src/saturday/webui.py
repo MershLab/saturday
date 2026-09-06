@@ -869,25 +869,46 @@ class AppState:
         return None
 
     def runtime_for(self, sid: str) -> _SessionRuntime:
+        """Get or build this session's runtime, building OUTSIDE the lock.
+
+        S9: constructing the Agent and its registry (plugins, MCP, every tool)
+        used to happen while holding runtimes_lock - the same lock stop,
+        approve and ask need - so a cold start blocked the user's ability to
+        stop a run for as long as the build took. The build is now unlocked
+        and the result is published under a double check, since another
+        thread can create the same session's runtime meanwhile.
+        """
         with self.runtimes_lock:
             rt = self.runtimes.get(sid)
-            if rt is None:
-                self._evict_idle_runtimes_locked()
-                bus = _Bus()
-                cfg, persona, pid = self._cfg_for_session(sid)
-                agent = self._new_agent(cfg)
-                agent.persona_extra = persona
-                proj = self.projects.get(pid) if pid else None
-                if proj is not None and proj.workspace:
-                    agent.memory_scope = proj.workspace
-                agent._build_registry()
-                rt = _SessionRuntime(sid, agent, bus, project_id=pid)
-                rt.app = self
-                _install_web_surface(rt, agent)
-                _install_attention_sink(rt)
-                self.runtimes[sid] = rt
-            rt.last_used = time.monotonic()
-            return rt
+            if rt is not None:
+                rt.last_used = time.monotonic()
+                return rt
+
+        bus = _Bus()
+        cfg, persona, pid = self._cfg_for_session(sid)
+        agent = self._new_agent(cfg)
+        agent.persona_extra = persona
+        proj = self.projects.get(pid) if pid else None
+        if proj is not None and proj.workspace:
+            agent.memory_scope = proj.workspace
+        agent._build_registry()
+        built = _SessionRuntime(sid, agent, bus, project_id=pid)
+        built.app = self
+        _install_web_surface(built, agent)
+        _install_attention_sink(built)
+
+        with self.runtimes_lock:
+            existing = self.runtimes.get(sid)
+            if existing is not None:
+                # someone else built it first; ours must not linger in the
+                # process-wide attention sink list
+                self.retire_runtime(built)
+                existing.last_used = time.monotonic()
+                return existing
+            self._evict_idle_runtimes_locked()
+            self.runtimes[sid] = built
+            built.last_used = time.monotonic()
+            return built
 
     # Long-lived desktop process: runtimes (agent + registry + bus) are
     # expensive and the map was unbounded. Beyond the cap, drop the

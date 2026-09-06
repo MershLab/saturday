@@ -5749,3 +5749,69 @@ def test_trusting_a_project_keeps_settings_changed_this_session(tmp_path, monkey
 
     assert app.base_cfg.temperature == 0.33, "trusting the project reverted the UI setting"
     assert "temperature" in body["applied"]
+
+
+def test_building_a_runtime_does_not_block_stopping_a_run(tmp_path, monkeypatch):
+    """S9: the Agent and its whole registry were constructed while holding
+    runtimes_lock - the same lock stop, approve and ask need - so a cold start
+    blocked the user's ability to stop a run for as long as the build took."""
+    import threading
+
+    app = make_app(tmp_path, [{"text": "hi"}])
+    building = threading.Event()
+    release = threading.Event()
+    real_new_agent = app._new_agent
+
+    def slow_new_agent(cfg):
+        building.set()
+        release.wait(10)
+        return real_new_agent(cfg)
+
+    monkeypatch.setattr(app, "_new_agent", slow_new_agent)
+
+    started = threading.Thread(target=lambda: app.runtime_for("cold"), daemon=True)
+    started.start()
+    assert building.wait(5), "the build never started"
+
+    # the lock must be free while that build is in flight
+    got = []
+    def take_lock():
+        with app.runtimes_lock:
+            got.append(True)
+
+    other = threading.Thread(target=take_lock, daemon=True)
+    other.start()
+    other.join(3)
+    assert got, "runtimes_lock is still held across the agent build"
+
+    release.set()
+    started.join(5)
+    assert "cold" in app.runtimes
+
+
+def test_two_threads_racing_one_session_end_up_with_one_runtime(tmp_path):
+    """Building outside the lock means two callers can build the same session
+    at once. The loser's runtime must not linger in the process-wide attention
+    sink list."""
+    import threading
+
+    from saturday import attention
+
+    app = make_app(tmp_path, [{"text": "hi"}])
+    before = len(attention._sinks)
+    results = []
+    barrier = threading.Barrier(4)
+
+    def get():
+        barrier.wait()
+        results.append(app.runtime_for("shared"))
+
+    threads = [threading.Thread(target=get, daemon=True) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(10)
+
+    assert len(results) == 4
+    assert len({id(r) for r in results}) == 1, "callers got different runtimes for one session"
+    assert len(attention._sinks) == before + 1, "a discarded runtime kept its sink registered"
