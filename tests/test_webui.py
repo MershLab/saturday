@@ -11,7 +11,7 @@ import urllib.request
 from pathlib import Path
 import pytest
 from fakes import make_scripted_model
-from saturday.webui import AppState, AppServer, WebApprover
+from saturday.webui import AppState, AppServer, WebApprover, Handler
 import json
 from saturday.projects import ProjectStore
 from saturday import webui
@@ -5494,3 +5494,40 @@ def test_trigger_session_id_cannot_escape_the_log_directory(tmp_path, monkeypatc
 
     assert not list(outside.iterdir()), "a run wrote outside the workspace"
     assert started, "the route never reached the spawn it is supposed to make"
+
+
+def test_a_route_that_raises_answers_500_instead_of_closing_the_socket(tmp_path, monkeypatch):
+    """BaseHTTPRequestHandler answers an escaped exception by closing the
+    socket with no status and no body, so the client could not tell a server
+    bug from a server that went away."""
+    app = make_app(tmp_path, [{"text": "hi"}])
+
+    def explode():
+        raise RuntimeError("git status hung")
+
+    monkeypatch.setattr(Handler, "_get_state", lambda self: explode())
+
+    with _Server(app) as srv:
+        status, body = _req(srv.base, "/api/state", "GET")
+        assert status == 500
+        assert "RuntimeError" in body["error"] and "git status hung" in body["error"]
+
+
+def test_a_non_object_json_body_is_a_400_not_a_dropped_connection(tmp_path):
+    """_read_json accepts any JSON value, but every _post_* starts with
+    payload.get(...), so a body of `[]` raised AttributeError out of do_POST."""
+    app = make_app(tmp_path, [{"text": "hi"}])
+    with _Server(app) as srv:
+        for body in ([], "x", 7, None):
+            req = urllib.request.Request(
+                srv.base + "/api/chat",
+                data=json.dumps(body).encode(),
+                method="POST",
+                headers={"X-Saturday-Token": TOKEN, "Content-Type": "application/json"},
+            )
+            try:
+                resp = urllib.request.urlopen(req, timeout=15)
+                status = resp.status
+            except urllib.error.HTTPError as exc:
+                status = exc.code
+            assert status == 400, f"body {body!r} answered {status}"

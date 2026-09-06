@@ -1266,6 +1266,8 @@ class Handler(BaseHTTPRequestHandler):
                 raise
 
     # -- infra -----------------------------------------------------------------
+    _stream_open = False  # set by _begin_stream; see _fail_500
+
     def log_message(self, fmt, *a):  # silence console (cp1252 landmine)
         pass
 
@@ -1360,6 +1362,26 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError, OSError):
             pass  # client navigated away mid-response; nothing sensible to do
 
+    def _fail_500(self, exc: BaseException) -> None:
+        """Last resort for an exception a route did not expect.
+
+        BaseHTTPRequestHandler answers an escaped exception by closing the
+        socket with nothing on it, so the browser saw a network error with no
+        status and no body and the fetch layer could not tell "server bug"
+        from "server gone". Every do_* dispatch funnels through here instead.
+        The traceback goes to stderr only under SATURDAY_DEBUG, matching how
+        the rest of the server treats internal detail."""
+        if os.environ.get("SATURDAY_DEBUG"):
+            import traceback
+
+            traceback.print_exception(type(exc), exc, exc.__traceback__, file=sys.stderr)
+        if self._stream_open:
+            # headers are already out; say it in-band so the client stops waiting
+            self._stream_line({"t": "notice", "s": f"[server error] {type(exc).__name__}: {exc}"})
+            self._stream_line({"t": "done", "final": "", "stop_reason": "error", "steps": 0, "tokens": 0})
+            return
+        self._send_json({"error": f"{type(exc).__name__}: {exc}"}, 500)
+
     def _send_asset(self, name: str, status: int = 200) -> None:
         p = ASSETS_DIR / name
         if not p.is_file():
@@ -1375,6 +1397,9 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _begin_stream(self) -> None:
+        # once this runs the status line is spent: a later failure can no
+        # longer be reported as an HTTP error, only as a stream event
+        self._stream_open = True
         self.send_response(200)
         self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
@@ -1443,14 +1468,21 @@ class Handler(BaseHTTPRequestHandler):
         for pat, fname in table:
             if isinstance(pat, str):
                 if pat == route:
-                    getattr(self, fname)()
+                    self._invoke(fname)
                     return
                 continue
             m = pat.fullmatch(route)
             if m:
-                getattr(self, fname)(*m.groups())
+                self._invoke(fname, *m.groups())
                 return
         self._send_json({"error": "not found"}, 404)
+
+    def _invoke(self, fname: str, *args) -> None:
+        """Call a route handler so that nothing escapes without a response."""
+        try:
+            getattr(self, fname)(*args)
+        except Exception as exc:
+            self._fail_500(exc)
 
     def _get_state(self) -> None:
         app = self.app
@@ -2136,14 +2168,17 @@ class Handler(BaseHTTPRequestHandler):
         if not self._guard(check_origin=True):
             return
         payload = self._read_json()
-        if payload is None:
+        # _read_json accepts any JSON value, but every _post_* handler starts
+        # with payload.get(...) - a body of `[]` or `"x"` used to raise
+        # AttributeError out of here and answer with a closed socket
+        if not isinstance(payload, dict):
             self._send_json({"error": "bad request"}, 400)
             return
         fname = _POST_ROUTES.get(self._route())
         if fname is None:
             self._send_json({"error": "not found"}, 404)
             return
-        getattr(self, fname)(payload)
+        self._invoke(fname, payload)
 
     def _post_plan(self, payload: dict) -> None:
         app = self.app
