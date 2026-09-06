@@ -1420,10 +1420,15 @@ class Handler(BaseHTTPRequestHandler):
         supplied = (params.get("k") or [""])[0]
         if not supplied or not hmac.compare_digest(supplied.encode("utf-8"), self.token.encode("utf-8")):
             return False
+        # The Set-Cookie below is what authenticates; this page only strips the
+        # token out of the URL. It used to write the cookie from JavaScript
+        # too, which is why the cookie could not be HttpOnly - and a token
+        # readable from script is one XSS away from being stolen, on a
+        # surface whose whole job is running commands. Nothing reads the
+        # cookie from JavaScript; API calls carry the header instead.
         page = (
             "<!doctype html><meta charset=utf-8><title>Saturday</title>"
-            "<script>document.cookie='df_token=" + self.token + "; Path=/; SameSite=Strict';"
-            "location.replace('/');</script>"
+            "<script>location.replace('/');</script>"
             "<p style='font-family:monospace'>opening Saturday…</p>"
         ).encode("utf-8")
         try:
@@ -1432,7 +1437,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-store")
             self.send_header(
                 "Set-Cookie",
-                f"df_token={self.token}; Path=/; SameSite=Strict",
+                f"df_token={self.token}; Path=/; SameSite=Strict; HttpOnly",
             )
             self.send_header("Content-Length", str(len(page)))
             self.end_headers()

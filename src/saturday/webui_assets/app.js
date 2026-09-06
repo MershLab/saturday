@@ -4,10 +4,11 @@
 const $ = (s) => document.querySelector(s);
 const qs = new URLSearchParams(location.search);
 const TOKEN = qs.get("k") || "";
-// only write the cookie when the URL actually carried a token: after the
-// server-side ?k= bootstrap strips the query, an unconditional write would
-// clobber the good cookie with an empty value and 401 every API call
-if (TOKEN) document.cookie = "df_token=" + TOKEN + "; path=/; SameSite=Strict";
+// The cookie is set by the server's ?k= bootstrap, HttpOnly. Writing it from
+// here as well is what kept it readable from script, and a token a script can
+// read is one XSS away from being stolen on a surface whose job is running
+// commands. Nothing here reads it: API calls send X-Saturday-Token, and the
+// places that cannot send a header (img src) rely on the server's cookie.
 
 function escHtml(s) {
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");

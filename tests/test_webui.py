@@ -5938,3 +5938,28 @@ def test_session_creation_and_run_markers_are_fsynced_like_appends(tmp_path, mon
     # and the store still works normally afterwards
     store.append(sid, {"type": "messages", "messages": [{"role": "user", "content": "x"}]})
     assert store.load(sid)
+
+
+def test_the_token_cookie_is_httponly_and_not_written_from_script(tmp_path):
+    """S17: the cookie could not be HttpOnly because the page and app.js both
+    wrote it from JavaScript. A token a script can read is one XSS away from
+    being stolen, on a surface whose whole job is running commands."""
+    import http.client
+
+    app = make_app(tmp_path, [{"text": "hi"}])
+    with _Server(app) as srv:
+        host, port = srv.http.server_address[0], srv.http.server_address[1]
+        conn = http.client.HTTPConnection(host, port, timeout=15)
+        conn.request("GET", f"/?k={TOKEN}", headers={"Host": f"{host}:{port}"})
+        resp = conn.getresponse()
+        body = resp.read().decode()
+        cookie = resp.getheader("Set-Cookie") or ""
+        conn.close()
+
+    assert f"df_token={TOKEN}" in cookie
+    assert "HttpOnly" in cookie, f"the token cookie is script-readable: {cookie}"
+    assert "SameSite=Strict" in cookie
+    assert "document.cookie" not in body, "the bootstrap page still writes it from script"
+
+    js = (ASSETS / "app.js").read_text(encoding="utf-8")
+    assert "document.cookie" not in js, "app.js still writes the token cookie"
