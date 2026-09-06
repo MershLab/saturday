@@ -26,6 +26,57 @@
   unexplained client-side parse error. Protocol version is shared with the client
   half so the two cannot drift.
 
+### Fixed — design audit
+
+A six-reviewer audit of the running app (web UI, CLI, TUI, REPL) plus a
+second pass that walked tasks to their end rather than inspecting screens.
+64 findings fixed; two turned out not to be faults.
+
+**Narrow viewports were unusable.** Below 900px the sidebar scrim was keyed
+off the collapsed state, so it covered the viewport while the drawer was
+*shut* and swallowed every tap, including the one on the toggle that would
+open it. Below 1081px the entire nine-tab stage was `display:none`, which
+stranded eight of nine surfaces — and `saturday remote` puts this UI on a
+phone. The stage now collapses to the pinned strip that peeks open as an
+overlay, for every persona, and the tab strip scrolls rather than clipping.
+
+**Nothing lost work.** A failed send cleared the composer before the request
+resolved and, when the stream produced no events, left the message nowhere
+at all: a long message typed while the provider was unreachable was simply
+gone. Text and attachments now come back. Settings discarded unsaved edits
+on a stray backdrop click; it asks first. A peeked panel could only be left
+via a 20px unlabelled glyph, and Escape — not being wired to it — fell
+through to the fallback that *stops the current run*.
+
+**Keyboard and screen reader access.** The session list was divs with click
+handlers and no `tabindex` anywhere in the app's JS; streaming output had no
+live region, so the product's central act was silent; no dialog trapped
+focus, the approval prompt included. The stage tabs are a real tablist with
+roving tabindex and arrow keys, a collapsed sidebar is `inert` instead of
+holding 23 invisible tab stops, and "always allow" needs Shift+A rather than
+a bare keystroke that granted a standing approval with no undo.
+
+**Contrast, measured across all 21 themes rather than the two shipped ones.**
+Every theme failed WCAG AA on secondary text, several near 1.6:1. Lifting
+`--faint` alone would have inverted the hierarchy, since `--dim` was itself
+below AA, so the ramp is fixed as a unit: text >= dim >= faint >= 4.5:1
+everywhere. Focus rings clear 3:1, and `--on-accent` replaces a raw hex that
+had been copied per theme — which is exactly how the light theme's send
+button came to sit at 4.18:1 unnoticed.
+
+**Terminal.** `config --set foobar` reported success and wrote a junk key;
+`sessions --pause <typo>` reported a pause that never existed. Both refuse
+now. `NO_COLOR` is honored, `/exit` works, output sizes to the real terminal
+width, slash commands tab-complete, `SATURDAY_DEBUG=1` produces a real
+traceback, and the 27 commands in `--help` are grouped by task with a test
+that fails if the map drifts from what is registered.
+
+**Design system.** 17 ad-hoc font sizes became a 10-step scale; the spacing
+scale was built from what the stylesheet measurably does (a 4px grid fitted
+32% of it) rather than imposed. Three CSS tokens were referenced but never
+defined, one of which silently collapsed the Trust dialog's borders in every
+theme.
+
 ## 0.9.0 — launch hardening, competitive-parity UI, test suite consolidation
 
 ### Fixed
