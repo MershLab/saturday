@@ -5908,3 +5908,33 @@ def test_a_watched_idle_session_is_not_evicted(tmp_path):
     for i in range(6, 12):
         app.runtime_for(f"other-{i}")
     assert "watched" not in app.runtimes, "an unwatched idle runtime is pinned forever"
+
+
+def test_session_creation_and_run_markers_are_fsynced_like_appends(tmp_path, monkeypatch):
+    """S15: create() wrote the session header with write_text and RunState
+    wrote its marker the same way, while append() fsyncs. The header is what
+    every appended record's hash chain is anchored to, so losing it to a power
+    cut while the records that commit to it survived is the one inconsistency
+    the chain cannot describe."""
+    import os as os_mod
+
+    from saturday.sessions import RunState, SessionStore
+
+    synced = []
+    real_fsync = os_mod.fsync
+    monkeypatch.setattr("saturday.sessions.os.fsync",
+                        lambda fd: synced.append(fd) or real_fsync(fd))
+
+    store = SessionStore(root=tmp_path / "s")
+    sid = store.create({"task": "durable"})
+    assert synced, "the session header was not fsynced"
+    assert (tmp_path / "s" / f"{sid}.jsonl").is_file()
+
+    synced.clear()
+    RunState(tmp_path / "s", sid).start()
+    assert synced, "the run marker was not fsynced before its rename"
+    assert (tmp_path / "s" / f"{sid}.run").is_file()
+
+    # and the store still works normally afterwards
+    store.append(sid, {"type": "messages", "messages": [{"role": "user", "content": "x"}]})
+    assert store.load(sid)

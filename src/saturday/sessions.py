@@ -127,9 +127,17 @@ class SessionStore:
         # sidebar refresh re-opened EVERY session file (~1s for 150 files).
         self._meta_cache: dict[Path, tuple[tuple[int, int, int, int], dict[str, Any]]] = {}
         self._cache_lock = threading.Lock()
-        # All stores pointing at the same root share this lock. Metadata
-        # updates must not race with appends, even when the web UI and a
+        # All stores IN THIS PROCESS pointing at the same root share this
+        # lock, so metadata updates cannot race appends when the web UI and a
         # background helper each construct their own SessionStore instance.
+        #
+        # It is process-local, and the comment here used to read as though it
+        # covered more than that. It does not: a CLI `chat --resume`, a child
+        # started by /api/trigger and a scheduled run are separate processes
+        # and can append to a session the web UI holds. Interleaving whole
+        # records is unlikely (each append is one write under this lock, and
+        # the hash chain makes a torn history detectable rather than silent),
+        # but it is not prevented. Preventing it needs a file lock. (S15)
         self._append_lock = self._lock_for_root(self.root)
 
     def _path(self, session_id: str) -> Path:
@@ -158,7 +166,14 @@ class SessionStore:
                 "seq": self._next_seq(),
                 **{k: v for k, v in meta.items() if k != "id"},
             }
-            p.write_text(json.dumps(header) + "\n", encoding="utf-8")
+            # fsync like append() does: this header is what every appended
+            # record's hash chain is anchored to, so losing it to a power cut
+            # while the records that commit to it survived is the one
+            # inconsistency the chain cannot describe. (S15)
+            with open(p, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps(header) + "\n")
+                fh.flush()
+                os.fsync(fh.fileno())
             stamp = self._metadata_stamp(p)
             if stamp is not None:
                 with self._cache_lock:
@@ -672,7 +687,13 @@ class RunState:
         self.root.mkdir(parents=True, exist_ok=True)
         payload = {"status": status, "pid": os.getpid(), "heartbeat": time.time()}
         tmp = self.path.with_suffix(".run.tmp")
-        tmp.write_text(json.dumps(payload), encoding="utf-8")
+        # fsync before the rename: the rename can reach disk while the bytes
+        # it points at have not, leaving an empty marker that reads as
+        # "nothing to recover" for a session that was in fact running. (S15)
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(payload))
+            fh.flush()
+            os.fsync(fh.fileno())
         os.replace(tmp, self.path)
 
     def start(self) -> None:
