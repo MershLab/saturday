@@ -279,6 +279,19 @@ class ExternalAgentTool(Tool):
 
     @staticmethod
     def _default_install(spec: ExternalAgentSpec) -> tuple[bool, str]:
+        # Three of the built-in hints are `curl ... | bash`: fetch a script over
+        # the network and run it unread. That is the exact shape check_command
+        # stops for `shell`, and reaching it through install=true walked around
+        # the question. Approving a delegation is not approving an install, so
+        # this one is handed back for the user to run deliberately.
+        from saturday.safety import looks_like_remote_pipe_to_shell
+
+        if looks_like_remote_pipe_to_shell(spec.install_hint):
+            return False, (
+                f"{spec.id} is not installed, and its installer pipes a downloaded "
+                f"script straight into a shell. Saturday will not run that for you.\n"
+                f"Run it yourself if you trust it:\n    {spec.install_hint}"
+            )
         try:
             r = subprocess.run(spec.install_hint, shell=True, capture_output=True, text=True, timeout=300)
         except (OSError, subprocess.SubprocessError) as exc:

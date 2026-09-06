@@ -30,7 +30,31 @@ HARDLINE_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"\bdel\b\s+/[sq]\s+/[qs]\s+C:\\\s*$", re.IGNORECASE), "del /s /q on drive root"),
 ]
 
+# Harness control files: writing these changes what Saturday will do next.
+# The file tools refuse them, but `shell` and `python` reached the same paths
+# with no question asked, so a redirect was a silent way around the policy.
+_CONTROL_FILE_RX = (
+    r"(?:hooks|config|approvals|mcp|agents|agents-enabled|schedules"
+    r"|trusted_projects|projects)\.json|file_journal\.jsonl|soul\.md"
+)
+
 DANGEROUS_PATTERNS: list[tuple[re.Pattern, str]] = [
+    (
+        re.compile(
+            rf"(?:>>?|\btee\b)\s*['\"]?[^\s'\";|]*"
+            rf"(?:\.saturday[/\\](?:{_CONTROL_FILE_RX})|(?:^|[/\\\s'\"])\.env)\b",
+            re.IGNORECASE,
+        ),
+        "writing to a Saturday control file",
+    ),
+    (
+        re.compile(
+            rf"open\s*\(\s*['\"][^'\"]*"
+            rf"(?:\.saturday[/\\](?:{_CONTROL_FILE_RX})|\.env)['\"]\s*,\s*['\"][aw]",
+            re.IGNORECASE,
+        ),
+        "writing to a Saturday control file from code",
+    ),
     (re.compile(r"\bsudo\b", re.IGNORECASE), "elevated privileges (sudo)"),
     (
         re.compile(
@@ -96,7 +120,24 @@ def guardrail_reason(text: str) -> str | None:
             return reason
     return _sql_unbounded(text)
 
-GATED_TOOLS = ("shell", "python", "pointer", "keyboard", "clipboard", "window")
+# external_agent spawns another vendor's CLI with a prompt the model wrote, and
+# with install=true it pipes curl into bash - the exact shape the dangerous
+# patterns ask about for `shell`, reached through a tool that asked nothing.
+GATED_TOOLS = ("shell", "python", "pointer", "keyboard", "clipboard", "window", "external_agent")
+
+
+def looks_like_remote_pipe_to_shell(command: str) -> bool:
+    """Does this fetch something over the network and run it unread?
+
+    Shared so the shell gate and the external-agent installer agree on what
+    the shape is, rather than one of them having its own opinion."""
+    return bool(
+        re.search(
+            r"(?:curl|wget|iwr|Invoke-WebRequest)\b[^\n|]*\|\s*(?:iex\b|bash\b|sh\b|zsh\b)",
+            str(command or ""),
+            re.IGNORECASE,
+        )
+    )
 
 
 def _normalize(command: str) -> str:

@@ -137,6 +137,11 @@ def _is_privileged_target(root: str | None, raw: str, resolved: Path) -> bool:
 
 
 _PRIVILEGED_SATURDAY_FILES = {
+    # agents.json registers binaries and argv for external delegation, and
+    # agents-enabled.json decides which of them auto-routing may reach. Both
+    # are executable policy, so they belong here with hooks.json.
+    "agents.json",
+    "agents-enabled.json",
     "mcp.json",
     "file_journal.jsonl",
     "hooks.json",

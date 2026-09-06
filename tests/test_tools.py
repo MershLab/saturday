@@ -4110,3 +4110,24 @@ def test_a_truncated_search_says_so(tmp_path):
     ok, out = GlobTool(root=str(root)).run({"pattern": "*.py", "limit": 1})
     assert ok
     assert "stopped at 1 match" in out and "limit=" in out, out
+
+
+def test_install_refuses_to_pipe_a_downloaded_script_into_a_shell():
+    """install=true reached the exact shape `shell` asks about.
+
+    Three built-in install hints are `curl ... | bash`. Approving a delegation
+    is not approving an install, so the pipe shape is handed back for the user
+    to run deliberately; package-manager installs are unaffected."""
+    from saturday.tools.external_agent import AGENTS, ExternalAgentTool
+
+    ok, msg = ExternalAgentTool._default_install(AGENTS["opencode"])
+    assert ok is False
+    assert "will not run that for you" in msg
+    assert AGENTS["opencode"].install_hint in msg, "the user is told the exact command"
+
+
+def test_agents_json_is_a_privileged_file():
+    from saturday.tools.files import is_privileged_path
+
+    assert is_privileged_path(".saturday/agents.json")
+    assert is_privileged_path(".saturday/agents-enabled.json")

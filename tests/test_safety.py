@@ -2378,3 +2378,39 @@ def ui_app_factory():
     for srv in made:
         srv.shutdown()
 
+
+
+def test_shell_cannot_quietly_rewrite_harness_control_files():
+    """The file tools refuse these paths; shell and python reached them freely.
+
+    hooks.json is executable config and agents.json registers the binaries and
+    argv external delegation will spawn, so a redirect into either was a silent
+    way around the privileged-file policy - unprompted in ask mode."""
+    from saturday.safety import ApprovalPolicy, check_command
+
+    policy = ApprovalPolicy.from_mode("ask")
+    for cmd in (
+        "echo '{}' > .saturday/hooks.json",
+        "echo x > .saturday/agents.json",
+        "echo x >> .saturday/agents-enabled.json",
+        "cat payload | tee .saturday/config.json",
+        "python -c \"open('.env','w').write('K=v')\"",
+    ):
+        assert check_command(policy, "shell", {"command": cmd}), f"{cmd!r} ran unprompted"
+
+
+def test_reading_harness_files_is_still_free():
+    """Only writes are the escalation; reads must not start prompting."""
+    from saturday.safety import ApprovalPolicy, check_command
+
+    policy = ApprovalPolicy.from_mode("ask")
+    for cmd in ("cat .saturday/config.json", "ls .saturday",
+                "grep x .env.example", "echo hi > out.txt"):
+        assert not check_command(policy, "shell", {"command": cmd}), f"{cmd!r} should not prompt"
+
+
+def test_external_agent_is_gated_like_shell():
+    """It spawns another vendor's CLI with a model-written prompt."""
+    from saturday.safety import GATED_TOOLS
+
+    assert "external_agent" in GATED_TOOLS
