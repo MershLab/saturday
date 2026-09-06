@@ -1864,13 +1864,54 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json({"projects": app.projects_payload()})
 
     def _get_export_all(self) -> None:
+        """Every session's transcript, streamed.
+
+        S18: this built a list holding every transcript in the store and then
+        serialised the whole thing at once, so peak memory was the size of the
+        entire history twice over. The bytes on the wire are unchanged - the
+        same {"exported": N, "sessions": [...]} object - but it is written out
+        one session at a time, so the cost is one transcript rather than all
+        of them.
+        """
         app = self.app
-        sessions = []
-        for row in app.store.list_sessions(limit=None):
+        rows = app.store.list_sessions(limit=None)
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Transfer-Encoding", "chunked")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError, OSError):
+            return
+
+        def chunk(text: str) -> bool:
+            raw = text.encode("utf-8")
+            if not raw:
+                return True
+            try:
+                self.wfile.write(b"%x\r\n" % len(raw) + raw + b"\r\n")
+                return True
+            except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError, OSError):
+                return False
+
+        # `exported` counts what was actually written, and it has to be in the
+        # object before the sessions are - so it is the row count, and a
+        # session that vanished between listing and loading is written as null
+        # rather than silently making the count a lie.
+        if not chunk('{"exported": %d, "sessions": [' % len(rows)):
+            return
+        for i, row in enumerate(rows):
             data = app.store.load(row["id"])
-            if data:
-                sessions.append(data)
-        self._send_json({"exported": len(sessions), "sessions": sessions})
+            piece = ("," if i else "") + json.dumps(data, ensure_ascii=False)
+            if not chunk(piece):
+                return
+        if not chunk("]}"):
+            return
+        try:
+            self.wfile.write(b"0\r\n\r\n")
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError, OSError):
+            pass
 
     def _get_session(self, sid: str) -> None:
         app = self.app
@@ -2134,7 +2175,12 @@ class Handler(BaseHTTPRequestHandler):
                 removed += 1
             except OSError:
                 pass
-        for p in list(app.store.root.glob("*.checkpoint.json")) + list(app.store.root.glob("*.meta.json")):
+        with app._cfg_lock:
+            app.session_models.clear()
+        for p in (list(app.store.root.glob("*.checkpoint.json"))
+                  + list(app.store.root.glob("*.meta.json"))
+                  + list(app.store.root.glob("*.run"))
+                  + list(app.store.root.glob("*.pause"))):
             try:
                 p.unlink()
             except OSError:
@@ -2164,12 +2210,23 @@ class Handler(BaseHTTPRequestHandler):
                     if not rt.busy:
                         break
                     time.sleep(0.1)
+        # S18: the per-session model override and the run/pause markers used
+        # to outlive the session. The override is an unbounded leak in a long
+        # lived process, and a stale .run marker with a dead pid is exactly
+        # the crash signal RunState looks for - left behind by a session that
+        # was deleted on purpose, not one that crashed.
+        with app._cfg_lock:
+            app.session_models.pop(sid, None)
         removed = []
         base = app.store._path(sid)
-        for p in (base, base.with_suffix(".checkpoint.json"), base.with_suffix(".meta.json")):
+        paths = [base, base.with_suffix(".checkpoint.json"), base.with_suffix(".meta.json")]
+        paths.extend(_run_marker_paths(app.store.root, sid))
+        for p in paths:
             try:
+                existed = p.is_file()
                 p.unlink(missing_ok=True)
-                removed.append(p.name)
+                if existed:
+                    removed.append(p.name)
             except OSError:
                 pass
         self._send_json({"ok": True, "removed": removed})
@@ -3863,6 +3920,21 @@ _DELETE_ROUTES = [
     (_RE_SESSION, "_delete_session"),
     (_RE_PROJECT, "_delete_project"),
 ]
+
+
+def _run_marker_paths(root, sid: str) -> list[Path]:
+    """The .run / .pause markers RunState keeps for a session.
+
+    Built through RunState rather than by repeating its filename rule, so the
+    two cannot disagree about which file belongs to which session.
+    """
+    from saturday.sessions import RunState
+
+    try:
+        rs = RunState(root, sid)
+        return [rs.path, rs.path.with_suffix(".run.tmp"), rs.pause_path]
+    except Exception:
+        return []
 
 
 def _install_attention_sink(rt) -> None:

@@ -6060,3 +6060,78 @@ def test_both_hook_routes_enforce_the_same_rules(tmp_path, monkeypatch):
         assert status == 200, body
     written = json.loads((tmp_path / "cfg" / "hooks.json").read_text(encoding="utf-8"))
     assert written["pre_tool_call"] == ["echo hi"]
+
+
+def test_deleting_a_session_takes_its_override_and_run_markers_with_it(tmp_path):
+    """S18: the per-session model override and the .run/.pause markers
+    outlived the session. The override is an unbounded leak in a long-lived
+    process, and a stale .run marker with a dead pid is exactly the crash
+    signal RunState looks for - left by a session deleted on purpose."""
+    from saturday.sessions import RunState
+
+    app = make_app(tmp_path, [{"text": "hi"}])
+    with _Server(app) as srv:
+        sid = app.store.create({"task": "t"})
+        app.session_models[sid] = "openai/gpt-4o-mini"
+        RunState(app.store.root, sid).start()
+        assert (app.store.root / f"{sid}.run").is_file()
+
+        status, body = _req(srv.base, f"/api/session/{sid}", "DELETE")
+        assert status == 200, body
+
+    assert sid not in app.session_models, "the model override outlived the session"
+    assert not (app.store.root / f"{sid}.run").is_file(), "a stale run marker was left behind"
+    assert not (app.store.root / f"{sid}.jsonl").is_file()
+    assert f"{sid}.run" in body["removed"]
+
+
+def test_clearing_every_session_clears_the_overrides_and_markers_too(tmp_path):
+    from saturday.sessions import RunState
+
+    app = make_app(tmp_path, [{"text": "hi"}])
+    with _Server(app) as srv:
+        sids = [app.store.create({"task": f"t{i}"}) for i in range(3)]
+        for sid in sids:
+            app.session_models[sid] = "m"
+            RunState(app.store.root, sid).start()
+
+        status, body = _req(srv.base, "/api/sessions/all", "DELETE")
+        assert status == 200, body
+
+    assert app.session_models == {}, app.session_models
+    assert not list(app.store.root.glob("*.run")), "run markers survived the wipe"
+
+
+def test_exporting_every_session_streams_instead_of_materialising_them(tmp_path):
+    """S18: this built a list holding every transcript in the store and then
+    serialised the whole thing at once, so peak memory was the entire history
+    twice over."""
+    app = make_app(tmp_path, [{"text": "hi"}])
+    sids = []
+    for i in range(4):
+        sid = app.store.create({"task": f"session {i}"})
+        app.store.append(sid, {"type": "messages", "messages": [
+            {"role": "user", "content": f"body {i}"}]})
+        sids.append(sid)
+
+    loaded = []
+    real_load = app.store.load
+
+    def counting_load(s):
+        loaded.append(s)
+        return real_load(s)
+
+    app.store.load = counting_load
+
+    with _Server(app) as srv:
+        status, body = _req(srv.base, "/api/export/all", "GET")
+
+    assert status == 200, body
+    assert body["exported"] == 4
+    assert len(body["sessions"]) == 4
+    assert sorted(loaded) == sorted(sids), "not every session was exported"
+    # the payload is still one JSON object with the same shape
+    assert all(isinstance(x, dict) for x in body["sessions"])
+    texts = json.dumps(body["sessions"])
+    for i in range(4):
+        assert f"body {i}" in texts
