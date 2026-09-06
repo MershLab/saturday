@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -11,6 +12,14 @@ def _uid() -> str:
     return uuid.uuid4().hex[:12]
 
 
+# One process-wide lock rather than a field on Usage: a field would follow the
+# dataclass into asdict(), equality and every checkpoint that serialises one.
+# Three integer adds are not worth contending over, and `x += n` on an
+# attribute is a load, an add and a store, so two sessions sharing a client
+# lost counts against each other.
+_USAGE_LOCK = threading.Lock()
+
+
 @dataclass
 class Usage:
     prompt_tokens: int = 0
@@ -18,9 +27,10 @@ class Usage:
     total_tokens: int = 0
 
     def add(self, other: "Usage") -> None:
-        self.prompt_tokens += other.prompt_tokens
-        self.completion_tokens += other.completion_tokens
-        self.total_tokens += other.total_tokens
+        with _USAGE_LOCK:
+            self.prompt_tokens += other.prompt_tokens
+            self.completion_tokens += other.completion_tokens
+            self.total_tokens += other.total_tokens
 
 
 @dataclass

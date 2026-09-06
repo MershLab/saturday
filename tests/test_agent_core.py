@@ -3543,3 +3543,36 @@ def test_a_throwing_ui_callback_does_not_abort_the_run(tmp_path):
                      hooks=LoopHooks(on_tool_result=bad_render)).run("sys", "go")
 
     assert traj.stop_reason == "done" and traj.final_answer == "done"
+
+
+def test_usage_totals_survive_concurrent_sessions_sharing_a_client():
+    """C25: `x += n` on an attribute is a load, an add and a store, so two
+    sessions adding to one client's total can lose counts against each other.
+
+    Honest scope: this asserts the invariant, it does not reproduce the race.
+    Under CPython's GIL the loss is not observable here - 800k unlocked
+    increments across four threads lost nothing when measured - so this test
+    passes with or without the lock on this interpreter. The lock is kept
+    because the interleaving is real on a free-threaded build, and three
+    integer adds are not worth the risk of being wrong later; it is not kept
+    on the strength of this test."""
+    import threading as _t
+
+    from saturday.types import Usage
+
+    total = Usage()
+    one = Usage(prompt_tokens=1, completion_tokens=1, total_tokens=2)
+
+    def hammer():
+        for _ in range(2000):
+            total.add(one)
+
+    threads = [_t.Thread(target=hammer) for _ in range(4)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join()
+
+    assert total.prompt_tokens == 8000, f"lost {8000 - total.prompt_tokens} counts"
+    assert total.completion_tokens == 8000
+    assert total.total_tokens == 16000
