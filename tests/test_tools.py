@@ -4000,3 +4000,113 @@ def test_revert_restores_the_original_bytes(tmp_path):
     ok, _ = restore_entry(str(tmp_path), 0, root=str(tmp_path))
     assert ok
     assert p.read_bytes() == original
+
+
+def test_fuzzy_match_reindents_the_replacement_to_the_file(tmp_path):
+    """A dedented snippet must not dedent the file it matches.
+
+    The flexible matcher locates tokens, so line 1 splices after the file's
+    own indentation while lines 2..n arrive with the model's. A body at 12
+    spaces edited with an un-indented snippet produced a file mixing both,
+    with the replacement dedented out of its block - and the syntax check
+    only ran after the file was written.
+
+    Asserts exact content: 'the new text is present' is also true of the
+    broken output."""
+    import ast
+
+    from saturday.tools.files import EditFile
+
+    p = tmp_path / "mod.py"
+    p.write_text(
+        "class A:\n    def go(self):\n        if x:\n"
+        "            do_one()\n            do_two()\n")
+    ok, msg = EditFile(root=str(tmp_path)).run({
+        "path": "mod.py",
+        "old_string": "do_one()\ndo_two()",        # no indentation, as models send
+        "new_string": "do_one()\ndo_three()",
+    })
+    assert ok, msg
+    assert p.read_text() == (
+        "class A:\n    def go(self):\n        if x:\n"
+        "            do_one()\n            do_three()\n")
+    ast.parse(p.read_text())
+
+
+def test_fuzzy_match_preserves_relative_indentation(tmp_path):
+    """Nesting inside the replacement survives the shift."""
+    from saturday.tools.files import EditFile
+
+    p = tmp_path / "m.py"
+    p.write_text("def f():\n    if a:\n        one()\n        two()\n")
+    ok, _ = EditFile(root=str(tmp_path)).run({
+        "path": "m.py",
+        "old_string": "one()\ntwo()",
+        "new_string": "one()\nif b:\n    deeper()",
+    })
+    assert ok
+    assert p.read_text() == (
+        "def f():\n    if a:\n        one()\n        if b:\n            deeper()\n")
+
+
+# --- search must not lie by omission (harness audit T4/T11) -----------------
+
+def _tree(tmp_path):
+    (tmp_path / "src" / "deep").mkdir(parents=True)
+    (tmp_path / ".saturday").mkdir()
+    (tmp_path / "build").mkdir()
+    (tmp_path / "root.py").write_text("def find_me(): pass\n")
+    (tmp_path / "src" / "deep" / "target.py").write_text("def find_me(): pass\n")
+    (tmp_path / ".saturday" / "file_journal.jsonl").write_text('{"before":"def find_me(): stale"}\n')
+    (tmp_path / "build" / "gen.py").write_text("def find_me(): generated\n")
+    (tmp_path / ".gitignore").write_text("build/\n")
+    return tmp_path
+
+
+def test_grep_include_searches_subdirectories(tmp_path):
+    """`include="*.py"` used Path.glob, which is not recursive.
+
+    The schema advertises "glob filter like *.py", so a model asking for it
+    was told the code did not exist whenever it lived one directory down."""
+    from saturday.tools.files import GrepTool
+
+    root = _tree(tmp_path)
+    ok, out = GrepTool(root=str(root)).run({"pattern": "find_me", "include": "*.py"})
+    assert ok
+    assert "src/deep/target.py" in out, out
+
+
+def test_search_skips_the_saturday_directory(tmp_path):
+    """file_journal.jsonl holds the pre-edit text of every edited file.
+
+    Returning it means grep answers with stale duplicates of the very code
+    the model is searching."""
+    from saturday.tools.files import GrepTool
+
+    root = _tree(tmp_path)
+    ok, out = GrepTool(root=str(root)).run({"pattern": "find_me"})
+    assert ok
+    assert ".saturday" not in out, out
+
+
+def test_search_honours_gitignore(tmp_path):
+    from saturday.tools.files import GlobTool, GrepTool
+
+    root = _tree(tmp_path)
+    _, out = GrepTool(root=str(root)).run({"pattern": "find_me"})
+    assert "build/gen.py" not in out, out
+    _, out = GlobTool(root=str(root)).run({"pattern": "*.py"})
+    assert "build/gen.py" not in out and "src/deep/target.py" in out, out
+
+
+def test_a_truncated_search_says_so(tmp_path):
+    """Silence reads as "this is everything".
+
+    glob stopped at 500 with no note at all, which is the same failure as the
+    non-recursive include: the model concludes it has seen the whole tree."""
+    from saturday.tools.files import GlobTool
+
+    root = _tree(tmp_path)
+    ok, out = GlobTool(root=str(root)).run({"pattern": "*.py", "limit": 1})
+    assert ok
+    assert "stopped at 1 match" in out and "limit=" in out, out

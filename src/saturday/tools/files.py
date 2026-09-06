@@ -5,7 +5,60 @@ from pathlib import Path
 
 from saturday.tools.base import Tool
 
-IGNORED_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".mypy_cache", ".pytest_cache", "dist", "build", ".idea", ".vscode"}
+IGNORED_DIRS = {".git", ".saturday", "node_modules", "__pycache__", ".venv", "venv", ".mypy_cache", ".pytest_cache", "dist", "build", ".idea", ".vscode"}
+
+
+def recursive_pattern(pattern: str) -> str:
+    """Make a bare filename pattern search the whole tree.
+
+    `Path.glob("*.py")` matches only the top directory, but the schema says
+    "glob filter like *.py", so a model asking for *.py was told the code did
+    not exist whenever it lived in a subdirectory. A pattern that already
+    contains a separator is left exactly as written."""
+    p = str(pattern or "").strip()
+    if not p:
+        return "**/*"
+    return p if ("/" in p or p.startswith("**")) else f"**/{p}"
+
+
+def gitignore_filter(root: Path):
+    """A predicate that is True for paths .gitignore excludes.
+
+    A deliberate subset of gitignore: comments, negation, anchored and
+    directory patterns. Nested .gitignore files and the full precedence rules
+    are not implemented - the goal is to stop search drowning in build output
+    the way a bare walk does, not to reimplement git. Anything not understood
+    is simply not excluded, so the failure mode is showing too much rather
+    than hiding a file the user needed."""
+    import fnmatch
+
+    rules: list[tuple[str, bool, bool]] = []   # (pattern, negated, dir_only)
+    gi = root / ".gitignore"
+    try:
+        raw = gi.read_text(encoding="utf-8", errors="replace") if gi.is_file() else ""
+    except OSError:
+        raw = ""
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        neg = line.startswith("!")
+        if neg:
+            line = line[1:]
+        dir_only = line.endswith("/")
+        rules.append((line.strip("/"), neg, dir_only))
+
+    def ignored(rel_posix: str, is_dir: bool = False) -> bool:
+        hit = False
+        parts = rel_posix.split("/")
+        for pat, neg, dir_only in rules:
+            if dir_only and not is_dir and pat not in parts:
+                continue
+            if fnmatch.fnmatch(rel_posix, pat) or any(fnmatch.fnmatch(p, pat) for p in parts):
+                hit = not neg
+        return hit
+
+    return ignored
 
 
 def _resolve(root: str | None, rel: str | None) -> Path:
@@ -101,6 +154,39 @@ _PRIVILEGED_WRITE_MSG = (
     ".saturday/ such as hooks.json / config.json / approvals.json / mcp.json): "
     "edit it manually outside the agent session"
 )
+
+
+def reindent_for_span(text: str, start: int, old: str, new: str) -> str:
+    """Shift ``new`` into the indentation the matched span actually sits at.
+
+    The flexible matcher locates tokens, so the span begins at the first token
+    and line 1 of ``new`` is spliced after the file's own indentation. Lines
+    2..n arrived with whatever indentation the model used, which is routinely
+    different - a body at 12 spaces edited with a 2 space snippet produced a
+    file mixing both, with the replacement lines dedented out of their block.
+    The syntax check ran after the file had already been written.
+
+    Relative indentation inside ``new`` is preserved: every line after the
+    first moves by the same delta."""
+    line_start = text.rfind("\n", 0, start) + 1
+    file_indent = text[line_start:start]
+    if file_indent.strip():                     # match did not begin a line
+        return new
+    old_lines = str(old).strip("\n").split("\n")
+    old_indent = old_lines[0][: len(old_lines[0]) - len(old_lines[0].lstrip())]
+    delta = len(file_indent) - len(old_indent)
+    if delta == 0:
+        return new
+    out = []
+    for i, line in enumerate(str(new).split("\n")):
+        if i == 0 or not line.strip():
+            out.append(line)
+        elif delta > 0:
+            out.append(" " * delta + line)
+        else:
+            strip = min(-delta, len(line) - len(line.lstrip()))
+            out.append(line[strip:])
+    return "\n".join(out)
 
 
 def flexible_match(text: str, old: str) -> tuple[int, int] | None:
@@ -320,8 +406,11 @@ class EditFile(Tool):
             if span is None:
                 return False, "old_string not found"
             start, end = span
-            updated = text[:start] + new + text[end:]
+            shifted = reindent_for_span(text, start, old, new)
+            updated = text[:start] + shifted + text[end:]
             fuzzy_note = " (matched via whitespace-flexible fallback)"
+            if shifted != new:
+                fuzzy_note = " (matched via whitespace-flexible fallback, re-indented to match the file)"
         elif count > 1:
             return False, f"old_string matches {count} times; add context to make it unique"
         else:
@@ -420,18 +509,26 @@ class GlobTool(Tool):
     description = "Find files matching a glob pattern (e.g. src/**/*.py)."
     parameters = {
         "type": "object",
-        "properties": {"pattern": {"type": "string"}},
+        "properties": {
+            "pattern": {"type": "string"},
+            "limit": {"type": "integer", "description": "max results (default 500)"},
+        },
         "required": ["pattern"],
     }
 
-    def __init__(self, root: str | None = None) -> None:
+    def __init__(self, root: str | None = None, max_results: int = 500) -> None:
         self.root = root
+        self.max_results = max_results
 
     @guard
     def run(self, args: dict) -> tuple[bool, str]:
-        pattern = str(args.get("pattern") or "**/*")
+        pattern = recursive_pattern(args.get("pattern") or "**/*")
         base = (Path(self.root) if self.root else Path.cwd()).resolve()
+        # a cap the caller can raise, not a wall it cannot see past
+        cap = max(1, int(args.get("limit") or self.max_results))
+        ignored = gitignore_filter(base)
         matches: list[str] = []
+        truncated = False
         try:
             for p in base.glob(pattern):
                 rp = _confined(base, p)
@@ -439,12 +536,23 @@ class GlobTool(Tool):
                     continue
                 if any(part in IGNORED_DIRS for part in rp.parts):
                     continue
-                matches.append(rp.relative_to(base).as_posix())
-                if len(matches) >= 500:
+                rel = rp.relative_to(base).as_posix()
+                if ignored(rel, rp.is_dir()):
+                    continue
+                matches.append(rel)
+                if len(matches) >= cap:
+                    truncated = True
                     break
         except (OSError, ValueError) as exc:
             return False, f"bad pattern: {exc}"
-        return True, "\n".join(sorted(matches)) or "(no matches)"
+        if not matches:
+            return True, "(no matches)"
+        out = "\n".join(sorted(matches))
+        if truncated:
+            # silence here read as "this is everything", which is how a model
+            # concludes code does not exist
+            out += f"\n... stopped at {cap} match{'' if cap == 1 else 'es'}; pass limit= to raise it"
+        return True, out
 
 
 class GrepTool(Tool):
@@ -457,7 +565,8 @@ class GrepTool(Tool):
         "type": "object",
         "properties": {
             "pattern": {"type": "string", "description": "Python regex"},
-            "include": {"type": "string", "description": "glob filter like *.py"},
+            "include": {"type": "string", "description": "glob filter like *.py (searches all subdirectories)"},
+            "limit": {"type": "integer", "description": "max matches (default 200)"},
             "ignore_case": {"type": "boolean", "description": "case-insensitive matching (default false)"},
         },
         "required": ["pattern"],
@@ -483,8 +592,10 @@ class GrepTool(Tool):
             rx = re.compile(args["pattern"], flags)
         except re.error as exc:
             return False, f"bad regex: {exc}"
-        include = args.get("include") or "**/*"
+        include = recursive_pattern(args.get("include") or "**/*")
         base = (Path(self.root) if self.root else Path.cwd()).resolve()
+        cap = max(1, int(args.get("limit") or self.max_results))
+        ignored = gitignore_filter(base)
         results: list[str] = []
         try:
             matches = base.glob(include)
@@ -504,11 +615,14 @@ class GrepTool(Tool):
                     rel = rp.relative_to(base).as_posix()
                 except ValueError:
                     continue
+                if ignored(rel):
+                    continue
                 for i, line in enumerate(text.splitlines(), 1):
                     if rx.search(line):
                         results.append(f"{rel}:{i}: {line.strip()[:300]}")
-                        if len(results) >= self.max_results:
-                            return True, "\n".join(results) + "\n... [more results withheld]"
+                        if len(results) >= cap:
+                            return True, "\n".join(results) + (
+                                f"\n... stopped at {cap} match{'' if cap == 1 else 'es'}; pass limit= to raise it")
         except (OSError, ValueError) as exc:
             return False, f"bad include pattern: {exc}"
         return True, "\n".join(results) or "(no matches)"
