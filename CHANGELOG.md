@@ -26,6 +26,34 @@
   unexplained client-side parse error. Protocol version is shared with the client
   half so the two cannot drift.
 
+### Added — one catalogue of everything that can answer
+
+`saturday models` and the web UI's model menu now show the same thing: the
+models a configured key can actually run, and the CLI agents installed
+alongside them. Both read one catalogue, so they cannot drift the way two
+commands did.
+
+Listing is not entitlement, and the difference was visible. OpenRouter's
+model endpoint answers 200 with no credentials at all, so a successful
+listing proved nothing about whether a key could use any of it: the menu
+offered 431 models on an account with zero credit, and each one failed at
+send time with `402 Payment Required`. The catalogue makes an
+authenticated balance check and offers the 19 free models instead, naming
+the reason and how many are hidden.
+
+**Selecting an installed CLI agent runs the whole turn inside it.** Pick
+`claude-code`, `codex` or `opencode` from the model menu and the next
+message is delegated to it; the chip reads `agent / <id>`. Token usage is
+reported as zero on purpose - the delegate is billed by its own vendor,
+and a fabricated count would enter the cost surface as though it had been
+measured. An agent whose binary is not installed is refused with its
+install hint rather than accepted.
+
+The model picker is also reachable again in assistant mode. It had been
+hidden as developer plumbing along with the rest of the pill row, which
+left the default surface with no way to change model at all; plan and
+safety stay hidden.
+
 ### Fixed — design audit
 
 A six-reviewer audit of the running app (web UI, CLI, TUI, REPL) plus a
