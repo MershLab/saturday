@@ -99,6 +99,9 @@ class ToolRegistry:
         # run concurrently. dict.setdefault is atomic — racing creators lose
         # one lock object harmlessly.
         self._name_locks: dict[str, threading.Lock] = {}
+        # names whose current holder the loop's watchdog gave up on; see
+        # abandon() and execute()
+        self._abandoned: set[str] = set()
 
     def _invalidate(self) -> None:
         self._specs_cache = None
@@ -158,13 +161,41 @@ class ToolRegistry:
         # Serialize same-name calls (shared instance state below); cross-tool
         # parallelism is untouched because the lock is per name.
         lock = self._name_locks.setdefault(name, threading.Lock())
-        with lock:
+        if not lock.acquire(blocking=False):
+            # Held. Ordinary contention (two calls to the same tool in one
+            # step) should queue as it always has. But a call the watchdog
+            # abandoned leaves its worker holding this lock for the life of
+            # the process, and every later call to that tool then blocked
+            # until its OWN timeout - the tool was gone for good and said so
+            # only by hanging. Say it instead.
+            if name in self._abandoned:
+                return ToolResult(
+                    call_id=call_id, name=name, ok=False, output="",
+                    error=(f"'{name}' is still occupied by an earlier call that timed out "
+                           "and was abandoned; it is unavailable until that call ends. "
+                           "Use another approach."),
+                )
+            lock.acquire()
+        try:
             result = self._invoke(tool, call_id, name, args)
             pending = getattr(tool, "pending_images", None)
             if pending:
                 result.images = list(pending)
                 tool.pending_images = []
+        finally:
+            # a holder that finished, however late, frees the name again
+            self._abandoned.discard(name)
+            lock.release()
         return result
+
+    def abandon(self, name: str) -> None:
+        """Record that a call to `name` was abandoned by the caller's watchdog.
+
+        The worker keeps running and keeps the per-name lock, so this is what
+        lets the next caller fail fast with a reason instead of blocking.
+        Cleared by that worker's own release if it ever finishes."""
+        if name in self._tools:
+            self._abandoned.add(name)
 
     @staticmethod
     def _invoke(tool, call_id: str, name: str, args: dict[str, Any]) -> ToolResult:

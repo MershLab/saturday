@@ -573,6 +573,13 @@ class AgentLoop:
                     except FuturesTimeoutError:
                         # the hung call is abandoned; its thread dies with the process
                         call = calls_by_index[i]
+                        # the abandoned worker still holds this tool's per-name
+                        # lock, so tell the registry: without it every later
+                        # call to the same tool blocked until its own timeout
+                        try:
+                            self.registry.abandon(call.name)
+                        except AttributeError:
+                            pass
                         results[i] = ToolResult(
                             call_id=call.id,
                             name=call.name,

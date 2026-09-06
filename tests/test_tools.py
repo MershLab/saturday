@@ -4344,3 +4344,83 @@ def test_an_uncappable_index_keeps_a_file_and_says_it_could_not_trim(tmp_path, m
     idx = repo_index.build_index(tmp_path)
     assert len(idx["files"]) == 1, "it dropped the only file it had"
     assert "cannot be trimmed further" in idx.get("capped", "")
+
+
+def test_a_timed_out_tool_does_not_block_every_later_call(tmp_path):
+    """C10: the abandoned worker keeps the per-name lock for the life of the
+    process, so every later call to that tool blocked until its own timeout.
+    The tool was gone for good and said so only by hanging."""
+    import threading as _t
+
+    from saturday.tools.base import ToolRegistry
+
+    release = _t.Event()
+    entered = _t.Event()
+
+    class Hangs:
+        name = "hangs"
+        description = "d"
+        parameters = {"type": "object", "properties": {}}
+
+        def run(self, args):
+            entered.set()
+            release.wait(10)
+            return True, "finally done"
+
+    reg = ToolRegistry()
+    reg.register(Hangs())
+
+    stuck = _t.Thread(target=lambda: reg.execute("c1", "hangs", {}), daemon=True)
+    stuck.start()
+    assert entered.wait(5), "the first call never started"
+
+    # the caller's watchdog gives up on it
+    reg.abandon("hangs")
+
+    done = []
+    second = _t.Thread(target=lambda: done.append(reg.execute("c2", "hangs", {})), daemon=True)
+    second.start()
+    second.join(3)
+    assert done, "the second call is still blocked on the abandoned worker's lock"
+    assert not done[0].ok and "abandoned" in done[0].error
+
+    # and when the abandoned worker does eventually finish, the name recovers
+    release.set()
+    stuck.join(5)
+    third = reg.execute("c3", "hangs", {})
+    assert third.ok and third.output == "finally done"
+
+
+def test_ordinary_same_name_contention_still_queues(tmp_path):
+    """Two calls to one tool in the same step must serialise, not fail: the
+    fast path is only for a name the watchdog gave up on."""
+    import threading as _t
+
+    from saturday.tools.base import ToolRegistry
+
+    order = []
+    gate = _t.Event()
+
+    class Slow:
+        name = "slow"
+        description = "d"
+        parameters = {"type": "object", "properties": {}}
+
+        def run(self, args):
+            order.append("in")
+            gate.wait(2)
+            order.append("out")
+            return True, "ok"
+
+    reg = ToolRegistry()
+    reg.register(Slow())
+    results = []
+    a = _t.Thread(target=lambda: results.append(reg.execute("a", "slow", {})), daemon=True)
+    b = _t.Thread(target=lambda: results.append(reg.execute("b", "slow", {})), daemon=True)
+    a.start()
+    b.start()
+    gate.set()
+    a.join(5)
+    b.join(5)
+    assert len(results) == 2 and all(r.ok for r in results), [r.error for r in results]
+    assert order == ["in", "out", "in", "out"], f"the calls overlapped: {order}"
