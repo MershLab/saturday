@@ -5695,3 +5695,57 @@ def test_bad_hooks_reject_the_whole_save_rather_than_half_of_it(tmp_path, monkey
 
     assert not saved, f"a rejected save still wrote: {saved}"
     assert app.base_cfg.temperature == before, "the rejected save changed live config"
+
+
+def test_trust_is_recorded_for_the_workspace_not_the_launch_directory(tmp_path, monkeypatch):
+    """S12: both trust routes used Path("."), the process's launch directory.
+    `saturday --workspace /projects/foo` started from a home directory
+    recorded the decision against the home directory, so the project stayed
+    untrusted and the home directory quietly became trusted."""
+    import saturday.utils.trust as trust_mod
+
+    workspace = tmp_path / "projects" / "foo"
+    workspace.mkdir(parents=True)
+    elsewhere = tmp_path / "launched-from"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    recorded = []
+    monkeypatch.setattr(trust_mod, "record_decision",
+                        lambda root, trusted: recorded.append((Path(root).resolve(), trusted)))
+
+    app = make_app(tmp_path, [{"text": "hi"}], workspace=workspace)
+    with _Server(app) as srv:
+        status, body = _req(srv.base, "/api/trust", "GET")
+        assert status == 200
+        assert Path(body["workspace"]).resolve() == workspace.resolve(), body["workspace"]
+
+        status, body = _req(srv.base, "/api/trust", "POST", {"decision": "deny"})
+        assert status == 200, body
+
+    assert recorded == [(workspace.resolve(), False)], f"recorded against {recorded}"
+
+
+def test_trusting_a_project_keeps_settings_changed_this_session(tmp_path, monkeypatch):
+    """S12: the trust route rebuilt base_cfg from disk and replaced it
+    outright. The comment there promised to carry in-session changes forward
+    and the code did not, so trusting a project threw away every setting the
+    user had changed in the UI since launch."""
+    import saturday.utils.trust as trust_mod
+    import saturday.utils.env as env_mod
+    import saturday.config as cfgmod
+
+    monkeypatch.setattr(trust_mod, "record_decision", lambda root, trusted: None)
+    monkeypatch.setattr(env_mod, "reload_trusted_env", lambda root: None)
+    monkeypatch.setattr(cfgmod, "save_config", lambda partial: None)
+
+    app = make_app(tmp_path, [{"text": "hi"}])
+    with _Server(app) as srv:
+        _req(srv.base, "/api/config", "POST", {"temperature": 0.33})
+        assert app.base_cfg.temperature == 0.33
+
+        status, body = _req(srv.base, "/api/trust", "POST", {"decision": "trust"})
+        assert status == 200, body
+
+    assert app.base_cfg.temperature == 0.33, "trusting the project reverted the UI setting"
+    assert "temperature" in body["applied"]

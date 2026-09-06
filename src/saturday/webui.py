@@ -768,6 +768,10 @@ class AppState:
         self.default_agent: str = ""
         # last save_config failure, surfaced by the config routes (S11)
         self.config_persist_error: str = ""
+        # keys apply_config has changed this session, so a config RELOAD (the
+        # trust route rebuilds base_cfg from disk) can put them back instead
+        # of silently reverting the user's in-session edits (S12)
+        self.session_applied_keys: set[str] = set()
         self.store = SessionStore(root=store_root) if store_root else SessionStore()
         self.projects = projects_store if projects_store is not None else ProjectStore()
         self.base_cfg = AgentConfig.load(self.cfg_overrides)
@@ -1137,6 +1141,20 @@ class AppState:
         except Exception:
             return getattr(self, "_reg_names_cache", None) or set()
 
+    def workspace_path(self) -> Path:
+        """The directory this app is actually working in.
+
+        Several routes used Path(".") - the process's launch directory - which
+        is only the workspace by coincidence. `saturday --workspace
+        /projects/foo` started from a home directory recorded its project
+        trust decision against the home directory instead.
+        """
+        root = getattr(self.base_cfg, "workspace_root", "") or "."
+        try:
+            return Path(root).expanduser().resolve()
+        except OSError:
+            return Path(root)
+
     def apply_config(self, patch: dict) -> list[str]:
         from saturday.config import PROVIDERS, save_config
         from saturday.tools.base import ToolRegistry
@@ -1180,6 +1198,7 @@ class AppState:
                 # identical state before persistence/reload either way
                 cfg.model = PROVIDERS[cfg.provider].resolve_default_model()
             persisted = {k: getattr(cfg, k) for k in applied}
+            self.session_applied_keys.update(applied)
         self.config_persist_error = ""
         if persisted:
             try:
@@ -1539,8 +1558,7 @@ class Handler(BaseHTTPRequestHandler):
     def _get_trust(self) -> None:
         """Return pending project-trust items for the browser trust modal."""
         app = self.app
-        workspace = str(Path(".").resolve())
-        self._send_json({"pending": list(app.pending_trust), "workspace": workspace})
+        self._send_json({"pending": list(app.pending_trust), "workspace": str(app.workspace_path())})
 
     def _post_trust(self, payload: dict) -> None:
         """Record the user's trust/deny decision and reload config if trusted."""
@@ -1552,7 +1570,11 @@ class Handler(BaseHTTPRequestHandler):
 
         from saturday.utils.trust import record_decision
 
-        root = Path(".").resolve()
+        # the workspace being worked in, not wherever the process was started:
+        # `saturday --workspace /projects/foo` launched from a home directory
+        # recorded the decision against the home directory, so the project
+        # stayed untrusted and the home directory silently became trusted
+        root = app.workspace_path()
         trusted = decision == "trust"
         record_decision(root, trusted=trusted)
 
@@ -1565,10 +1587,15 @@ class Handler(BaseHTTPRequestHandler):
             reload_trusted_env(root)
             with app._cfg_lock:
                 new_cfg = AgentConfig.load(app.cfg_overrides)
-                # Carry forward any in-session apply_config changes that differ
-                # from a fresh load (e.g. provider/model already changed via UI).
+                # Carry forward in-session apply_config changes. The comment
+                # here promised this and the code did not do it: base_cfg was
+                # simply replaced, so trusting a project threw away every
+                # setting the user had changed in the UI since launch.
+                for key in sorted(app.session_applied_keys):
+                    if hasattr(new_cfg, key):
+                        setattr(new_cfg, key, getattr(app.base_cfg, key))
                 app.base_cfg = new_cfg
-            applied = ["provider", "model"]
+            applied = sorted({"provider", "model"} | app.session_applied_keys)
             app._reload_runtime_state(applied)
 
         app.pending_trust = []
