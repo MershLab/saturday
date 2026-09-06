@@ -3576,3 +3576,49 @@ def test_usage_totals_survive_concurrent_sessions_sharing_a_client():
     assert total.prompt_tokens == 8000, f"lost {8000 - total.prompt_tokens} counts"
     assert total.completion_tokens == 8000
     assert total.total_tokens == 16000
+
+
+def test_plan_mode_names_tools_that_actually_exist():
+    """C23: the plan-mode section listed read, list and web. The registry has
+    read_file, list_dir, web_fetch and web_search - so a model asked to plan
+    with those tools spent turns discovering they do not exist."""
+    from saturday.prompts.system import build_plan_mode_section
+    from saturday.tools import default_registry
+    from saturday.tools.base import ToolRegistry
+
+    registry = default_registry()
+    section = build_plan_mode_section(registry)
+    listed = section.split("Available to you: ")[1].split(".\n")[0]
+    names = [n.strip() for n in listed.split(",")]
+
+    real = set(registry.names())
+    assert names, "no tools were listed at all"
+    for name in names:
+        assert name in real, f"plan mode offers {name!r}, which is not registered"
+        assert name in ToolRegistry.READ_ONLY_TOOLS, f"{name!r} is not read-only"
+
+    # the stale hand-written names are gone (checked as names, not substrings:
+    # "job_list" contains "list")
+    assert not ({"read", "list", "web"} & set(names)), f"stale names survive: {names}"
+    assert "read_file" in names and "list_dir" in names
+
+
+def test_the_assistant_preamble_does_not_hardcode_a_windows_path():
+    """C23: the example outcome quoted a C:\\...\\ path, which is wrong on
+    every Linux and macOS install and is the model's template for how to
+    report where it put a file."""
+    from saturday.prompts.system import ASSISTANT_PREAMBLE
+
+    assert "C:\\" not in ASSISTANT_PREAMBLE
+    assert "notes/news.md" in ASSISTANT_PREAMBLE
+
+
+def test_the_prompt_asks_for_read_before_edit():
+    """C23: nothing told the model to read a file before rewriting it, or to
+    prefer edit_file over write_file - the two rules that stop a small change
+    silently discarding the rest of a file."""
+    from saturday.prompts.system import HERMES_PREAMBLE
+
+    lowered = HERMES_PREAMBLE.lower()
+    assert "read a file before you change it" in lowered
+    assert "prefer edit_file over write_file" in lowered

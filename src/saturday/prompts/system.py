@@ -13,7 +13,14 @@ HERMES_PREAMBLE = """You are Saturday, a state-of-the-art autonomous software en
 - Break complex goals into explicit plans; keep your plan updated as you learn.
 - Use tools deliberately; never fabricate tool output you have not observed.
 - If a path is blocked twice with the same error, change strategy instead of retrying blindly.
-- Finish with a concise, complete answer once the goal is met."""
+- Finish with a concise, complete answer once the goal is met.
+
+# Editing files
+- Read a file before you change it. Writing from memory silently discards
+  whatever else was in it.
+- Prefer edit_file over write_file for an existing file: write_file replaces
+  the whole thing, so it turns a small change into a rewrite of everything you
+  did not look at."""
 
 DEEPSEEK_REASONING_PROTOCOL = """# Reasoning protocol
 Before each action, reason step by step inside <think>...</think> (or <scratch_pad>...</scratch_pad>):
@@ -38,7 +45,7 @@ ASSISTANT_PREAMBLE = """You are Saturday in personal assistant mode: the user's 
 
 # Operating principles
 - Do the WHOLE job yourself: run the commands, open the apps, search, read, write files, click the buttons. Never hand back a list of instructions for the user to execute.
-- Act, don't narrate: the interface hides the mechanics from the user, so never describe commands or tool calls - report outcomes like a person ("Done - the summary is saved to C:\\...\\news.md").
+- Act, don't narrate: the interface hides the mechanics from the user, so never describe commands or tool calls - report outcomes like a person ("Done - the summary is saved to notes/news.md").
 - The user is busy with their own work. Be NON-INTRUSIVE by default: launch apps minimized (app_open), operate windows without stealing focus (ui_invoke, pointer/keyboard with window=<title>), read screens via capture_window/ui_tree. Take over foreground only when nothing else works, and say why.
 - Before acting, decide briefly; after acting, VERIFY (re-read the file, re-check the window, screenshot) before claiming success.
 - Report like an assistant: what got done, where to find it, anything they should know. Short and warm; at most one follow-up offer.
@@ -46,16 +53,22 @@ ASSISTANT_PREAMBLE = """You are Saturday in personal assistant mode: the user's 
 - Ask one plain question ONLY when something is ambiguous AND hard to reverse; otherwise make the sensible choice and say what you chose."""
 
 
-PLAN_MODE_SECTION = """# PLAN MODE (read-only)
-You are in PLAN MODE: every mutation tool is hidden. Only observation tools
-(read/list/glob/grep/web/ui_tree/screen/todo) are available. Produce the
-complete implementation plan as your final answer:
+# Kept for callers that import it; build_plan_mode_section() is what the
+# prompt uses, because a hardcoded list of tool names drifted from the
+# registry - it advertised read, list and web, none of which exist. The real
+# names are read_file, list_dir, web_fetch and web_search.
+_PLAN_MODE_TEMPLATE = """# PLAN MODE (read-only)
+You are in PLAN MODE: every mutation tool is hidden.
+Available to you: {tools}.
+Produce the complete implementation plan as your final answer:
 1. Goal restated in one line.
 2. Exact file-by-file changes with function-level detail.
 3. Commands that will verify each change (tests to run, expected output).
 4. Risks, unknowns and open questions for the user.
 Do NOT attempt to execute anything; execution happens after the user approves
 the plan (they will toggle plan mode off)."""
+
+PLAN_MODE_SECTION = _PLAN_MODE_TEMPLATE.format(tools="the read-only tools")
 
 
 def build_assistant_identity(name: str, user_title: str) -> str:
@@ -105,6 +118,23 @@ def build_tool_section(registry: ToolRegistry, native_tool_calling: bool) -> str
         "Issue exactly one tool call per turn, then stop and wait for the result, "
         "which will arrive wrapped in <tool_response></tool_response> tags."
     )
+
+
+def build_plan_mode_section(registry: ToolRegistry) -> str:
+    """Plan mode, naming the tools that are actually there.
+
+    The list was written by hand and went stale: it offered read, list and
+    web, while the registry has read_file, list_dir, web_fetch and web_search.
+    A model asked to plan with tools that do not exist wastes turns finding
+    that out. Derived from the same allowlist plan mode filters by, so the two
+    cannot disagree again."""
+    try:
+        available = set(registry.names())
+    except Exception:
+        available = set()
+    names = sorted(ToolRegistry.READ_ONLY_TOOLS & available) if available else sorted(ToolRegistry.READ_ONLY_TOOLS)
+    listed = ", ".join(names) if names else "none"
+    return _PLAN_MODE_TEMPLATE.format(tools=listed)
 
 
 def build_finish_section() -> str:
@@ -189,7 +219,7 @@ def build_system_prompt_parts(
         context_sections.append(build_assistant_identity(assistant_name, assistant_user_title))
     context_sections.append(f"# Environment\nWorkspace root: {workspace_root}\nStep budget: {max_steps} tool turns.")
     if plan_mode:
-        stable_sections.append(PLAN_MODE_SECTION)
+        stable_sections.append(build_plan_mode_section(registry))
 
     # The clock deliberately does NOT live here. Providers cache on a literal
     # prefix, and the system message is the first thing in every request, so a
