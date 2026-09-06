@@ -1910,6 +1910,13 @@ async function send() {
   state.lastUser = text;
   pendingThumbs = imgs.map((i) => i.dataUrl);
   aborter = new AbortController();
+  // A run ends with a "done" or "error" event. A body that simply stops -
+  // server restarted, proxy timed out, container OOM-killed mid-response -
+  // throws nothing, so without this the turn was abandoned in silence.
+  let sawTerminal = false;
+  // whether THIS turn's message reached the thread: if it did, putting it
+  // back in the composer too would invite the user to send it twice
+  let sawUser = false;
   try {
     const r = await fetch("/api/chat", {
       method: "POST",
@@ -1935,8 +1942,25 @@ async function send() {
         const lineTxt = buf.slice(0, nl).trim();
         buf = buf.slice(nl + 1);
         if (!lineTxt) continue;
-        try { await handleEvent(JSON.parse(lineTxt)); } catch (err) { console.warn("bad event", lineTxt, err); }
+        try {
+          const evt = JSON.parse(lineTxt);
+          if (evt.t === "done" || evt.t === "error") sawTerminal = true;
+          if (evt.t === "user") sawUser = true;
+          await handleEvent(evt);
+        } catch (err) { console.warn("bad event", lineTxt, err); }
       }
+    }
+    if (!sawTerminal) {
+      // truncated: close the turn honestly rather than leaving a half
+      // sentence that reads as a finished answer
+      if (live) {
+        live.turn.appendChild(makeSysline("[connection lost before the reply finished]", "error"));
+        liveEnd({ final: "", stop_reason: "error", steps: 0, tokens: 0 });
+      } else if (!sawUser) {
+        restoreUnsentMessage(text, imgs);
+      }
+      setBusy(false);
+      toast("The reply was cut off before it finished", "err");
     }
   } catch (err) {
     if (err.name === "AbortError") {
