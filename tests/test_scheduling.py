@@ -415,3 +415,78 @@ def test_unusable_detection_reads_real_provider_errors():
     assert routing.looks_unusable("HTTP Error 402: Payment Required")
     assert routing.looks_unusable("401 Unauthorized")
     assert not routing.looks_unusable("connection reset by peer")
+
+
+def test_concurrent_schedule_writes_do_not_lose_entries(tmp_path):
+    """S13: _load/_save is a read-modify-write and nothing guarded it, so the
+    watcher's mark_fired and the UI's add landed on top of each other."""
+    import threading
+
+    from saturday.schedule import ScheduleStore
+
+    path = tmp_path / "schedules.json"
+    barrier = threading.Barrier(8)
+
+    def add(n):
+        barrier.wait()
+        # a separate store per thread: the watcher and the web UI each build
+        # their own over the same file, which is why the lock is per path
+        ScheduleStore(path).add(f"s{n}", "* * * * *", f"task {n}")
+
+    threads = [threading.Thread(target=add, args=(i,)) for i in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    ids = {s.id for s in ScheduleStore(path).list()}
+    assert ids == {f"s{i}" for i in range(8)}, f"lost writes: {sorted(ids)}"
+
+
+def test_firing_a_removed_schedule_does_not_resurrect_it(tmp_path):
+    """The watcher reads due() and then calls mark_fired, and the UI can
+    remove the schedule in between.
+
+    The `if sid in items` guard for this was already there and already
+    correct; what was missing was the lock that makes the check meaningful,
+    since without it mark_fired could load before the remove and save after
+    it. This pins the sequential half of that contract - the concurrent half
+    is what test_concurrent_schedule_writes_do_not_lose_entries covers."""
+    from saturday.schedule import ScheduleStore
+
+    path = tmp_path / "schedules.json"
+    store = ScheduleStore(path)
+    store.add("gone", "* * * * *", "do a thing")
+
+    assert store.remove("gone") is True
+    store.mark_fired("gone")
+
+    assert [s.id for s in store.list()] == [], "the removed schedule came back"
+
+
+def test_a_schedule_file_is_never_half_written(tmp_path, monkeypatch):
+    """A truncated write does not lose one schedule, it loses all of them:
+    _load returns {} on a JSON error."""
+    import os
+    from pathlib import Path
+
+    from saturday.schedule import ScheduleStore
+
+    path = tmp_path / "schedules.json"
+    store = ScheduleStore(path)
+    store.add("keep", "* * * * *", "important")
+
+    seen = []
+    real_replace = os.replace
+
+    def watched(src, dst):
+        # the destination still holds the previous good content right up to
+        # the rename, which is the property write_text did not have
+        seen.append(Path(dst).read_text(encoding="utf-8") if Path(dst).is_file() else "")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr("saturday.schedule.os.replace", watched)
+    store.add("second", "* * * * *", "another")
+
+    assert seen and "important" in seen[0], "the file was overwritten in place"
+    assert {s.id for s in store.list()} == {"keep", "second"}

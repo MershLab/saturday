@@ -8,6 +8,8 @@ entries as one-shot agent runs; missed runs fire on the next poll. Stdlib-only
 from __future__ import annotations
 
 import json
+import os
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -97,9 +99,31 @@ def cron_matches(expr: str, dt: datetime | None = None) -> bool:
 # -- store --------------------------------------------------------------------
 
 
+# One lock per store FILE, not per ScheduleStore instance: the watcher thread
+# and the web UI build their own stores over the same path, so an instance
+# lock would guard nothing. Every mutation here is load, change, save - the
+# watcher's mark_fired against the UI's add/remove - and unguarded that let a
+# removed schedule come back (mark_fired had loaded before the remove and
+# saved after it) or a job fire twice.
+_STORE_LOCKS: dict[str, threading.RLock] = {}
+_STORE_LOCKS_GUARD = threading.Lock()
+
+
+def _lock_for(path: Path) -> threading.RLock:
+    key = str(path)
+    with _STORE_LOCKS_GUARD:
+        lock = _STORE_LOCKS.get(key)
+        if lock is None:
+            lock = _STORE_LOCKS[key] = threading.RLock()
+        return lock
+
+
 class ScheduleStore:
     def __init__(self, path: Path | None = None) -> None:
         self.path = Path(path) if path else default_schedules_path()
+        # process-local. Two Saturday processes sharing one schedules.json
+        # still race; that needs a file lock and is out of scope here.
+        self._lock = _lock_for(self.path)
 
     def _load(self) -> dict[str, Schedule]:
         if not self.path.is_file():
@@ -139,29 +163,36 @@ class ScheduleStore:
             }
             for sid, s in items.items()
         }
-        self.path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        # atomic: a reader (or a crash) must never see a half-written file,
+        # which for this store means losing every schedule at once
+        tmp = self.path.with_name(f".{self.path.name}.tmp{os.getpid()}")
+        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        os.replace(tmp, self.path)
 
     def add(self, sid: str, expr: str, task: str, model: str = "", provider: str = "") -> Schedule:
         if not _valid_expr(expr):
             raise ValueError(f"invalid cron expression: {expr!r} (expect: 'min hour dom month dow')")
         if not (sid or "").strip():
             sid = "sched-" + str(int(time.time()))
-        items = self._load()
-        s = Schedule(id=sid, expr=expr, task=task, model=model, provider=provider)
-        items[sid] = s
-        self._save(items)
+        with self._lock:
+            items = self._load()
+            s = Schedule(id=sid, expr=expr, task=task, model=model, provider=provider)
+            items[sid] = s
+            self._save(items)
         return s
 
     def remove(self, sid: str) -> bool:
-        items = self._load()
-        if sid not in items:
-            return False
-        del items[sid]
-        self._save(items)
+        with self._lock:
+            items = self._load()
+            if sid not in items:
+                return False
+            del items[sid]
+            self._save(items)
         return True
 
     def list(self) -> list[Schedule]:
-        return sorted(self._load().values(), key=lambda s: s.created)
+        with self._lock:
+            return sorted(self._load().values(), key=lambda s: s.created)
 
     def due(self, now: datetime | None = None) -> list[Schedule]:
         now = now or datetime.now()
@@ -176,10 +207,14 @@ class ScheduleStore:
 
     def mark_fired(self, sid: str, now: datetime | None = None) -> None:
         now = now or datetime.now()
-        items = self._load()
-        if sid in items:
-            items[sid].last_fired_minute = now.strftime("%Y%m%d%H%M")
-            self._save(items)
+        with self._lock:
+            items = self._load()
+            # `if sid in items` matters as much as the lock: a schedule the UI
+            # removed between due() and here must NOT be written back, or the
+            # act of firing it resurrects it.
+            if sid in items:
+                items[sid].last_fired_minute = now.strftime("%Y%m%d%H%M")
+                self._save(items)
 
 
 def _valid_expr(expr: str) -> bool:
