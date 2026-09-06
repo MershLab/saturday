@@ -3263,3 +3263,76 @@ def test_the_context_window_table_is_not_understating_current_models():
     assert window("gpt-4o-2024")[1] == "table" and window("gpt-4o-2024")[0] == 128_000
     assert window("some-model-no1-x") == (DEFAULT_CONTEXT_TOKENS, "default")
     assert window("unheard-of") == (DEFAULT_CONTEXT_TOKENS, "default")
+
+
+def test_a_tool_call_truncated_mid_arguments_takes_the_nudge(tmp_path):
+    """C8: a stream cut off at max_tokens still yields a tool call, with the
+    unparseable fragment parked under "_raw". Running it spent a step on
+    arguments the model never finished writing, the identical retry spent
+    another, and the third tripped the stall detector - while the truncation
+    nudge for exactly this case sat unused just below, because it only ran
+    when there were no tool calls at all."""
+    from saturday.agent.loop import AgentLoop
+    from saturday.tools.base import ToolRegistry
+    from fakes import make_scripted_model
+
+    ran = []
+
+    class Write:
+        name = "write_file"
+        description = "d"
+        parameters = {"type": "object",
+                      "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+                      "required": ["path", "content"]}
+
+        def run(self, args):
+            ran.append(args)
+            return True, "written"
+
+    model = make_scripted_model([
+        # the provider cut the arguments off mid-JSON
+        {"tool_calls": [{"name": "write_file", "arguments": {"_raw": '{"path": "a.txt", "cont'}}],
+         "finish_reason": "length"},
+        {"tool_calls": [{"name": "write_file", "arguments": {"path": "a.txt", "content": "done"}}]},
+        {"content": "wrote the file"},
+    ])
+    reg = ToolRegistry()
+    reg.register(Write())
+    traj = AgentLoop(model, reg, max_steps=6).run("sys", "write a file")
+
+    assert traj.stop_reason == "done" and traj.final_answer == "wrote the file"
+    assert ran == [{"path": "a.txt", "content": "done"}], f"it ran the half-written call: {ran}"
+
+    # the model was told what happened rather than being left to guess
+    sent = model.calls[1]["messages"]
+    assert any("truncated at the token limit" in str(m.get("content") or "") for m in sent), \
+        "no nudge reached the model"
+
+
+def test_a_complete_tool_call_is_still_run_when_the_text_was_truncated(tmp_path):
+    """Only a response whose ARGUMENTS were cut off is discarded; a finished
+    call that happens to arrive with finish_reason=length still runs."""
+    from saturday.agent.loop import AgentLoop
+    from saturday.tools.base import ToolRegistry
+    from fakes import make_scripted_model
+
+    ran = []
+
+    class Ping:
+        name = "ping"
+        description = "d"
+        parameters = {"type": "object", "properties": {}}
+
+        def run(self, args):
+            ran.append(args)
+            return True, "pong"
+
+    model = make_scripted_model([
+        {"tool_calls": [{"name": "ping", "arguments": {}}], "finish_reason": "length"},
+        {"content": "done"},
+    ])
+    reg = ToolRegistry()
+    reg.register(Ping())
+    traj = AgentLoop(model, reg, max_steps=4).run("sys", "ping it")
+    assert ran == [{}], "a complete call was thrown away"
+    assert traj.final_answer == "done"

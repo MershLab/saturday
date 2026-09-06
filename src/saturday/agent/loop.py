@@ -342,6 +342,25 @@ class AgentLoop:
 
             traj.usage.add(assistant.usage or _zero())
 
+            # C8: a stream cut off mid-arguments still yields a tool call, with
+            # the unparseable fragment parked under "_raw". Running it spent a
+            # step on arguments the model never finished writing, the identical
+            # retry that followed spent another, and the third tripped the
+            # stall detector - all while the truncation nudge for exactly this
+            # case sat unused just below, because it only ran when there were
+            # no tool calls at all. The half-written call is dropped and the
+            # nudge taken instead.
+            if (
+                response.finish_reason == "length"
+                and assistant.tool_calls
+                and any("_raw" in (tc.arguments or {}) for tc in assistant.tool_calls)
+            ):
+                # Every call from this response goes, not only the broken one:
+                # the model was cut off mid-plan, so running the calls it did
+                # finish and silently dropping the one it did not would answer
+                # a step it never actually asked for.
+                assistant.tool_calls = []
+
             if not assistant.tool_calls:
                 # A terminal answer must survive a budget that was exceeded
                 # DURING this response: the spend already happened, so throwing
