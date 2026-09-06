@@ -354,7 +354,7 @@ class Agent:
         return profile.name != "ollama" or "hermes" not in (self.cfg.model or "").lower()
 
     def system_prompt(self, registry: ToolRegistry, task_text: str = "") -> str:
-        from saturday.prompts.system import build_system_prompt_parts
+        from saturday.prompts.system import build_system_prompt_parts, model_reasons_natively
         from saturday.tools.memory import load_memory_block
         from saturday.tools.skills import SkillStore, skills_prompt_block
 
@@ -372,6 +372,7 @@ class Agent:
             registry,
             native_tool_calling=self.native_tool_calling,
             enable_reasoning=True,
+            native_reasoning=model_reasons_natively(self.cfg.model or ""),
             workspace_root=self.cfg.workspace_root,
             persona_extra=extra,
             max_steps=self.cfg.max_steps,

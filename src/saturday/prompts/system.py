@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import json
 
 from saturday.tools.base import ToolRegistry
@@ -20,6 +21,18 @@ Before each action, reason step by step inside <think>...</think> (or <scratch_p
 2. List candidate next actions and pick the best one, stating why.
 3. Predict the observation you expect from the action.
 Then issue exactly one tool call (or answer). Keep reasoning dense and factual; do not restate tool output verbatim."""
+
+# A model that reasons natively already thinks before it answers and returns
+# that thinking on its own channel (reasoning_content), which the loop reads.
+# Asking it for <think> tags on top bought a second copy in the content
+# channel - 100 to 200 output tokens a step, paid for and then stripped. What
+# it still needs is the SHAPE of the reasoning and the one-call-per-step rule,
+# so that survives without the request to emit tags.
+NATIVE_REASONING_PROTOCOL = """# Reasoning protocol
+Before each action, work out what is known and unknown, weigh the candidate
+next actions and pick one, and predict the observation you expect. Then issue
+exactly one tool call (or answer). Keep reasoning dense and factual; do not
+restate tool output verbatim."""
 
 ASSISTANT_PREAMBLE = """You are Saturday in personal assistant mode: the user's hands-free operator. They type what they want in plain language and go back to their own work; you do the task end-to-end on their PC and report the outcome.
 
@@ -136,6 +149,7 @@ def build_system_prompt_parts(
     *,
     native_tool_calling: bool = True,
     enable_reasoning: bool = True,
+    native_reasoning: bool = False,
     workspace_root: str = ".",
     persona_extra: str = "",
     max_steps: int = 200,
@@ -151,7 +165,9 @@ def build_system_prompt_parts(
     assistant = persona_mode == "assistant"
     stable_sections = [ASSISTANT_PREAMBLE if assistant else HERMES_PREAMBLE]
     if enable_reasoning and not assistant:
-        stable_sections.append(DEEPSEEK_REASONING_PROTOCOL)
+        stable_sections.append(
+            NATIVE_REASONING_PROTOCOL if native_reasoning else DEEPSEEK_REASONING_PROTOCOL
+        )
     stable_sections.append(build_tool_section(registry, native_tool_calling))
     computer_use = build_computer_use_section(registry, background_only=background_only)
     if computer_use:
@@ -191,6 +207,39 @@ def build_system_prompt_parts(
         "context": "\n\n".join(context_sections),
         "volatile": "\n\n".join(volatile_sections),
     }
+
+
+# Substrings of model names that think before they answer and return that
+# thinking on their own channel. Matched on a lowercased model id, so it holds
+# across the "<vendor>/<model>" spellings routers use.
+_NATIVE_REASONING_MODELS: tuple[str, ...] = (
+    "deepseek-reasoner",
+    "deepseek-r1",
+    "-r1",
+    "qwq",
+    "magistral",
+    "o1", "o3", "o4-mini",
+    "gpt-5",
+    "thinking",
+    "reasoner",
+)
+
+
+def model_reasons_natively(model: str) -> bool:
+    """Whether asking this model for <think> tags would only duplicate what it
+    already emits on its reasoning channel."""
+    name = (model or "").lower()
+    if not name:
+        return False
+    # "o1"/"o3" are short enough to appear inside unrelated names, so they only
+    # count at a component boundary: gpt-o3, openai/o3-mini, o3, never "kimi-o3x"
+    for needle in _NATIVE_REASONING_MODELS:
+        if needle in ("o1", "o3", "o4-mini"):
+            if re.search(rf"(^|[/\-_:]){re.escape(needle)}($|[\-_.:])", name):
+                return True
+        elif needle in name:
+            return True
+    return False
 
 
 def build_system_prompt(

@@ -3147,3 +3147,34 @@ def test_the_new_user_turn_carries_the_clock(monkeypatch):
     loop.memory = _Memory()
     assert "pinned fact" in loop._compose_task("t")
     assert "pinned fact" not in loop._compose_task("t", with_memory=False)
+
+
+def test_a_native_reasoner_is_not_asked_to_emit_think_tags():
+    """C13: enable_reasoning was unconditional, so a model that already thinks
+    on its own channel was told to emit a three point <think> block too - 100
+    to 200 output tokens a step, paid for and then stripped by the loop. The
+    shape of the reasoning and the one-call-per-step rule still have to
+    survive; only the request to emit tags goes."""
+    from saturday.prompts.system import build_system_prompt_parts, model_reasons_natively
+    from saturday.tools import default_registry
+
+    registry = default_registry()
+
+    def stable(native):
+        return build_system_prompt_parts(registry, native_reasoning=native)["stable"]
+
+    plain, native = stable(False), stable(True)
+
+    assert "<think>" in plain, "a model without its own channel still needs the tags"
+    assert "<think>" not in native and "scratch_pad" not in native
+    for text in (plain, native):
+        assert "exactly one tool call" in text, "the one-call-per-step rule is not optional"
+        assert "# Reasoning protocol" in text
+    assert len(native) < len(plain)
+
+    assert model_reasons_natively("deepseek-reasoner")
+    assert model_reasons_natively("openai/o3-mini")
+    assert model_reasons_natively("qwen/qwq-32b")
+    assert not model_reasons_natively("deepseek-chat")
+    assert not model_reasons_natively("gpt-4o")   # must not match the "o" families
+    assert not model_reasons_natively("")
