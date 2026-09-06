@@ -175,12 +175,16 @@ def build_system_prompt_parts(
     if plan_mode:
         stable_sections.append(PLAN_MODE_SECTION)
 
-    import time as _t
-
+    # The clock deliberately does NOT live here. Providers cache on a literal
+    # prefix, and the system message is the first thing in every request, so a
+    # timestamp that ticks every minute changed the prefix on every new turn
+    # and missed the cache for the whole conversation - the run paid full price
+    # for history it had just sent. It rides the new user turn instead
+    # (AgentLoop._compose_task), which sits after the history, where a changing
+    # value costs nothing and each turn keeps the time it actually happened.
     volatile_sections = []
     if memory_block:
         volatile_sections.append(f"# Persistent memory (MEMORY.md)\n{memory_block}")
-    volatile_sections.append(f"Current time: {_t.strftime('%Y-%m-%d %H:%M %Z')}")
 
     return {
         "stable": "\n\n".join(stable_sections),

@@ -220,9 +220,10 @@ class AgentLoop:
             if attachments:
                 from saturday.tools.vision import build_vision_content
 
-                history.append({"role": "user", "content": build_vision_content(self._compose_task(task), attachments)})
+                history.append({"role": "user", "content": build_vision_content(
+                    self._compose_task(task, with_memory=False), attachments)})
             else:
-                history.append({"role": "user", "content": task})
+                history.append({"role": "user", "content": self._compose_task(task, with_memory=False)})
             traj.seed_user_message = dict(history[-1])
         elif attachments:
             from saturday.tools.vision import build_vision_content
@@ -568,11 +569,21 @@ class AgentLoop:
                 pool.shutdown(wait=False, cancel_futures=True)
         return [results[i] for i in range(len(calls))]
 
-    def _compose_task(self, task: str) -> str:
-        mem = self.memory.render()
+    def _compose_task(self, task: str, *, with_memory: bool = True) -> str:
+        """Build the user turn that opens this run.
+
+        The clock lands here rather than in the system prompt: this text sits
+        after the replayed history, so a value that changes every turn no
+        longer rewrites the cached prefix, and each turn carries the time it
+        actually happened instead of every turn claiming the latest one.
+
+        `with_memory` is False when resuming: working memory is already in the
+        history that came back, and re-rendering it would say it twice.
+        """
         parts = [f"# Goal\n{task}"]
-        if len(self.memory):
-            parts.append(f"# Working memory (pinned facts & decisions)\n{mem}")
+        if with_memory and len(self.memory):
+            parts.append(f"# Working memory (pinned facts & decisions)\n{self.memory.render()}")
+        parts.append(f"Current time: {time.strftime('%Y-%m-%d %H:%M %Z')}")
         return "\n\n".join(parts)
 
     def _chat(self, system_prompt: str, history: list[dict]) -> ModelResponse:

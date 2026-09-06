@@ -3089,3 +3089,61 @@ def test_hermes_prompt_builds_with_the_default_registry():
 
     section = build_tool_section(default_registry(), native_tool_calling=False)
     assert "<tools>" in section and len(section) > 500
+
+
+def test_the_system_prompt_is_byte_stable_as_the_clock_moves(monkeypatch):
+    """C12: `Current time: ...` sat in the system message, ahead of the whole
+    history. Providers cache on a literal prefix, so every new turn in a
+    session rewrote that prefix and missed the cache for the entire
+    conversation - the run paid full price for history it had just sent."""
+    import time as time_mod
+
+    from saturday.prompts.system import build_system_prompt_parts
+    from saturday.tools import default_registry
+
+    registry = default_registry()
+
+    def build():
+        p = build_system_prompt_parts(registry, workspace_root="/w", max_steps=10)
+        return "\n\n".join([p["stable"], p["context"], p["volatile"]])
+
+    monkeypatch.setattr(time_mod, "strftime", lambda *a, **k: "2026-09-07 09:00 UTC")
+    first = build()
+    monkeypatch.setattr(time_mod, "strftime", lambda *a, **k: "2026-09-07 09:47 UTC")
+    second = build()
+
+    assert first == second, "the system prefix still moves with the clock"
+    assert "09:00" not in first and "Current time" not in first
+
+
+def test_the_new_user_turn_carries_the_clock(monkeypatch):
+    """The clock still reaches the model - after the history, where a value
+    that changes every turn costs nothing, and each turn keeps its own time."""
+    from saturday.agent.loop import AgentLoop
+
+    loop = AgentLoop.__new__(AgentLoop)
+
+    class _NoMemory:
+        def __len__(self):
+            return 0
+
+        def render(self):
+            return ""
+
+    loop.memory = _NoMemory()
+    composed = loop._compose_task("do the thing")
+    assert "# Goal\ndo the thing" in composed
+    assert "Current time:" in composed
+
+    # resuming must not re-render working memory that the replayed history
+    # already contains
+    class _Memory(_NoMemory):
+        def __len__(self):
+            return 2
+
+        def render(self):
+            return "pinned fact"
+
+    loop.memory = _Memory()
+    assert "pinned fact" in loop._compose_task("t")
+    assert "pinned fact" not in loop._compose_task("t", with_memory=False)
