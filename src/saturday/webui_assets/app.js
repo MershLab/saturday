@@ -2703,12 +2703,11 @@ function closeMenus() {
    control that triggered it — below it, edge-aligned, flipped above when
    there is no room below, always clamped to the viewport. One menu at a
    time; clicking the trigger again closes it. */
-function openDropdown(menu, anchor, opts = {}) {
+/* Placement only. Split out from openDropdown because that one toggles: a menu
+   whose contents arrive asynchronously needs to be re-placed after it grows,
+   and calling openDropdown again would just close it. */
+function placeDropdown(menu, anchor, opts = {}) {
   if (!anchor || !anchor.isConnected) anchor = $("#kebabBtn");
-  const wasOpen = !menu.classList.contains("hidden");
-  closeMenus();
-  if (wasOpen) return;
-  menu.classList.remove("hidden");
   let r = anchor.getBoundingClientRect();
   if (!r.width && !r.height) { anchor = $("#kebabBtn"); r = anchor.getBoundingClientRect(); }
   const mw = menu.offsetWidth, mh = menu.offsetHeight;
@@ -2720,6 +2719,14 @@ function openDropdown(menu, anchor, opts = {}) {
   menu.style.left = Math.round(left) + "px";
   menu.style.top = Math.round(top) + "px";
   menu.style.right = "auto";
+}
+
+function openDropdown(menu, anchor, opts = {}) {
+  const wasOpen = !menu.classList.contains("hidden");
+  closeMenus();
+  if (wasOpen) return;
+  menu.classList.remove("hidden");
+  placeDropdown(menu, anchor, opts);
 }
 
 function openKebab() {
@@ -2736,7 +2743,7 @@ function openModelMenu() {
   const recents = lsArray("df_recent");
   const favs = favModels();
   m.replaceChildren();
-  const mkRow = (label, model) => {
+  const mkRow = (label, model, into) => {
     const row = el("div", "mm-row");
     const b = el("button", "", label);
     b.addEventListener("click", async () => {
@@ -2770,7 +2777,8 @@ function openModelMenu() {
       openModelMenu();
     });
     row.appendChild(star);
-    m.appendChild(row);
+    (into || m).appendChild(row);
+    return row;
   };
   if (favs.length) {
     m.appendChild(el("div", "mm-head", "favorites \u00b7 Alt+M cycles"));
@@ -2779,10 +2787,90 @@ function openModelMenu() {
   }
   for (const r of recents.filter((x) => !favs.includes(x))) mkRow(r, r);
   if (state.info && state.info.model && !recents.includes(state.info.model) && !favs.includes(state.info.model)) mkRow(state.info.model + "  (current)", state.info.model);
+
+  // Everything a configured key actually bought, plus the CLI agents that can
+  // take a turn. This used to be reachable only through a checkbox browser in
+  // settings, so a fresh key showed nothing new here.
+  const body = el("div", "mm-catalog");
+  m.appendChild(body);
+  const filter = el("input", "mm-filter");
+  filter.type = "search";
+  filter.placeholder = "Filter models and agents\u2026";
+  filter.setAttribute("aria-label", "Filter models and agents");
+
+  const renderCatalog = () => {
+    const q = filter.value.trim().toLowerCase();
+    body.replaceChildren();
+    if (!modelCatalog) { body.appendChild(el("div", "mm-hint", "Loading\u2026")); return; }
+    const agents = (modelCatalog.agents || []).filter((a) => a.available && (!q || a.id.includes(q)));
+    if (agents.length) {
+      body.appendChild(el("div", "mm-head", "cli agents \u00b7 installed"));
+      for (const a of agents) {
+        const row = el("div", "mm-row mm-agent");
+        const b2 = el("button", "", a.id + (a.caution ? "  \u26a0" : ""));
+        b2.title = a.caution || "Installed CLI agent \u2014 Saturday can delegate work to it";
+        b2.addEventListener("click", async () => {
+          closeMenus();
+          try {
+            const body = { model: "agent:" + a.id };
+            if (state.sid) body.session_id = state.sid;
+            await api("/api/config", { method: "POST", body: JSON.stringify(body) });
+            state.sessionModels[state.sid] = "agent:" + a.id;
+            toast("This chat now runs inside " + a.id, "ok");
+            renderHeaderPills();
+          } catch (e) { toast(e.message, "err"); }
+        });
+        row.appendChild(b2);
+        body.appendChild(row);
+      }
+    }
+    const provs = modelCatalog.providers || {};
+    let shown = 0;
+    for (const prov of Object.keys(provs).sort()) {
+      const hits = provs[prov].filter((x) => !q || x.id.toLowerCase().includes(q) || prov.includes(q));
+      if (!hits.length) continue;
+      body.appendChild(el("div", "mm-head", prov + "  (" + hits.length + ")"));
+      // a long provider list is unusable un-trimmed; the filter reaches the rest
+      for (const x of hits.slice(0, q ? 40 : 8)) { mkRow(x.id + (x.free ? "  free" : ""), x.id, body); shown++; }
+      if (hits.length > (q ? 40 : 8)) {
+        body.appendChild(el("div", "mm-hint", "+" + (hits.length - (q ? 40 : 8)) + " more \u2014 type to filter"));
+      }
+    }
+    for (const n of modelCatalog.notes || []) {
+      const txt = n.provider + ": " + n.note + (n.hidden ? "  (" + n.hidden + " hidden)" : "");
+      body.appendChild(el("div", "mm-hint mm-warn", txt));
+    }
+    for (const u of modelCatalog.unreachable || []) {
+      body.appendChild(el("div", "mm-hint", u.provider + ": " + u.detail));
+    }
+    if (!shown && !agents.length) body.appendChild(el("div", "mm-hint", q ? "No match." : "No reachable providers \u2014 add an API key."));
+  };
+
+  m.insertBefore(filter, body);
+  filter.addEventListener("input", renderCatalog);
+  renderCatalog();
+
   const more = el("button", "", "All settings\u2026");
   more.addEventListener("click", () => { closeMenus(); openSettings(); });
   m.appendChild(more);
   openDropdown(m, $("#modelChip"));
+  if (!modelCatalog) {
+    // the catalogue arrives after openDropdown has already measured and placed
+    // the menu, so re-anchor once it has grown or it hangs off the viewport
+    loadModelCatalog().then(() => { renderCatalog(); placeDropdown(m, $("#modelChip")); });
+  }
+  setTimeout(() => filter.focus(), 0);
+}
+
+let modelCatalog = null;
+
+async function loadModelCatalog(refresh) {
+  try {
+    modelCatalog = await api("/api/models" + (refresh ? "?refresh=1" : ""));
+  } catch {
+    modelCatalog = { providers: {}, agents: [], unreachable: [] };
+  }
+  return modelCatalog;
 }
 
 function rememberModel(model) {
@@ -3459,7 +3547,11 @@ function renderHeaderPills() {
   const info = state.info;
   if (!info) return;
   const sessModel = state.sessionModels[state.sid];
-  $("#modelChipLabel").textContent = (info.provider || "") + " / " + (sessModel || info.model || "?");
+  // a delegated chat is not running a provider model: say which agent has it
+  const sel = sessModel || "";
+  $("#modelChipLabel").textContent = sel.startsWith("agent:")
+    ? "agent / " + sel.slice(6)
+    : (info.provider || "") + " / " + (sel || info.model || "?");
   if (sessModel) $("#modelChip").title = "Model for THIS chat: " + sessModel + " (global: " + info.model + ") — click to switch";
   else $("#modelChip").title = "Switch model";
   const sc = $("#safetyChip");

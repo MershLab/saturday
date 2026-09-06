@@ -796,18 +796,40 @@ def cmd_app(args: argparse.Namespace) -> int:
 
 
 def _probe_provider(name: str, timeout: float) -> tuple[str, bool, str, list[str]]:
-    from saturday.llm.probe import probe_connection
+    """Thin adapter over the catalogue, which owns provider probing.
 
-    profile = PROVIDERS[name]
-    key = profile.resolve_api_key()
-    if not key and name not in ("ollama", "vllm"):
-        return name, False, "no key", []
-    ok, detail, models = probe_connection(profile, key, timeout=timeout)
-    return name, ok, detail, models
+    Kept because callers and tests use this tuple shape; the logic lives in
+    one place so the CLI and the web UI cannot disagree about what a key
+    reaches."""
+    from saturday import catalog
+
+    e = catalog._probe(name, timeout)
+    return e.name, e.reachable, e.detail, e.models
 
 
 def _is_free_model(provider: str, model: str) -> bool:
     return provider in ("ollama", "vllm") or model.endswith(":free")
+
+
+def _print_agent_catalog() -> None:
+    """External CLI agents, listed beside models because both take a turn.
+
+    They were only visible under `saturday agents`, so `models` implied the
+    provider list was the whole set of things that could answer."""
+    from saturday import catalog
+
+    rows = catalog.agents()
+    ready = [a for a in rows if a.available]
+    if ready:
+        _print("cli agents (usable now):")
+        for a in ready:
+            where = a.binary or (f"via {a.provider}" if a.provider else "")
+            _print(f"  {a.id:<14} {where}" + (f"   {a.caution}" if a.caution else ""))
+    missing = [a for a in rows if not a.available]
+    if missing:
+        _print("cli agents (not installed): " + ", ".join(a.id for a in missing))
+    if rows:
+        _print("")
 
 
 def cmd_models(args: argparse.Namespace) -> int:
@@ -827,6 +849,9 @@ def cmd_models(args: argparse.Namespace) -> int:
     with ThreadPoolExecutor(max_workers=8) as pool:
         results = list(pool.map(lambda n: _probe_provider(n, timeout), wanted))
 
+    as_json = bool(getattr(args, "json_out", False))
+    if not as_json:
+        _print_agent_catalog()
     only_free = bool(getattr(args, "free", False))
     found: dict[str, list[str]] = {}
     for name, ok, detail, models in results:
@@ -838,7 +863,10 @@ def cmd_models(args: argparse.Namespace) -> int:
         if picked:
             found[name] = sorted(picked)
 
-    if getattr(args, "json_out", False):
+    if as_json:
+        # Deliberately models-only: every key here is a provider name, and a
+        # consumer iterating keys would treat an added "agents" key as a
+        # provider. Agents are in the human output and in `saturday agents`.
         _print(json.dumps(found, indent=2))
         return 0
 

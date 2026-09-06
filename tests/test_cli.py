@@ -1924,8 +1924,12 @@ def test_models_lists_only_reachable_providers(monkeypatch, capsys):
 def test_models_free_filter_and_json(monkeypatch, capsys):
     import saturday.cli as cli
 
-    monkeypatch.setattr(cli, "_probe_provider",
-                        lambda n, t: (n, n == "openrouter", "ok", ["a/b:free", "c/d"]))
+    # the catalogue owns probing now; cli._probe_provider is a thin adapter
+    from saturday import catalog as _catalog
+
+    monkeypatch.setattr(_catalog, "_probe", lambda n, t: _catalog.ProviderEntry(
+        name=n, configured=True, reachable=(n == "openrouter"), detail="ok",
+        models=["a/b:free", "c/d"], usable=True, note=""))
     monkeypatch.setattr("saturday.utils.env.load_env_file", lambda p: None)
     args = Namespace(provider=None, free=True, add_free=False, json_out=True, timeout=1.0, env=None)
     assert cli.cmd_models(args) == 0

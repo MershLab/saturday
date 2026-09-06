@@ -479,6 +479,39 @@ def _auto_title(app: "AppState", rt: SessionRuntime, user_text: str, final: str)
         pass  # best-effort: the truncated first message remains the fallback
 
 
+def _delegate_turn(app: "AppState", rt: SessionRuntime, aid: str, prompt: str, emit_delta):
+    """Run one turn inside an installed CLI agent instead of the model loop.
+
+    Returns a Trajectory so every downstream step - finish_run, the done event,
+    usage recording, the compact note - works unchanged. Tokens are zero on
+    purpose: the delegate's spend is billed by its own vendor and Saturday has
+    no honest number for it, and a fabricated one would flow into the cost
+    surface as though it were measured.
+    """
+    from saturday.tools.external_agent import ExternalAgentTool
+    from saturday.types import Trajectory, Usage
+
+    bus = rt.bus
+    bus.publish({"t": "sysline", "s": f"delegating this turn to {aid}", "kind": "info"})
+    tool = ExternalAgentTool()
+    try:
+        ok, out = tool.run({"agent": aid, "prompt": prompt, "timeout": 900})
+    except Exception as exc:                       # a broken delegate is a turn, not a crash
+        ok, out = False, f"{type(exc).__name__}: {exc}"
+    text = (out or "").strip() or ("(no output)" if ok else "the delegate returned nothing")
+    if not ok:
+        text = f"{aid} failed: {text}"
+    emit_delta(text)
+    return Trajectory(
+        task=prompt,
+        system_prompt="",
+        steps=[],
+        final_answer=text,
+        stop_reason="done" if ok else "error",
+        usage=Usage(),
+    )
+
+
 def _run_chat(app: "AppState", rt: SessionRuntime, text: str, image_paths: list[str]) -> None:
     agent = rt.agent
     store = rt.store
@@ -532,7 +565,21 @@ def _run_chat(app: "AppState", rt: SessionRuntime, text: str, image_paths: list[
         rt.pending_calls.clear()
         attachments = list(image_paths) + list(rt.pending_images)
         rt.pending_images.clear()
-        traj = agent.run(
+        delegate = ""
+        try:
+            with app._cfg_lock:
+                sel = app.session_models.get(rt.sid, "") or ""
+                fallback = getattr(app, "default_agent", "") or ""
+            if sel.startswith("agent:"):
+                delegate = sel.split(":", 1)[1]
+            elif fallback and not sel:
+                delegate = fallback
+        except Exception:
+            delegate = ""
+        if delegate:
+            traj = _delegate_turn(app, rt, delegate, user_text, emit_delta)
+        else:
+            traj = agent.run(
             text,
             attachments=attachments or None,
             on_text_delta=emit_delta,
@@ -541,7 +588,7 @@ def _run_chat(app: "AppState", rt: SessionRuntime, text: str, image_paths: list[
             on_step_start=emit_step,
             initial_history=initial_history,
             session_id=rt.sid,
-        )
+            )
         # STATE MACHINE INVARIANT: finish_run() (idle transition) happens BEFORE
         # the terminal event is published â€” the pump exits on done/error only
         # when the runtime is idle again, so publishing first would race and
@@ -649,6 +696,8 @@ class AppState:
         self.runtimes_lock = threading.Lock()
         # per-session model overrides (Cline/Amp parity): sid -> model id
         self.session_models: dict[str, str] = {}
+        # delegate chosen before any session existed; the next chat inherits it
+        self.default_agent: str = ""
         self.store = SessionStore(root=store_root) if store_root else SessionStore()
         self.projects = projects_store if projects_store is not None else ProjectStore()
         self.base_cfg = AgentConfig.load(self.cfg_overrides)
@@ -712,7 +761,10 @@ class AppState:
         with self._cfg_lock:
             cfg = self.base_cfg
             override = self.session_models.get(sid)
-        if override:
+        # "agent:<id>" selects an external CLI agent, not a model. It must never
+        # reach cfg.model: the LLM client would try to call a provider with a
+        # model name that does not exist.
+        if override and not override.startswith("agent:"):
             cfg = copy.copy(cfg)
             cfg.model = override
         proj = self.session_project(sid)
@@ -1464,29 +1516,49 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json({"ok": True, "enabled": sorted(routing.enabled_agents())})
 
     def _get_models(self) -> None:
-        from concurrent.futures import ThreadPoolExecutor
+        """Everything that can take a turn: provider models and CLI agents.
 
-        from saturday.cli import _is_free_model, _probe_provider
-        from saturday.config import PROVIDERS
+        The `providers` shape is unchanged for the settings model browser; the
+        composer's model menu reads the same response, so the two cannot show
+        different worlds. `unreachable` is reported rather than dropped: "no
+        models" and "your key is wrong" are different problems and the menu
+        should be able to say which."""
+        from saturday import catalog
+        from saturday.cli import _is_free_model
 
         q = self._query_params()
         only_free = (q.get("free") or ["0"])[0] not in ("0", "", "false")
-        names = [(q.get("provider") or [""])[0]] if (q.get("provider") or [""])[0] else list(PROVIDERS)
-        names = [n for n in names if n in PROVIDERS]
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            results = list(pool.map(lambda n: _probe_provider(n, 8.0), names))
-        out = {}
-        for name, ok, _detail, models in results:
-            if not ok:
+        one = (q.get("provider") or [""])[0] or None
+        refresh = (q.get("refresh") or ["0"])[0] not in ("0", "", "false")
+
+        entries = catalog.providers(timeout=8.0, only=one, refresh=refresh)
+        out, unreachable, notes = {}, [], []
+        for p in entries:
+            if not p.reachable:
+                if p.configured:
+                    unreachable.append({"provider": p.name, "detail": p.detail})
                 continue
+            # A listing is not an entitlement. When the key demonstrably cannot
+            # run paid models, offering them is a promise the send will break,
+            # so only the free tier is listed and the reason is said out loud.
+            free_only_here = only_free or not p.usable
             picked = [
-                {"id": m, "free": _is_free_model(name, m)}
-                for m in sorted(models)
-                if not only_free or _is_free_model(name, m)
+                {"id": m, "free": _is_free_model(p.name, m)}
+                for m in sorted(p.models)
+                if not free_only_here or _is_free_model(p.name, m)
             ]
+            if p.note:
+                notes.append({"provider": p.name, "note": p.note,
+                              "hidden": len(p.models) - len(picked)})
             if picked:
-                out[name] = picked
-        self._send_json({"providers": out})
+                out[p.name] = picked
+        agents = [
+            {"id": a.id, "available": a.available, "install_hint": a.install_hint,
+             "caution": a.caution, "provider": a.provider, "model": a.model}
+            for a in catalog.agents()
+        ]
+        self._send_json({"providers": out, "agents": agents,
+                         "unreachable": unreachable, "notes": notes})
 
     def _post_models(self, payload: dict) -> None:
         """Wire chosen models into agents.json so auto-delegation can reach them."""
@@ -3074,8 +3146,48 @@ class Handler(BaseHTTPRequestHandler):
         # session-scoped model override (Cline/Amp parity): with a session_id
         # the model applies to THIS chat only; global config is untouched
         sid = str(payload.get("session_id") or "")
+        # Handled before the session branch on purpose: a chat that has not sent
+        # its first message yet has no session id, and falling through to the
+        # global path would write "agent:<id>" into cfg.model, pointing every
+        # provider request at a model name that does not exist.
+        if "model" in payload and str(payload.get("model") or "").startswith("agent:"):
+            from saturday import catalog
+
+            aid = str(payload["model"]).split(":", 1)[1][:80]
+            spec = {a.id: a for a in catalog.agents()}.get(aid)
+            if spec is None:
+                self._send_json({"error": f"unknown agent {aid!r}"}, 400)
+                return
+            if not spec.available:
+                self._send_json({"error": f"{aid} is not installed. {spec.install_hint}".strip()}, 400)
+                return
+            with app._cfg_lock:
+                if sid:
+                    app.session_models[sid] = "agent:" + aid
+                else:
+                    # no session yet: remember it for the one this chat creates
+                    app.default_agent = aid
+            self._send_json({**app.state_payload(), "agent": aid, "session_only": bool(sid)})
+            return
         if sid and "model" in payload and set(payload.keys()) <= {"session_id", "model"}:
             model = str(payload.get("model") or "").strip()[:120]
+            if model.startswith("agent:"):
+                # A CLI agent takes the whole turn (see _delegate_turn). Refuse
+                # one that is not installed rather than accepting a selection
+                # that would fail on the next message.
+                from saturday import catalog
+
+                aid = model.split(":", 1)[1]
+                known = {a.id: a for a in catalog.agents()}
+                spec = known.get(aid)
+                if spec is None:
+                    self._send_json({"error": f"unknown agent {aid!r}"}, 400)
+                    return
+                if not spec.available:
+                    self._send_json({
+                        "error": f"{aid} is not installed. {spec.install_hint}".strip(),
+                    }, 400)
+                    return
             if model:
                 with app.runtimes_lock:
                     rt = app.runtimes.get(sid)

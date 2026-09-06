@@ -1487,7 +1487,13 @@ def test_ui_assistant_mode_flavor_and_toggle(ui_server):
         # test_ui_assistant_mode_stage_peeks_open_without_switching_modes.
         page.wait_for_function("() => document.body.classList.contains('mode-assistant')", timeout=5000)
         assert not page.locator("#stageBody").is_visible(), "technical stage content must not show by default"
-        assert not page.locator("#modelChip").is_visible(), "model switch is developer plumbing"
+        # Reversed deliberately: assistant mode used to hide the model chip as
+        # "developer plumbing", but hiding the row took the only model picker
+        # with it, so the default surface could not change model at all. Which
+        # model answers is a user choice; plan and safety stay hidden.
+        assert page.locator("#modelChip").is_visible(), "the model picker must be reachable by default"
+        assert not page.locator("#planChip").is_visible(), "plan stays a developer pill"
+        assert not page.locator("#safetyChip").is_visible(), "safety stays a developer pill"
         assert not page.locator("#tokMeter").is_visible(), "context meter is developer plumbing"
         hint = page.locator("#composerHint").inner_text()
         assert "background" in hint
@@ -3708,12 +3714,18 @@ def test_agents_endpoint_add_rejects_missing_binary(tmp_path, monkeypatch):
 
 
 def test_models_endpoint_marks_free_and_filters(tmp_path, monkeypatch):
-    import saturday.cli as cli
     import saturday.config as cfgmod
 
     monkeypatch.setattr(cfgmod, "CONFIG_DIR", tmp_path)
-    monkeypatch.setattr(cli, "_probe_provider",
-                        lambda n, t: (n, n == "openrouter", "ok", ["a/b:free", "c/d"]))
+    # Patch the catalogue's public entry point, not _probe: providers() only
+    # probes providers that actually have a key, so in a hermetic env
+    # openrouter would never be probed and the patch would never run.
+    from saturday import catalog as _catalog
+
+    monkeypatch.setattr(_catalog, "providers", lambda timeout=8.0, only=None, refresh=False: [
+        _catalog.ProviderEntry(name="openrouter", configured=True, reachable=True,
+                               detail="ok", models=["a/b:free", "c/d"], usable=True, note="")
+    ])
     app = AppState(cfg_overrides={"workspace_root": str(tmp_path)})
     with _Server(app) as srv:
         _, data = _req(srv.base, "/api/models")
@@ -5269,3 +5281,63 @@ def test_approval_key_hints_match_the_actual_bindings():
 
     # and the Y/N pair is still offered, since those did not change
     assert "<kbd>Y</kbd>" in html and "<kbd>N</kbd>" in html
+
+
+def test_selecting_an_agent_never_reaches_the_model_config(tmp_path, monkeypatch):
+    """An agent selection must not be written as a provider model.
+
+    It was: with no session yet (a fresh chat), the selection fell past the
+    session branch into the global config path and persisted
+    `model: "agent:<id>"`, so every later provider request pointed at a model
+    name that does not exist and failed with a payment/404 error."""
+    import saturday.config as cfgmod
+    from saturday import catalog as _catalog
+
+    monkeypatch.setattr(cfgmod, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(cfgmod, "CONFIG_FILE", None)
+    monkeypatch.setattr(_catalog, "agents", lambda: [
+        _catalog.AgentEntry(id="stub", available=True, binary="/bin/echo"),
+        _catalog.AgentEntry(id="absent", available=False, install_hint="install me"),
+    ])
+    app = AppState(cfg_overrides={"workspace_root": str(tmp_path)})
+    before = app.base_cfg.model
+    with _Server(app) as srv:
+        # no session id: the path that used to corrupt the global config
+        status, data = _req(srv.base, "/api/config", "POST", {"model": "agent:stub"})
+        assert status == 200, data
+        assert app.default_agent == "stub"
+        assert app.base_cfg.model == before, "global model must be untouched"
+        assert not (tmp_path / "config.json").exists() or \
+            json.loads((tmp_path / "config.json").read_text()).get("model") != "agent:stub"
+
+        # an agent that is not installed is refused rather than accepted
+        status, data = _req(srv.base, "/api/config", "POST", {"model": "agent:absent"})
+        assert status == 400 and "install me" in data["error"]
+
+        status, data = _req(srv.base, "/api/config", "POST", {"model": "agent:nope"})
+        assert status == 400 and "unknown agent" in data["error"]
+
+
+def test_delegated_turn_reports_no_fabricated_usage():
+    """A delegate's spend is billed by its own vendor, so usage stays zero.
+
+    Inventing a token count would feed the cost surface a number that was
+    never measured."""
+    from saturday.webui import _delegate_turn
+
+    class _Bus:
+        def __init__(self): self.events = []
+        def publish(self, e): self.events.append(e)
+
+    class _RT:
+        sid = "s1"
+        bus = _Bus()
+
+    rt = _RT()
+    seen = []
+    traj = _delegate_turn(None, rt, "echo", "say hi", seen.append)
+    assert traj.usage.total_tokens == 0
+    assert traj.steps == []
+    assert traj.stop_reason in ("done", "error")
+    assert seen, "the delegate's output must reach the transcript"
+    assert any(e.get("t") == "sysline" for e in rt.bus.events), "the user is told it was delegated"

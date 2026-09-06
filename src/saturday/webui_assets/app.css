@@ -2285,6 +2285,20 @@ mark.find-hit.on { background: var(--accent); color: var(--bg0); }
 }
 .mm-star:hover { color: var(--warn) !important; }
 .mm-star.on { color: var(--warn) !important; }
+.mm-filter {
+  width: 100%; box-sizing: border-box; margin: var(--space-4) 0 var(--space-2);
+  background: var(--bg3); color: var(--text); border: 1px solid var(--line2);
+  border-radius: var(--r-sm); padding: var(--space-6) var(--space-8);
+  font: inherit; font-size: var(--fs-sm);
+}
+.mm-filter:focus { outline: none; border-color: var(--accent-line); }
+/* the catalogue can run to hundreds of rows: cap it and let the filter reach the rest */
+/* the menu must fit the window: the catalogue scrolls, the chrome does not */
+#modelMenu { max-height: min(70vh, 520px); display: flex; flex-direction: column; }
+.mm-catalog { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.mm-warn { color: var(--warn); }
+.mm-hint { padding: var(--space-4) var(--space-8); font-size: var(--fs-2xs); color: var(--faint); }
+
 .mm-head {
   font: 10px var(--mono); letter-spacing: 1px; text-transform: uppercase;
   color: var(--faint); padding: var(--space-6) var(--space-12) var(--space-2);
@@ -2416,7 +2430,12 @@ mark.find-hit.on { background: var(--accent); color: var(--bg0); }
 .composer-actions .hint kbd { font-size: var(--fs-2xs); padding: 0 var(--space-4); }
 
 /* assistant mode: the chat IS the app — developer mode chips are plumbing */
-body.mode-assistant #composerModes { display: none; }
+/* Assistant mode drops the developer pills, but which model answers is not a
+   developer concern - and hiding the row took the model picker with it, so the
+   default surface had no way to change model at all. Plan and safety stay
+   hidden; the model chip does not. */
+body.mode-assistant #composerModes { display: flex; }
+body.mode-assistant #composerModes > :not(#modelChip) { display: none; }
 
 /* narrow windows: shed secondary header badges before anything breaks */
 @media (max-width: 1140px) {
