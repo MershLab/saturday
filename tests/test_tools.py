@@ -4259,3 +4259,88 @@ def test_a_subagent_reuses_the_parents_mcp_instead_of_respawning_it(tmp_path, mo
     for _ in range(10):
         parent._make_task_tool()._factory()._ensure_mcp()
     assert spawns == ["server-one"], f"orphaned servers: {spawns}"
+
+
+def test_repo_index_refuses_to_index_a_home_directory(tmp_path, monkeypatch):
+    """D4: workspace_root defaults to os.getcwd(), so launching from $HOME
+    made the home directory "the repo". The index built over .claude, .codex,
+    .config and .local and reached 180 MB on the machine this was found on."""
+    from saturday.tools.repo_index import build_index, unindexable_reason, make_repo_search_tool
+
+    home = tmp_path / "home" / "someone"
+    (home / "project").mkdir(parents=True)
+    (home / "project" / "a.py").write_text("def hello(): pass\n", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+
+    assert unindexable_reason(home), "a home directory is not a workspace"
+    assert unindexable_reason(Path(home.anchor)), "the filesystem root is not a workspace"
+    assert not unindexable_reason(home / "project"), "a project inside it is fine"
+
+    idx = build_index(home)
+    assert idx["files"] == {} and idx.get("refused")
+    assert not (home / ".saturday").exists(), "it wrote an index for a root it refused"
+
+    tool = make_repo_search_tool(lambda: str(home))
+    ok, msg = tool.run({"query": "hello"})
+    assert not ok and "not a workspace" in msg, f"the refusal was silent: {msg!r}"
+
+    # and the project itself still indexes
+    ok, msg = make_repo_search_tool(lambda: str(home / "project")).run({"query": "hello"})
+    assert ok and "a.py" in msg
+
+
+def test_repo_index_skips_every_dotdir_and_honours_gitignore(tmp_path):
+    """The named SKIP_DIRS list never caught up with .claude, .codex or
+    .local, and .gitignore was not consulted at all."""
+    from saturday.tools.repo_index import build_index
+
+    # "generated" and "fixtures" are NOT in SKIP_DIRS, so only .gitignore can
+    # exclude them - otherwise this passes on the pre-existing skip list alone
+    (tmp_path / ".gitignore").write_text("generated/\nsecrets.py\nsrc/fixtures/\n", encoding="utf-8")
+    for d in (".claude", ".codex", ".local", "generated", "src"):
+        (tmp_path / d).mkdir()
+        (tmp_path / d / "f.py").write_text("def uniquetoken(): pass\n", encoding="utf-8")
+    (tmp_path / "src" / "fixtures").mkdir()
+    (tmp_path / "src" / "fixtures" / "big.py").write_text("def uniquetoken(): pass\n", encoding="utf-8")
+    (tmp_path / "secrets.py").write_text("def uniquetoken(): pass\n", encoding="utf-8")
+    (tmp_path / "keep.py").write_text("def uniquetoken(): pass\n", encoding="utf-8")
+
+    indexed = set(build_index(tmp_path)["files"])
+    assert indexed == {"src/f.py", "keep.py"}, indexed
+
+
+def test_repo_index_caps_its_own_size_and_says_so(tmp_path, monkeypatch):
+    """The index is re-read and rewritten per query, so its size is a
+    per-search cost. It had no cap at all and reached 180 MB."""
+    from saturday.tools import repo_index
+
+    monkeypatch.setattr(repo_index, "MAX_INDEX_BYTES", 30_000)
+    for i in range(6):
+        body = "\n".join(f"def sym_{i}_{j}(): pass" for j in range(60))
+        (tmp_path / f"m{i}.py").write_text(body, encoding="utf-8")
+
+    idx = repo_index.build_index(tmp_path)
+    blob = (tmp_path / ".saturday" / repo_index.INDEX_NAME).read_text(encoding="utf-8")
+    assert len(blob) <= repo_index.MAX_INDEX_BYTES, f"index is {len(blob)} bytes"
+    assert idx.get("capped") and "dropped" in idx["capped"], idx.get("capped")
+    assert idx["files"], "capping emptied the index instead of trimming it"
+    assert len(idx["files"]) < 6, "nothing was actually dropped"
+    # what survives is still coherent: every posting points at a kept file
+    for term, hits in idx["postings"].items():
+        for rel in hits:
+            assert rel in idx["files"], f"posting {term!r} points at dropped {rel}"
+
+
+def test_an_uncappable_index_keeps_a_file_and_says_it_could_not_trim(tmp_path, monkeypatch):
+    """Dropping the last file leaves an index under the cap and useless. Keep
+    one and be honest that the cap was not met."""
+    from saturday.tools import repo_index
+
+    monkeypatch.setattr(repo_index, "MAX_INDEX_BYTES", 200)
+    (tmp_path / "big.py").write_text(
+        "\n".join(f"def sym_{j}(): pass" for j in range(80)), encoding="utf-8")
+
+    idx = repo_index.build_index(tmp_path)
+    assert len(idx["files"]) == 1, "it dropped the only file it had"
+    assert "cannot be trimmed further" in idx.get("capped", "")

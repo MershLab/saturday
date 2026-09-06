@@ -30,6 +30,37 @@ CODE_EXTS = {
 MAX_FILE_BYTES = 256_000
 MAX_FILES = 5000
 MAX_SYMBOLS_PER_FILE = 200
+# The index is re-read and rewritten per query, so its size is a per-search
+# cost, not a one-off. On this machine an unbounded index over a home
+# directory reached 180 MB. When the cap bites the index is still correct,
+# just smaller, and build_index says so in "capped".
+MAX_INDEX_BYTES = 32_000_000
+
+
+def unindexable_reason(root: Path) -> str:
+    """Why this root must not be indexed, or "" when it is fine.
+
+    workspace_root defaults to os.getcwd(), so launching from $HOME made the
+    home directory "the repo": the index built over .claude, .codex, .config,
+    .local, actions-runner and go, and reached 180 MB of OpenSSL headers,
+    lockfiles and base64 blobs. A home directory is not a workspace and
+    neither is the filesystem root; nothing below is a fix for indexing them
+    in the first place.
+    """
+    try:
+        resolved = root.expanduser().resolve()
+    except OSError:
+        return ""
+    if resolved.parent == resolved:
+        return "the filesystem root is not a workspace"
+    try:
+        home = Path.home().resolve()
+    except (OSError, RuntimeError):
+        home = None
+    if home is not None and resolved == home:
+        return ("a home directory is not a workspace: point Saturday at a "
+                "project directory, or set workspace_root")
+    return ""
 
 _TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|\d+")
 _SPLIT_RE = re.compile(r"[_\s]+|(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
@@ -134,17 +165,44 @@ def _index_path(workspace_root: str | Path) -> Path:
     return Path(workspace_root) / ".saturday" / INDEX_NAME
 
 
-def _iter_subtree(root: Path):
+def _iter_subtree(root: Path, base: Path | None = None, ignored=None):
     """Every matching file under root, lazily - one bucket's worth for the
     round-robin in _scan_files. os.walk lets SKIP_DIRS prune dirnames in
     place, so those trees are never entered at all - the difference is an
-    order of magnitude on a real JS/Python monorepo."""
+    order of magnitude on a real JS/Python monorepo.
+
+    `ignored` is the workspace's .gitignore predicate, applied to paths
+    relative to `base`, so build output the repo already excludes does not
+    enter the index either."""
+    base = base if base is not None else root
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS)
+        # every dotdir, not only the named ones: the named list never caught
+        # up with .claude, .codex, .local and the rest, and a dotdir is
+        # configuration or tool state rather than the code being searched
+        dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS and not d.startswith("."))
+        if ignored is not None:
+            # prune ignored trees rather than filtering their files one by
+            # one: os.walk never descends into what is removed here
+            kept = []
+            for d in dirnames:
+                try:
+                    rel = (Path(dirpath) / d).relative_to(base).as_posix()
+                except ValueError:
+                    kept.append(d)
+                    continue
+                if not ignored(rel, True):
+                    kept.append(d)
+            dirnames[:] = kept
         for name in sorted(filenames):
             p = Path(dirpath) / name
             if p.suffix.lower() not in CODE_EXTS:
                 continue
+            if ignored is not None:
+                try:
+                    if ignored(p.relative_to(base).as_posix()):
+                        continue
+                except ValueError:
+                    pass
             try:
                 if not p.is_file() or p.stat().st_size > MAX_FILE_BYTES:
                     continue
@@ -170,14 +228,24 @@ def _scan_files(root: Path) -> list[Path]:
         entries = sorted(os.scandir(root), key=lambda e: e.name)
     except OSError:
         return []
+    from saturday.tools.files import gitignore_filter
+
+    try:
+        ignored = gitignore_filter(root)
+    except Exception:
+        ignored = None  # an unreadable .gitignore must not stop indexing
     buckets = []
     for e in entries:
         if e.is_dir():
-            if e.name not in SKIP_DIRS:
-                buckets.append(_iter_subtree(Path(e.path)))
+            if e.name not in SKIP_DIRS and not e.name.startswith("."):
+                if ignored is not None and ignored(e.name, True):
+                    continue
+                buckets.append(_iter_subtree(Path(e.path), root, ignored))
         else:
             p = Path(e.path)
             if p.suffix.lower() not in CODE_EXTS:
+                continue
+            if ignored is not None and ignored(e.name):
                 continue
             try:
                 if p.is_file() and p.stat().st_size <= MAX_FILE_BYTES:
@@ -203,6 +271,11 @@ def _scan_files(root: Path) -> list[Path]:
 
 def build_index(workspace_root: str | Path, force: bool = False) -> dict:
     root = Path(workspace_root)
+    refusal = unindexable_reason(root)
+    if refusal:
+        # an empty index, not an exception: search still answers, and it
+        # answers with the reason instead of 180 MB of someone's home
+        return {"files": {}, "postings": {}, "built": time.time(), "refused": refusal}
     ipath = _index_path(root)
     cache: dict = {"files": {}, "postings": {}}
     if not force and ipath.is_file():
@@ -273,9 +346,40 @@ def build_index(workspace_root: str | Path, force: bool = False) -> dict:
             postings.setdefault(term, {})[rel] = info
     cache["postings"] = postings
     cache["built"] = time.time()
+    cache.pop("capped", None)
+    blob = json.dumps(cache)
+    if len(blob) > MAX_INDEX_BYTES:
+        # Drop whole files, largest first, until it fits. Dropping postings
+        # instead would leave files claiming terms the index no longer has.
+        by_weight = sorted(known.items(), key=lambda kv: -len(kv[1].get("terms", {})))
+        dropped = 0
+        # stop at one file: dropping the last one leaves an index that is
+        # under the cap and useless, which is worse than one that is over it
+        while len(known) > 1 and len(blob) > MAX_INDEX_BYTES:
+            rel, _ = by_weight.pop(0)
+            del known[rel]
+            dropped += 1
+            postings = {}
+            for r, meta in known.items():
+                for term, info in meta.get("terms", {}).items():
+                    postings.setdefault(term, {})[r] = info
+            cache["postings"] = postings
+            blob = json.dumps(cache)
+        limit = f"{MAX_INDEX_BYTES // 1_000_000} MB" if MAX_INDEX_BYTES >= 1_000_000 else f"{MAX_INDEX_BYTES} bytes"
+        if len(blob) > MAX_INDEX_BYTES:
+            cache["capped"] = (
+                f"index is over the {limit} limit and cannot be trimmed further: "
+                "a single file exceeds it. Narrow workspace_root."
+            )
+        else:
+            cache["capped"] = (
+                f"index exceeded {limit}; dropped the {dropped} largest file(s). "
+                "Narrow workspace_root for full coverage."
+            )
+        blob = json.dumps(cache)
     try:
         ipath.parent.mkdir(parents=True, exist_ok=True)
-        ipath.write_text(json.dumps(cache), encoding="utf-8")
+        ipath.write_text(blob, encoding="utf-8")
     except OSError:
         pass
     return cache
@@ -364,12 +468,25 @@ def make_repo_search_tool(workspace_root_fn):
             query = str(args.get("query") or "").strip()
             if not query:
                 return False, "empty query"
+            root = workspace_root_fn()
             try:
-                results = search_index(workspace_root_fn(), query, k=int(args.get("k") or 8))
+                index = build_index(root)
+                results = search_index(root, query, k=int(args.get("k") or 8), index=index)
             except Exception as exc:
                 return False, f"{type(exc).__name__}: {exc}"
+            # A refusal or a cap changes what "no matches" means, so say it
+            # rather than letting an empty answer read as an empty workspace.
+            refused = index.get("refused")
+            if refused:
+                return False, f"repo_search is not indexing this root: {refused}"
             if not results:
                 return True, "(no matches)"
+            capped = index.get("capped")
+            if capped:
+                return True, "\n".join(
+                    [f"{r['path']}:{r['line']}  (score {r['score']})" for r in results]
+                    + [f"[{capped}]"]
+                )
             # the view is told what retrieval already scored; nothing here is
             # computed twice, and nothing is computed only for the view
             try:
