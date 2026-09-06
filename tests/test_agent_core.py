@@ -3513,3 +3513,33 @@ def test_an_empty_finish_falls_back_to_the_text_the_model_did_produce():
     ])
     traj = AgentLoop(model, ToolRegistry(), max_steps=3).run("sys", "go")
     assert traj.final_answer == "the summary is in notes.md", "the run ended with nothing"
+
+
+def test_a_throwing_ui_callback_does_not_abort_the_run(tmp_path):
+    """C24: post_tool_call was wrapped and on_tool_result beside it was bare,
+    so a UI that threw while rendering one tool card ended the whole run."""
+    from saturday.agent.loop import AgentLoop, LoopHooks
+    from saturday.tools.base import ToolRegistry
+    from fakes import make_scripted_model
+
+    class Ping:
+        name = "ping"
+        description = "d"
+        parameters = {"type": "object", "properties": {}}
+
+        def run(self, args):
+            return True, "pong"
+
+    def bad_render(result):
+        raise RuntimeError("the tool card blew up")
+
+    reg = ToolRegistry()
+    reg.register(Ping())
+    model = make_scripted_model([
+        {"tool_calls": [{"name": "ping", "arguments": {}}]},
+        {"content": "done"},
+    ])
+    traj = AgentLoop(model, reg, max_steps=4,
+                     hooks=LoopHooks(on_tool_result=bad_render)).run("sys", "go")
+
+    assert traj.stop_reason == "done" and traj.final_answer == "done"

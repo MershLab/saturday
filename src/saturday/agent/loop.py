@@ -504,7 +504,13 @@ class AgentLoop:
                     except Exception:
                         pass
                 if self.hooks.on_tool_result:
-                    self.hooks.on_tool_result(result)
+                    # guarded like post_tool_call beside it: both are surface
+                    # callbacks, and this one was bare, so a UI that threw
+                    # while rendering one tool card ended the whole run
+                    try:
+                        self.hooks.on_tool_result(result)
+                    except Exception:
+                        pass
                 # truncate the PAYLOAD before wrapping: slicing the rendered
                 # string would cut off the closing </tool_response> tag exactly
                 # on the largest outputs, degrading hermes-protocol parsing.
