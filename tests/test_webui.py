@@ -6009,3 +6009,54 @@ def test_an_oversize_body_ends_the_connection_instead_of_desyncing_it(tmp_path):
         assert resp2.status == 200
         assert json.loads(resp2.read().decode())["provider"] == app.base_cfg.provider
         conn.close()
+
+
+def test_an_agent_selection_is_handled_in_exactly_one_place(tmp_path, monkeypatch):
+    """S19: "agent:<id>" was interpreted twice in _post_config, and the second
+    copy could never run - the first branch answers every agent: selection,
+    session scoped or not, and returns. Two places to keep in step, one dead."""
+    from saturday import catalog
+
+    app = make_app(tmp_path, [{"text": "hi"}])
+    monkeypatch.setattr(catalog, "agents", lambda: [])
+
+    with _Server(app) as srv:
+        sid = app.store.create({"task": "t"})
+        # session scoped: the path the dead copy claimed to serve
+        status, body = _req(srv.base, "/api/config", "POST",
+                            {"session_id": sid, "model": "agent:nope"})
+        assert status == 400 and "unknown agent" in body["error"], body
+        # and unscoped
+        status, body = _req(srv.base, "/api/config", "POST", {"model": "agent:nope"})
+        assert status == 400 and "unknown agent" in body["error"], body
+
+    src = (Path(__file__).parent.parent / "src" / "saturday" / "webui.py").read_text(encoding="utf-8")
+    post_config = src.split("def _post_config", 1)[1].split("\n    def ", 1)[0]
+    assert post_config.count('startswith("agent:")') == 1, "the selection is still parsed twice"
+
+
+def test_both_hook_routes_enforce_the_same_rules(tmp_path, monkeypatch):
+    """S19: /api/hooks validated and wrote hooks.json line for line the same
+    way _write_hooks does, so the two could drift and the same request be
+    accepted through one route and rejected through the other."""
+    import saturday.config as cfgmod
+    monkeypatch.setattr(cfgmod, "save_config", lambda partial: None)
+    monkeypatch.setattr(cfgmod, "get_config_dir", lambda: tmp_path / "cfg")
+
+    app = make_app(tmp_path, [{"text": "hi"}])
+    bad = {"pre_tool_call": ["x" * 501]}
+
+    with _Server(app) as srv:
+        s1, b1 = _req(srv.base, "/api/hooks", "POST", {"hooks": bad})
+        s2, b2 = _req(srv.base, "/api/config", "POST", {"hooks": bad})
+
+    assert s1 == 400 and s2 == 400, (b1, b2)
+    assert b1["error"] == b2["error"], f"the two routes disagree: {b1['error']!r} vs {b2['error']!r}"
+
+    # and a good value goes through /api/hooks and lands on disk
+    with _Server(app) as srv:
+        status, body = _req(srv.base, "/api/hooks", "POST",
+                            {"hooks": {"pre_tool_call": ["echo hi"]}})
+        assert status == 200, body
+    written = json.loads((tmp_path / "cfg" / "hooks.json").read_text(encoding="utf-8"))
+    assert written["pre_tool_call"] == ["echo hi"]

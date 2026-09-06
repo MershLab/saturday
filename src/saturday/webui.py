@@ -3283,32 +3283,15 @@ class Handler(BaseHTTPRequestHandler):
         if payload.get("read_only"):
             self._send_json({"hooks": app.hooks_state()})
             return
-        hooks_in = payload.get("hooks")
-        valid = {"pre_tool_call", "post_tool_call"}
-        if not isinstance(hooks_in, dict) or set(hooks_in.keys()) - valid:
-            self._send_json({"error": f"hooks must be an object with keys: {', '.join(sorted(valid))}"}, 400)
-            return
-        cleaned: dict[str, list[str]] = {}
-        for k in valid:
-            v = hooks_in.get(k)
-            if v is None:
-                continue
-            if not isinstance(v, list) or not all(isinstance(c, str) for c in v):
-                self._send_json({"error": f"{k} must be a list of command strings"}, 400)
-                return
-            cmds = [c.strip() for c in v if c.strip()]
-            if any(len(c) > 500 or "\n" in c for c in cmds):
-                self._send_json({"error": f"{k} commands must be single lines of at most 500 chars"}, 400)
-                return
-            cleaned[k] = cmds
+        # This validated and wrote hooks.json line for line the same way
+        # AppState._write_hooks does, so the two rules could drift apart and
+        # the same request would be accepted through one route and rejected
+        # through the other. One implementation, two callers. (S19)
         try:
-            from saturday.config import get_config_dir
-
-            path = get_config_dir() / "hooks.json"
-            path.parent.mkdir(parents=True, exist_ok=True)
-            existing = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
-            merged = {**existing, **cleaned}
-            path.write_text(json.dumps(merged, indent=2), encoding="utf-8")
+            app._write_hooks(payload.get("hooks"))
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, 400)
+            return
         except OSError as exc:
             self._send_json({"error": f"{type(exc).__name__}: {exc}"}, 500)
             return
@@ -3491,24 +3474,11 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({**app.state_payload(), "agent": aid, "session_only": bool(sid)})
             return
         if sid and "model" in payload and set(payload.keys()) <= {"session_id", "model"}:
+            # No agent: handling here. Every "agent:<id>" selection, session
+            # scoped or not, is answered by the branch above and returns
+            # before this point, so the copy that used to sit here could
+            # never run - two places to keep in step, one of them dead. (S19)
             model = str(payload.get("model") or "").strip()[:120]
-            if model.startswith("agent:"):
-                # A CLI agent takes the whole turn (see _delegate_turn). Refuse
-                # one that is not installed rather than accepting a selection
-                # that would fail on the next message.
-                from saturday import catalog
-
-                aid = model.split(":", 1)[1]
-                known = {a.id: a for a in catalog.agents()}
-                spec = known.get(aid)
-                if spec is None:
-                    self._send_json({"error": f"unknown agent {aid!r}"}, 400)
-                    return
-                if not spec.available:
-                    self._send_json({
-                        "error": f"{aid} is not installed. {spec.install_hint}".strip(),
-                    }, 400)
-                    return
             if model:
                 with app.runtimes_lock:
                     rt = app.runtimes.get(sid)
