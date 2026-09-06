@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 HOOK_EVENTS = ("pre_tool_call", "post_tool_call")
@@ -81,7 +82,17 @@ def run_hook(command: str, payload: dict, timeout: float = HOOK_TIMEOUT) -> tupl
 
 
 def make_pre_tool_hook(commands: list[str]):
-    """Returns a pre_tool_call(tool_name, args) -> block-reason | None."""
+    """Returns a pre_tool_call(tool_name, args) -> block-reason | None.
+
+    The returned callable carries a `warnings` list: this module's contract
+    says a hook that fails for any reason other than exit 2 produces "a
+    warning surfaced to the agent, never silent", and the branch that was
+    meant to do that read `return None if not out else None` - both arms
+    None, so a broken hook failed in complete silence. A warning cannot be
+    returned (any string here BLOCKS the call), so it is recorded and also
+    written to stderr, and the tool call proceeds. (T22)
+    """
+    warnings: list[str] = []
 
     def hook(tool_name: str, args: dict) -> str | None:
         for cmd in commands:
@@ -89,9 +100,13 @@ def make_pre_tool_hook(commands: list[str]):
             if code == 2:
                 return f"blocked by user hook ({cmd[:60]}): {out or 'no reason given'}"
             if code != 0:
-                return None if not out else None  # non-blocking failure; surfaced via post hook log
+                note = (f"user hook failed (exit {code}) and did not block: "
+                        f"{cmd[:60]}: {out or 'no output'}")
+                warnings.append(note)
+                print(f"[hooks] {note}", file=sys.stderr)
         return None
 
+    hook.warnings = warnings
     return hook
 
 

@@ -4540,3 +4540,23 @@ def test_verify_runs_the_interpreter_saturday_is_running_on(tmp_path):
     assert _has_pytest(plain) is False
     (plain / "pyproject.toml").write_text("[project]\ndependencies=['pytest']\n", encoding="utf-8")
     assert _has_pytest(plain) is True
+
+
+def test_a_failing_user_hook_is_not_silent(capsys):
+    """T22: the branch meant to surface a non-blocking hook failure read
+    `return None if not out else None` - both arms None - so a broken hook
+    failed in complete silence, against this module's documented contract
+    that any failure other than exit 2 is "never silent"."""
+    from saturday.user_hooks import make_pre_tool_hook
+
+    hook = make_pre_tool_hook(["exit 7"])
+    assert hook("shell", {"command": "ls"}) is None, "a failing hook must not block"
+
+    assert hook.warnings, "the failure was swallowed"
+    assert "exit 7" in hook.warnings[0]
+    assert "[hooks]" in capsys.readouterr().err
+
+    # exit 2 still blocks, and a clean hook says nothing
+    assert "blocked by user hook" in (make_pre_tool_hook(["exit 2"])("shell", {}) or "")
+    quiet = make_pre_tool_hook(["true"])
+    assert quiet("shell", {}) is None and not quiet.warnings
