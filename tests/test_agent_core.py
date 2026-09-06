@@ -2971,3 +2971,47 @@ def test_compaction_converges_instead_of_nesting_itself():
     assert history[0]["content"].count("[COMPACTED CONTEXT]") == 1, "nested its own output"
     assert history[0]["content"].count("build the thing") == 1, "goal duplicated"
     assert history[0].get("compacted") is True, "the marker is what makes detection structural"
+
+
+def test_a_step_cannot_inject_more_than_the_step_ceiling():
+    """Sixteen parallel reads could put ~190k tokens in one step.
+
+    The per-call cap was applied per call with no aggregate, so a fan-out step
+    overflowed every context window before the loop could compact. Per-call
+    budgets now share a step ceiling; a single call is unaffected."""
+    from saturday.agent.loop import TOOL_RESULT_MAX_CHARS, TOOL_RESULT_STEP_MAX_CHARS
+
+    def budget(n):
+        if n <= 1:
+            return TOOL_RESULT_MAX_CHARS
+        return max(2_000, min(TOOL_RESULT_MAX_CHARS, TOOL_RESULT_STEP_MAX_CHARS // n))
+
+    assert budget(1) == TOOL_RESULT_MAX_CHARS, "one call keeps the full per-call cap"
+    for n in (4, 8, 16):
+        assert budget(n) * n <= TOOL_RESULT_STEP_MAX_CHARS, f"{n} calls exceed the step ceiling"
+    assert budget(16) >= 2_000, "a fan-out step must still say something useful per call"
+
+
+def test_a_second_context_overflow_ends_the_run_instead_of_raising(tmp_path):
+    """The caller must keep the trajectory even when the context cannot shrink.
+
+    After a forced compaction, a second LLMContextOverflow was re-raised out of
+    run() with no handler, so the trajectory, the usage and the stop reason
+    were lost along with the turn - the caller got an exception instead of a
+    result it could save."""
+    from saturday.agent.loop import AgentLoop
+    from saturday.llm.client import LLMContextOverflow
+
+    class AlwaysOverflows:
+        model = "fake"
+        calls: list = []
+
+        def chat(self, *a, **k):
+            raise LLMContextOverflow("prompt is too long for the model")
+
+    loop = AgentLoop(AlwaysOverflows(), build_registry(tmp_path), max_steps=3)
+    traj = loop.run("system-prompt", "do the thing")   # must not raise
+
+    assert traj.stop_reason == "error"
+    assert traj.final_answer and "compacting" in traj.final_answer
+    assert traj.task == "do the thing", "the trajectory survives with its task"

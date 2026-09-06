@@ -29,6 +29,11 @@ MAX_TOOL_CALLS_PER_STEP = 16
 # Compression, not a head cut: the end of a build log or test run is where the
 # verdict is, and slicing kept the opening and dropped exactly that.
 TOOL_RESULT_MAX_CHARS = 48_000
+# Aggregate ceiling for ONE step. The per-call cap alone let sixteen parallel
+# reads inject 16 x 48k characters - roughly 190k tokens - in a single step,
+# which overflows every context window before the loop gets a chance to
+# compact. Per-call budgets shrink to share this when a step fans out.
+TOOL_RESULT_STEP_MAX_CHARS = 120_000
 
 # a reply consisting ONLY of echoed tool-result block(s) is noise, not an answer
 _ECHOED_TOOL_RESPONSE_RE = re.compile(
@@ -282,9 +287,20 @@ class AgentLoop:
                 try:
                     response = self._chat(system_prompt, history)
                     break
-                except LLMContextOverflow:
+                except LLMContextOverflow as exc:
                     if overflow_attempt > 0:
-                        raise
+                        # Second overflow after a forced compaction: there is
+                        # nothing left to cut. Raising here left run() with no
+                        # handler, so the caller lost the trajectory, the usage
+                        # and the stop reason along with the turn. End the run
+                        # instead - a truncated result the caller can save
+                        # beats an exception that discards the work.
+                        traj.stop_reason = "error"
+                        traj.final_answer = (
+                            "stopped: the context is still over the model's limit after "
+                            f"compacting. {exc}"
+                        )
+                        return traj
                     self._compact(history, force=True)
                     if self.hooks.on_compaction:
                         self.hooks.on_compaction("compacted after context overflow")
@@ -396,6 +412,13 @@ class AgentLoop:
                 serialized["tool_calls"] = [tc.to_openai() for tc in executed]
             history.append(serialized)
             step_tool_messages: list[dict] = []
+            # share the step ceiling across this step's calls, never giving any
+            # single call more than the per-call cap
+            per_call_budget = TOOL_RESULT_MAX_CHARS
+            if len(executed) > 1:
+                per_call_budget = max(
+                    2_000, min(TOOL_RESULT_MAX_CHARS, TOOL_RESULT_STEP_MAX_CHARS // len(executed))
+                )
             # images from ALL tool results in this step are batched into ONE
             # user relay AFTER the last tool message: a user message wedged
             # between tool results violates the provider invariant that a
@@ -427,7 +450,7 @@ class AgentLoop:
                     "tool_call_id": call.id,
                     "name": call.name,
                     "content": render_tool_response(
-                        call.name, result.ok, compress(payload, TOOL_RESULT_MAX_CHARS)),
+                        call.name, result.ok, compress(payload, per_call_budget)),
                 }
                 history.append(tool_msg)
                 step_tool_messages.append(dict(tool_msg))
