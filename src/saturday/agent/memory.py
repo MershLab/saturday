@@ -24,6 +24,18 @@ class WorkingMemory:
     def add(self, kind: str, text: str) -> None:
         self.items.append(MemoryItem(kind=kind, text=text.strip()))
 
+    def replace(self, kind: str, text: str) -> None:
+        """Keep only the newest item of a kind that supersedes its own history.
+
+        A compaction summary is built from a history that already contained
+        the previous summary, so it is a superset of it by construction -
+        appending each round stacked several thousand tokens of the same
+        digest, and every one of them was prepended to every later run's goal
+        message and persisted with the checkpoint. Worse, they crowded out the
+        pinned facts render() and the checkpoint keep only the last 40 of."""
+        self.items = [it for it in self.items if it.kind != kind]
+        self.add(kind, text)
+
     def render(self) -> str:
         if not self.items:
             return "(empty)"

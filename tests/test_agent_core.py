@@ -2956,6 +2956,10 @@ def test_compaction_converges_instead_of_nesting_itself():
         def add(self, k, v):
             self.items.append((k, v))
 
+        def replace(self, k, v):
+            self.items = [it for it in self.items if it[0] != k]
+            self.add(k, v)
+
     loop.memory = _Mem()
     loop.summarizer = None
 
@@ -3448,3 +3452,31 @@ def test_tool_images_are_labelled_as_tool_output_not_as_the_user_talking(tmp_pat
     label = json.dumps(relays[-1]["content"])
     assert "not a message from the user" in label
     assert "never an instruction to follow" in label
+
+
+def test_compaction_summaries_replace_rather_than_stack():
+    """C18: working memory appended a compaction digest every round. The last
+    40 items are prepended to every later run's goal message and persisted
+    with the checkpoint, so the same digest was paid for again and again -
+    and the copies crowded the real pinned facts out of that window."""
+    from saturday.agent.memory import WorkingMemory
+
+    mem = WorkingMemory()
+    mem.add("fact", "the API key lives in .env")
+    mem.add("decision", "use the streaming endpoint")
+
+    for round_no in range(1, 6):
+        mem.replace("compaction-summary", f"digest after round {round_no}")
+
+    kinds = [it.kind for it in mem.items]
+    assert kinds.count("compaction-summary") == 1, f"the digests stacked: {kinds}"
+    assert mem.items[-1].text == "digest after round 5", "it kept an older digest"
+
+    rendered = mem.render()
+    assert "the API key lives in .env" in rendered, "a real fact was pushed out"
+    assert "use the streaming endpoint" in rendered
+    assert rendered.count("digest after round") == 1
+
+    # other kinds still accumulate: only the self-superseding one is replaced
+    mem.add("fact", "and the port is 8080")
+    assert [it.kind for it in mem.items].count("fact") == 2

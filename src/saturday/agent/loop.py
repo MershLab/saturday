@@ -823,7 +823,10 @@ class AgentLoop:
         excerpt_tail = transcript_excerpt[-2000:]
         if transcript_excerpt and excerpt_tail not in pinned:
             pinned = (pinned + "\n" + excerpt_tail).strip()
-        self.memory.add("compaction-summary", pinned)
+        # replace, not add: each round's summary already digests the previous
+        # one, so appending stacked the same content and pushed real pinned
+        # facts out of the last-40 window
+        self.memory.replace("compaction-summary", pinned)
         tail = history[cut:]
         del history[:]
         history.extend(
