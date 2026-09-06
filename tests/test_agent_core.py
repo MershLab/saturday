@@ -3231,3 +3231,35 @@ def test_a_failed_model_request_ends_the_run_with_its_trajectory(tmp_path):
     assert any(
         r.output == "did a thing" for st in traj.steps for r in (st.results or [])
     ), "the completed tool call is not in the trajectory"
+
+
+def test_the_context_window_table_is_not_understating_current_models():
+    """C15: gpt-4.1 was listed at 128k against an actual ~1M, and several
+    current families had no entry at all and fell to the 96k default. That is
+    not a cosmetic error: compaction fires at 70% of the resolved window, so a
+    model listed at 96k starts discarding context at 67k that it could still
+    have been holding."""
+    from saturday.context import DEFAULT_CONTEXT_TOKENS, resolve_context_window
+
+    def window(model):
+        return resolve_context_window(model)
+
+    assert window("gpt-4.1")[0] > 1_000_000, "gpt-4.1 is still on the old 128k figure"
+    assert window("gpt-4.1-mini")[0] > 1_000_000
+
+    # families that used to fall to the default
+    for model in ("gpt-5", "gpt-5-mini", "openai/o3-mini", "o1-preview", "o4-mini",
+                  "qwen3-32b", "glm-4.6", "grok-4", "llama-4-scout", "llama-3.3-70b"):
+        w, source = window(model)
+        assert source == "table", f"{model} still falls to the {DEFAULT_CONTEXT_TOKENS} default"
+        assert w > DEFAULT_CONTEXT_TOKENS, f"{model} resolved to {w}"
+
+    # the more specific family wins over the one whose name contains it
+    assert window("qwen3-coder-480b")[0] == 262_144
+    assert window("qwen3-32b")[0] == 131_072
+    assert window("gpt-4o")[0] == 128_000, "gpt-4o must not pick up the gpt-4.1 window"
+
+    # short names match at a component boundary, not anywhere in the string
+    assert window("gpt-4o-2024")[1] == "table" and window("gpt-4o-2024")[0] == 128_000
+    assert window("some-model-no1-x") == (DEFAULT_CONTEXT_TOKENS, "default")
+    assert window("unheard-of") == (DEFAULT_CONTEXT_TOKENS, "default")

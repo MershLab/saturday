@@ -37,15 +37,36 @@ MINIMUM_CONTEXT_TOKENS = 8_192
 # The probe is gated (needs a key, a private/local endpoint, or openrouter),
 # cached ~10min per (base_url, model), and never raises.
 
+# Ordered: the FIRST needle found in the model name wins, so a more specific
+# family must sit above the one whose name contains it (qwen3-coder before
+# qwen3, gpt-4.1 before gpt-4). Under-stating a window is not free: the
+# compaction threshold is 70% of it, so a model listed at 96k compacts at 67k
+# and starts throwing away context it could still have been holding.
 _MODEL_CONTEXT_HINTS: tuple[tuple[str, int], ...] = (
     ("gemini", 1_000_000),
     ("claude", 200_000),
     ("deepseek", 128_000),
+    ("gpt-4.1", 1_047_576),   # was listed at 128k; the real window is ~1M
     ("gpt-4o", 128_000),
-    ("gpt-4.1", 128_000),
+    ("gpt-5", 400_000),
     ("qwen3-coder", 262_144),
+    ("qwen3", 131_072),
     ("kimi-k2", 262_144),
     ("glm-5", 204_800),
+    ("glm-4", 200_000),
+    ("grok-4", 256_000),
+    ("llama-4", 1_000_000),
+    ("llama-3.3", 128_000),
+    ("mistral-large", 128_000),
+    ("magistral", 128_000),
+)
+
+# Short names that would collide as bare substrings ("o3" appears inside
+# plenty of unrelated ids), so they match only at a component boundary.
+_BOUNDARY_HINTS: tuple[tuple[str, int], ...] = (
+    ("o1", 200_000),
+    ("o3", 200_000),
+    ("o4-mini", 200_000),
 )
 
 _PROBE_CACHE: dict[tuple[str, str], tuple[float, int | None]] = {}
@@ -134,6 +155,11 @@ def resolve_context_window(
     name = str(model or "").lower()
     for needle, window in _MODEL_CONTEXT_HINTS:
         if needle in name:
+            return window, "table"
+    import re as _re
+
+    for needle, window in _BOUNDARY_HINTS:
+        if _re.search(rf"(^|[/\-_:]){_re.escape(needle)}($|[\-_.:])", name):
             return window, "table"
     return DEFAULT_CONTEXT_TOKENS, "default"
 
