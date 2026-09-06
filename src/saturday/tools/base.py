@@ -177,7 +177,12 @@ class ToolRegistry:
                 )
             lock.acquire()
         try:
-            result = self._invoke(tool, call_id, name, args)
+            problem = self.validate_args(tool, args)
+            if problem is not None:
+                result = ToolResult(call_id=call_id, name=name, ok=False, output="",
+                                    error=f"{name}: {problem}")
+            else:
+                result = self._invoke(tool, call_id, name, args)
             pending = getattr(tool, "pending_images", None)
             if pending:
                 result.images = list(pending)
@@ -196,6 +201,46 @@ class ToolRegistry:
         Cleared by that worker's own release if it ever finishes."""
         if name in self._tools:
             self._abandoned.add(name)
+
+    @staticmethod
+    def validate_args(tool, args: Any) -> str | None:
+        """Why these arguments cannot be run, or None when they can.
+
+        Every tool improvised its own answer to a missing argument - a
+        KeyError here, a bare "empty query" there, a silent default somewhere
+        else - so the model got a different shape of failure each time and
+        could not learn from any of them. This is deliberately narrow: it
+        checks that required properties are present and that a scalar was not
+        sent where an object or array is declared (or the reverse). It does
+        NOT police scalar types, because tools already coerce "8" to 8 and
+        rejecting that would break calls that work today.
+        """
+        if not isinstance(args, dict):
+            return f"arguments must be an object, got {type(args).__name__}"
+        schema = getattr(tool, "parameters", None)
+        if not isinstance(schema, dict):
+            return None
+        props = schema.get("properties")
+        props = props if isinstance(props, dict) else {}
+        missing = [
+            k for k in (schema.get("required") or [])
+            if isinstance(k, str) and args.get(k) is None
+        ]
+        if missing:
+            known = ", ".join(sorted(props)) or "none declared"
+            return (f"missing required argument(s): {', '.join(missing)}. "
+                    f"Accepted arguments: {known}")
+        structural = {"object": dict, "array": list}
+        for key, value in args.items():
+            declared = props.get(key)
+            if not isinstance(declared, dict) or value is None:
+                continue
+            want = declared.get("type")
+            if want in structural and not isinstance(value, structural[want]):
+                return f"argument {key!r} must be an {want}, got {type(value).__name__}"
+            if want not in structural and want is not None and isinstance(value, (dict, list)):
+                return f"argument {key!r} must be a {want}, got {type(value).__name__}"
+        return None
 
     @staticmethod
     def _invoke(tool, call_id: str, name: str, args: dict[str, Any]) -> ToolResult:

@@ -4424,3 +4424,67 @@ def test_ordinary_same_name_contention_still_queues(tmp_path):
     b.join(5)
     assert len(results) == 2 and all(r.ok for r in results), [r.error for r in results]
     assert order == ["in", "out", "in", "out"], f"the calls overlapped: {order}"
+
+
+def test_tool_arguments_are_checked_against_the_declared_schema():
+    """C20: nothing validated arguments before tool.run, so every tool
+    improvised its own answer to a missing one - a KeyError here, a bare
+    "empty query" there, a silent default somewhere else. The model got a
+    different shape of failure each time and could not learn from any."""
+    from saturday.tools.base import ToolRegistry
+
+    ran = []
+
+    class Fetch:
+        name = "fetch"
+        description = "d"
+        parameters = {
+            "type": "object",
+            "properties": {"url": {"type": "string"}, "headers": {"type": "object"},
+                           "k": {"type": "integer"}},
+            "required": ["url"],
+        }
+
+        def run(self, args):
+            ran.append(args)
+            return True, "fetched"
+
+    reg = ToolRegistry()
+    reg.register(Fetch())
+
+    r = reg.execute("c", "fetch", {})
+    assert not r.ok and "missing required argument(s): url" in r.error
+    assert "Accepted arguments: headers, k, url" in r.error, r.error
+    assert not ran, "the tool ran with arguments it declared it needed"
+
+    # a scalar where an object is declared, and the reverse
+    r = reg.execute("c", "fetch", {"url": "u", "headers": "not-a-dict"})
+    assert not r.ok and "must be an object" in r.error
+    r = reg.execute("c", "fetch", {"url": {"nested": 1}})
+    assert not r.ok and "must be a string" in r.error
+
+    # arguments that are not an object at all (a truncated tool call)
+    r = reg.execute("c", "fetch", ["url"])
+    assert not r.ok and "must be an object" in r.error
+
+    assert not ran
+    # and the scalar coercion tools already rely on is untouched
+    r = reg.execute("c", "fetch", {"url": "u", "k": "8"})
+    assert r.ok and ran == [{"url": "u", "k": "8"}]
+
+
+def test_validation_does_not_reject_a_tool_with_no_schema():
+    from saturday.tools.base import ToolRegistry
+
+    class Loose:
+        name = "loose"
+        description = "d"
+        parameters = None
+
+        def run(self, args):
+            return True, f"got {sorted(args)}"
+
+    reg = ToolRegistry()
+    reg.register(Loose())
+    r = reg.execute("c", "loose", {"anything": 1})
+    assert r.ok and "anything" in r.output
