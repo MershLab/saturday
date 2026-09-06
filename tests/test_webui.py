@@ -5815,3 +5815,32 @@ def test_two_threads_racing_one_session_end_up_with_one_runtime(tmp_path):
     assert len(results) == 4
     assert len({id(r) for r in results}) == 1, "callers got different runtimes for one session"
     assert len(attention._sinks) == before + 1, "a discarded runtime kept its sink registered"
+
+
+def test_saving_an_unrelated_setting_does_not_erase_blocked_apps(tmp_path, monkeypatch):
+    """S14, traced to something concrete: _reload_runtime_state rebuilt every
+    live agent's ApprovalPolicy without blocked_apps, so saving ANY setting -
+    the temperature - dropped the blocked-app list from every live agent while
+    cfg still said those apps were blocked.
+
+    ApprovalPolicy's own docstring calls this a set that "an explicit user set
+    can never be erased by an agent"; a settings save was erasing it."""
+    import saturday.config as cfgmod
+    monkeypatch.setattr(cfgmod, "save_config", lambda partial: None)
+
+    app = AppState(
+        store_root=tmp_path / "sessions",
+        cfg_overrides={"workspace_root": str(tmp_path), "safety_mode": "ask",
+                       "blocked_apps": ["crypto", "wallet"]},
+    )
+    rt = app.runtime_for("s1")
+    assert rt.agent.approval_policy.blocked_apps == ["crypto", "wallet"]
+
+    app.apply_config({"temperature": 0.42})
+
+    assert rt.agent.approval_policy.blocked_apps == ["crypto", "wallet"], \
+        "an unrelated save erased the blocked-app list"
+    assert app.base_cfg.blocked_apps == ["crypto", "wallet"]
+
+    # and the deny rules that are restored on the next line still are
+    assert getattr(rt.agent.approval_policy, "deny_rules", None) is not None

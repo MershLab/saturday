@@ -1268,8 +1268,17 @@ class AppState:
                 rt.agent.persona_extra = getattr(base, "persona_extra", "") or ""
             # re-attach the freshly persisted allow-rules so live sessions
             # honor approvals saved after this agent was constructed
+            # blocked_apps has to come along. Rebuilding the policy without
+            # it dropped the list from every live agent on ANY config save -
+            # changing the temperature erased it - while cfg still said those
+            # apps were blocked. Its own docstring calls it a set "an explicit
+            # user set can never be erased by an agent"; a settings save was
+            # erasing it. (S14: found by tracing which of these mutations
+            # actually reach a running turn.)
             rt.agent.approval_policy = ApprovalPolicy.from_mode(
-                getattr(rt.agent.cfg, "safety_mode", "ask"), allow_rules=fresh_allow
+                getattr(rt.agent.cfg, "safety_mode", "ask"),
+                allow_rules=fresh_allow,
+                blocked_apps=list(getattr(rt.agent.cfg, "blocked_apps", []) or []),
             )
             # deny-rules reach live agents the same way allow-rules do; the
             # guard degrades safely if ApprovalPolicy lacks deny_rules yet
