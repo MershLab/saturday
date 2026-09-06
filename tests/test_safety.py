@@ -767,17 +767,50 @@ def test_loop_withholds_injected_tool_result(tmp_path):
     assert "exfiltrate keys" in tool_content[0], "the surrounding result was discarded"
 
 
-def test_loop_stops_after_three_identical_tool_calls(tmp_path):
+def test_loop_stops_after_repeating_a_call_that_learned_nothing(tmp_path):
+    """The stall key includes the previous step's results (C9), so a repeat
+    only counts once the model has repeated a call after learning nothing.
+    That costs one extra step here and is what stops three legitimate
+    job_output polls from ending the run - see the polling test below."""
     turns = [
         {"reasoning": "trying", "tool_calls": [{"name": "read_file", "arguments": {"path": "missing.txt"}}]}
-        for _ in range(3)
+        for _ in range(5)
     ]
     model = make_scripted_model(turns)
     loop = AgentLoop(model, build_registry(tmp_path), max_steps=10)
     traj = loop.run("sys", "do it")
     assert traj.stop_reason == "stall"
     assert "stall" in traj.final_answer
-    assert len(model.calls) == 3, "stall must abort BEFORE running the 3rd duplicate"
+    assert len(model.calls) == 4, "stall must abort BEFORE running the duplicate again"
+
+
+def test_polling_a_job_whose_output_grows_is_not_a_stall(tmp_path):
+    """C9: the key was the calls alone, so three identical job_output polls
+    ended the run as a stall - and the harness itself instructs the model to
+    poll. Watching something move is not spinning."""
+    from saturday.tools.base import ToolRegistry
+
+    ticks = {"n": 0}
+
+    class Poll:
+        name = "job_output"
+        description = "d"
+        parameters = {"type": "object", "properties": {"id": {"type": "string"}}}
+
+        def run(self, args):
+            ticks["n"] += 1
+            return True, f"lines so far: {ticks['n']}"
+
+    reg = ToolRegistry()
+    reg.register(Poll())
+    turns = [{"tool_calls": [{"name": "job_output", "arguments": {"id": "j1"}}]} for _ in range(5)]
+    turns.append({"content": "the job finished"})
+    model = make_scripted_model(turns)
+    traj = AgentLoop(model, reg, max_steps=10).run("sys", "watch the job")
+
+    assert traj.stop_reason != "stall", "identical polls with moving output read as a loop"
+    assert traj.final_answer == "the job finished"
+    assert ticks["n"] == 5, "a poll was aborted early"
 
 
 def test_loop_distinct_calls_do_not_stall(tmp_path):

@@ -237,6 +237,7 @@ class AgentLoop:
 
         stall_key: tuple | None = None
         stall_count = 0
+        last_results_key: tuple | None = None
         run_started_at = time.monotonic()
         for step_index in range(self.max_steps):
             # every attention event this step produces is tagged with it, so a
@@ -400,7 +401,18 @@ class AgentLoop:
             # tool calls means the model is spinning, not progressing (2026
             # convergence: loop detection + step caps). Abort BEFORE running
             # the calls again — no tokens spent on the doomed repetition.
-            key = tuple((c.name, json.dumps(c.arguments, sort_keys=True, default=str)) for c in executed)
+            # C9: keyed on the calls ALONE, three legitimate job_output polls
+            # ended the run as a stall - and the harness itself tells the model
+            # to poll. What makes a repeat a loop is repeating it after
+            # learning nothing, so the previous step's results are part of the
+            # key: identical calls after identical results is spinning,
+            # identical calls after changed results is watching something move.
+            # A genuine stall now needs one more step to trip, which is the
+            # price of not aborting work that was progressing.
+            key = (
+                tuple((c.name, json.dumps(c.arguments, sort_keys=True, default=str)) for c in executed),
+                last_results_key,
+            )
             if executed and key == stall_key:
                 stall_count += 1
             else:
@@ -414,6 +426,9 @@ class AgentLoop:
                 self._emit_checkpoint(history)
                 return traj
             results = self._execute_calls(executed)
+            last_results_key = tuple(
+                (r.name, bool(r.ok), hash(r.output or ""), hash(r.error or "")) for r in results
+            )
             serialized = _strip_think(assistant.to_openai(), keep=self.keep_reasoning_in_history)
             if len(assistant.tool_calls) > len(executed):
                 serialized["tool_calls"] = [tc.to_openai() for tc in executed]
