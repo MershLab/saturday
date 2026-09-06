@@ -330,11 +330,39 @@ def test_config_load_normalizes_aliases(monkeypatch, tmp_path):
 
 
 def test_hardline_still_blocks_in_autonomous():
+    """The floor that survives yolo has to cover how people actually type it.
+
+    Autonomous mode skips the guardrail tier by design, so the hardline list
+    is the only thing left. It matched `rm -rf /` and missed `rm -rf /*`,
+    `rm -rf ~`, `~/`, `"$HOME"` and `${HOME}` - the spellings a model is most
+    likely to emit. The `\b` after `~` could never fire, because `~` is not a
+    word character."""
     from saturday.safety import ApprovalPolicy, check_command
 
     policy = ApprovalPolicy.from_mode("yolo")
-    reason = check_command(policy, "shell", {"command": "rm -rf /"})
-    assert reason and "HARDLINE" in reason
+    for cmd in (
+        "rm -rf /", "rm -rf /*", "rm -rf ~", "rm -rf ~/", "rm -rf ~/*",
+        'rm -rf "$HOME"', "rm -rf ${HOME}", "rm -rf $HOME", "rm -rf $HOME/",
+        "rm -fr ~", "rm -rf /etc", "os.system('rm -rf /')",
+    ):
+        reason = check_command(policy, "shell", {"command": cmd})
+        assert reason and "HARDLINE" in reason, f"{cmd!r} was not blocked"
+
+
+def test_hardline_does_not_swallow_ordinary_deletes():
+    """A path inside home or /tmp is destructive work, not a wipe.
+
+    Widening the root patterns must not promote every rm into the one tier a
+    user cannot override; those belong to the guardrail-ask tier."""
+    from saturday.safety import ApprovalPolicy, check_command
+
+    policy = ApprovalPolicy.from_mode("yolo")
+    for cmd in (
+        "rm -rf /tmp/cache", "rm -rf ~/project/build", "rm -rf ./build",
+        "rm -rf node_modules", "rm -rf $HOME/scratch/x",
+    ):
+        reason = check_command(policy, "shell", {"command": cmd})
+        assert not (reason and "HARDLINE" in reason), f"{cmd!r} must not be hardline"
 
 
 def test_deny_rules_still_bind_in_autonomous():

@@ -263,7 +263,14 @@ class WriteFile(Tool):
 
         record_edit(self.root or path.parent, "write_file", str(path))
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
+        # preserve the ending style of a file being overwritten
+        eol = "\n"
+        if path.is_file():
+            try:
+                _, eol = read_source(path)
+            except (UnicodeDecodeError, OSError):
+                eol = "\n"
+        write_source(path, content, eol)
         note = _verify_note(path, content)
         if self.verify_command and not note.startswith("\n[verify] WARNING"):
             # a failing syntax check already tells the story; the external hook
@@ -296,7 +303,10 @@ class EditFile(Tool):
             return False, _PRIVILEGED_WRITE_MSG
         if not path.is_file():
             return False, f"not a file: {path}"
-        text = path.read_text(encoding="utf-8", errors="replace")
+        try:
+            text, eol = read_source(path)
+        except UnicodeDecodeError as exc:
+            return False, str(exc.reason)
         old = str(args.get("old_string") or "")
         new = str(args.get("new_string") or "")
         if not old.strip():
@@ -319,11 +329,48 @@ class EditFile(Tool):
         from saturday.tools.journal import record_edit
 
         record_edit(self.root or path.parent, "edit_file", str(path))
-        path.write_text(updated, encoding="utf-8")
+        write_source(path, updated, eol)
         note = _verify_note(path, updated)
         if self.verify_command and not note.startswith("\n[verify] WARNING"):
             note += external_verify_note(self.verify_command, path, self.root)
         return True, f"edited {path}{fuzzy_note}" + note
+
+
+def read_source(path) -> tuple[str, str]:
+    """Read a text file faithfully: (text with LF endings, dominant EOL).
+
+    `read_text(errors="replace")` turned every byte it could not decode into
+    U+FFFD, and `write_text` then wrote that back - so one edit to an
+    unrelated token on a Latin-1 source permanently destroyed the bytes it
+    never touched. Refusing is the only honest option: a tool that cannot
+    represent the file must not rewrite it.
+
+    Line endings are normalised to LF for matching and restored on write, so
+    a CRLF checkout does not come back as a whole-file diff.
+    """
+    raw = path.read_bytes()
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise UnicodeDecodeError(
+            exc.encoding, exc.object, exc.start, exc.end,
+            f"{path} is not valid UTF-8 (byte {exc.start}); refusing to edit it "
+            "rather than replace the bytes it cannot decode",
+        ) from None
+    crlf = text.count("\r\n")
+    lf = text.count("\n") - crlf
+    return text.replace("\r\n", "\n"), ("\r\n" if crlf and crlf >= lf else "\n")
+
+
+def write_source(path, text: str, eol: str = "\n") -> None:
+    """Write text back with its original line endings, as bytes.
+
+    `write_text` applies universal newlines, which silently converted every
+    CRLF file to LF."""
+    data = text.replace("\r\n", "\n")
+    if eol != "\n":
+        data = data.replace("\n", eol)
+    path.write_bytes(data.encode("utf-8"))
 
 
 class ListDir(Tool):

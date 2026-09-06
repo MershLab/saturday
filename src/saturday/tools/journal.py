@@ -22,15 +22,34 @@ def journal_path(workspace_root: str | Path) -> Path:
     return Path(workspace_root) / ".saturday" / JOURNAL_NAME
 
 
+def _write_back(path, rec: dict) -> None:
+    """Restore a snapshot with its original line endings, as bytes."""
+    text = rec.get("before") or ""
+    eol = rec.get("eol") or "\n"
+    data = text.replace("\r\n", "\n")
+    if eol != "\n":
+        data = data.replace("\n", eol)
+    path.write_bytes(data.encode("utf-8"))
+
+
 def record_edit(workspace_root: str | Path, tool: str, path: str) -> None:
     """Snapshot the CURRENT content of path (before an impending overwrite)."""
     root = Path(workspace_root)
     target = Path(path)
     try:
-        before = target.read_text(encoding="utf-8", errors="replace")
+        # Bytes, not errors="replace": the snapshot is what /revert restores,
+        # so a lossy read here made the undo itself destructive - it would
+        # write U+FFFD over bytes the edit never touched. A file that cannot
+        # be represented is recorded as unsnapshottable instead.
+        raw = target.read_bytes()
+        before = raw.decode("utf-8")
+        eol = "\r\n" if before.count("\r\n") else "\n"
+    except UnicodeDecodeError:
+        before, eol = None, "\n"
     except (OSError, ValueError):
-        before = None  # file did not exist (a create, not a modify)
+        before, eol = None, "\n"  # file did not exist (a create, not a modify)
     entry = {
+        "eol": eol,
         "ts": time.time(),
         "tool": tool,
         "path": str(target),
@@ -154,7 +173,7 @@ def restore_to_length(workspace_root: str | Path, target_len: int, root: str | P
         try:
             if rec.get("existed"):
                 resolved.parent.mkdir(parents=True, exist_ok=True)
-                resolved.write_text(rec["before"], encoding="utf-8")
+                _write_back(resolved, rec)
             else:
                 resolved.unlink(missing_ok=True)
             undone += 1
@@ -239,7 +258,7 @@ def restore_entry(workspace_root: str | Path, index: int, root: str | Path | Non
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         if rec.get("existed"):
-            target.write_text(rec["before"], encoding="utf-8")
+            _write_back(target, rec)
         else:
             target.unlink(missing_ok=True)
     except OSError as exc:

@@ -10,9 +10,17 @@ HARDLINE_PATTERNS: list[tuple[re.Pattern, str]] = [
     # is normal cleanup and belongs to the guardrail-ask tier, not hardline;
     # the quote/paren alternative catches the same wipe embedded in a python
     # or shell string: os.system('rm -rf /')
-    (re.compile(r"""\brm\s+(-[a-z]*\s+)*-?[rf]{1,2}[a-z-]*\s+(--\s+)?/(?:[\s,'")]|$)""", re.IGNORECASE), "rm -rf on filesystem root"),
+    # "/" alone, and "/*" - the glob spelling wipes the same tree and was the
+    # form that got past this floor in autonomous mode. "/tmp/cache" still
+    # falls through to the guardrail-ask tier, which is where it belongs.
+    (re.compile(r"""\brm\s+(-[a-z]*\s+)*-?[rf]{1,2}[a-z-]*\s+(--\s+)?/\*?(?:[\s,'")]|$)""", re.IGNORECASE), "rm -rf on filesystem root"),
     (re.compile(r"--no-preserve-root", re.IGNORECASE), "no-preserve-root bypass flag"),
-    (re.compile(r"\brm\s+(-[a-z]*\s+)*-?[rf]{1,2}[a-z-]*\s+(--\s+)?(/(etc|usr|bin|sbin|var|lib|boot|home|users|system)|~|\$HOME)\b", re.IGNORECASE), "rm -rf on system/user root"),
+    # Home itself, however it is spelled: bare ~, ~/, ~/*, "$HOME", ${HOME}.
+    # The old \b after ~ could never match - ~ is not a word character, so
+    # `rm -rf ~` needed a word char after it to trigger and never had one.
+    # A path *inside* home (rm -rf ~/project/build) is deliberately not
+    # hardline; it is ordinary destructive work for the ask tier.
+    (re.compile(r"""\brm\s+(-[a-z]*\s+)*-?[rf]{1,2}[a-z-]*\s+(--\s+)?(/(etc|usr|bin|sbin|var|lib|boot|home|users|system)\b|(?:"|')?(?:~|\$\{?HOME\}?)(?:"|')?(?:/\*?)?(?:[\s,'")]|$))""", re.IGNORECASE), "rm -rf on system/user root"),
     (re.compile(r"\bmkfs(\.\w+)?\b", re.IGNORECASE), "mkfs formats a filesystem"),
     (re.compile(r"\bdd\b[^|]*\bof=/dev/(sd[a-z]|nvme|hd[a-z]|disk)", re.IGNORECASE), "dd writing to raw device"),
     (re.compile(r":\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:"), "fork bomb"),

@@ -3949,3 +3949,54 @@ def test_free_tier_429_backs_off_and_falls_through(routed, tmp_path, monkeypatch
     assert ok and msg == "DELEGATED OK"
     assert routed.quota_exhausted("free-glm")
     assert routed.pick("smoke") == "claude-code"
+
+
+# --- byte faithfulness (harness audit T2/T3) --------------------------------
+
+def test_edit_file_refuses_a_file_it_cannot_decode(tmp_path):
+    """A tool that cannot represent a file must not rewrite it.
+
+    read_text(errors="replace") turned every undecodable byte into U+FFFD and
+    write_text put that back, so one edit to an unrelated token on a Latin-1
+    source permanently destroyed bytes it never touched."""
+    from saturday.tools.files import EditFile
+
+    p = tmp_path / "latin1.txt"
+    p.write_bytes(b"caf\xe9 x\n")
+    ok, msg = EditFile(root=str(tmp_path)).run(
+        {"path": "latin1.txt", "old_string": "x", "new_string": "y"})
+    assert ok is False and "not valid UTF-8" in msg
+    assert p.read_bytes() == b"caf\xe9 x\n", "the file must be left untouched"
+
+
+def test_edit_file_preserves_crlf_byte_for_byte(tmp_path):
+    """A Windows checkout must not come back as a whole-file diff.
+
+    The existing CRLF test only asserted the new text was present, which a
+    fully rewritten file also satisfies."""
+    from saturday.tools.files import EditFile
+
+    p = tmp_path / "crlf.txt"
+    p.write_bytes(b"a x\r\nb\r\n")
+    ok, _ = EditFile(root=str(tmp_path)).run(
+        {"path": "crlf.txt", "old_string": "x", "new_string": "y"})
+    assert ok
+    assert p.read_bytes() == b"a y\r\nb\r\n"
+
+
+def test_revert_restores_the_original_bytes(tmp_path):
+    """The undo has to be byte exact, or it is another corruption.
+
+    journal.py shared the lossy read, so /revert wrote U+FFFD and LF over
+    whatever the edit had already damaged."""
+    from saturday.tools.files import EditFile
+    from saturday.tools.journal import restore_entry
+
+    p = tmp_path / "crlf.txt"
+    original = b"a x\r\nb\r\n"
+    p.write_bytes(original)
+    EditFile(root=str(tmp_path)).run(
+        {"path": "crlf.txt", "old_string": "x", "new_string": "y"})
+    ok, _ = restore_entry(str(tmp_path), 0, root=str(tmp_path))
+    assert ok
+    assert p.read_bytes() == original
