@@ -5420,3 +5420,32 @@ def test_finish_and_announce_ends_the_run_before_publishing():
 
     assert [k for k, _ in seen] == ["finish", "publish"], "finish_run must come first"
     assert seen[1][1] is False, "the runtime must be idle when the client is told"
+
+
+def test_rename_survives_the_metadata_sidecar(tmp_path):
+    """Renaming rewrote line 1 of the .jsonl and the sidecar won.
+
+    _meta_for_path prefers .meta.json, which auto-titling creates by default,
+    so a rename written only into the transcript was silently discarded - and
+    the rewrite happened outside _append_lock, so it could also drop an append
+    landing at the same moment."""
+    from saturday.sessions import SessionStore
+
+    store = SessionStore(root=str(tmp_path))
+    sid = store.create({"task": "original"})
+    store.set_task(sid, "auto title")            # sidecar now exists
+
+    def title_of():
+        return next(r["task"] for r in store.list_sessions() if r["id"] == sid)
+
+    # what the handler used to do, by hand
+    p = store._path(sid)
+    lines = p.read_text(encoding="utf-8").splitlines()
+    meta = json.loads(lines[0])
+    meta["task"] = "renamed by hand"
+    lines[0] = json.dumps(meta)
+    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    assert title_of() == "auto title", "the sidecar wins - this is why the rename vanished"
+
+    assert store.set_task(sid, "renamed properly") is True
+    assert title_of() == "renamed properly"

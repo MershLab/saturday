@@ -3344,13 +3344,16 @@ class Handler(BaseHTTPRequestHandler):
         if not p.is_file():
             self._send_json({"error": "unknown session"}, 404)
             return
+        # store.set_task goes through _update_meta, which holds _append_lock and
+        # writes the .meta.json sidecar. Rewriting line 1 of the .jsonl by hand
+        # did neither: _meta_for_path prefers the sidecar, which auto-titling
+        # creates by default, so the rename was silently lost - and the unlocked
+        # rewrite could drop an append landing at the same moment.
         try:
-            lines = p.read_text(encoding="utf-8").splitlines()
-            meta = json.loads(lines[0])
-            meta["task"] = title
-            lines[0] = json.dumps(meta, ensure_ascii=False)
-            p.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        except (OSError, json.JSONDecodeError, IndexError) as exc:
+            if not app.store.set_task(sid, title):
+                self._send_json({"error": "unknown session"}, 404)
+                return
+        except OSError as exc:
             self._send_json({"error": f"{type(exc).__name__}: {exc}"}, 500)
             return
         self._send_json({"ok": True, "title": title})
