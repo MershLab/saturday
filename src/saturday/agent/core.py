@@ -1,4 +1,5 @@
 from __future__ import annotations
+import json
 
 from typing import Callable
 
@@ -285,9 +286,19 @@ class Agent:
                 export = getattr(tool, "export_state", None)
                 if callable(export):
                     try:
-                        tool_states[name] = export() or {}
-                    except Exception:
-                        pass
+                        state = export() or {}
+                        # A tool can raise here and be skipped, but one that
+                        # RETURNS something json cannot encode used to take
+                        # every checkpoint for the whole run down with it, and
+                        # silently: save_checkpoint raised TypeError and the
+                        # only handler downstream caught OSError. Prove it
+                        # encodes here, where the cost is one tool's state.
+                        json.dumps(state)
+                        tool_states[name] = state
+                    except Exception as exc:
+                        self.warnings.append(
+                            f"checkpoint: skipping state for tool '{name}': {type(exc).__name__}: {exc}"
+                        )
         except Exception:
             pass
         memory_items = [
@@ -650,16 +661,27 @@ class Agent:
                 base_checkpoint(messages)
             try:
                 self.session_store.save_checkpoint(sid, messages, meta=self._checkpoint_meta())
-            except OSError as exc:
+            except Exception as exc:
                 # Persistence loss must not kill the run, but staying silent
-                # meant invisible resume gaps; surface once per session.
+                # meant invisible resume gaps; surface once per session. Not
+                # just OSError: a value json cannot encode raises TypeError,
+                # which fell through to the loop's bare except and stopped
+                # checkpointing for the rest of the run with nothing said.
                 if not self._persist_warned:
                     self._persist_warned = True
-                    self.warnings.append(f"checkpoint persistence failed: {exc}")
+                    self.warnings.append(
+                        f"checkpoint persistence failed: {type(exc).__name__}: {exc}"
+                    )
 
         hooks.on_checkpoint = persist_checkpoint
         loop.hooks = hooks
         traj = loop.run(sysprompt, task, initial_history=initial_history, attachments=attachments)
+        # a checkpoint hook that failed is recorded rather than raised, so the
+        # run survives - but it has to be said, or a resume later finds
+        # nothing and there is nothing to explain why
+        if loop.checkpoint_error and not self._persist_warned:
+            self._persist_warned = True
+            self.warnings.append(f"checkpointing failed: {loop.checkpoint_error}")
         # carry calibration forward to the next run in this process
         self._meter_state = loop.meter_state
 

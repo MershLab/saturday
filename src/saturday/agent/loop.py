@@ -161,6 +161,8 @@ class AgentLoop:
         self.memory = memory or WorkingMemory()
         self.hooks = hooks or LoopHooks()
         self.keep_reasoning_in_history = keep_reasoning_in_history
+        # first checkpoint hook failure, if any (see _emit_checkpoint)
+        self.checkpoint_error: str | None = None
         self.summarizer = summarizer
         self.injection_guard = bool(injection_guard)
         # hard spend policy: stop_reason="budget" when cumulative tokens cross
@@ -552,12 +554,16 @@ class AgentLoop:
         return traj
 
     def _emit_checkpoint(self, history: list[dict]) -> None:
+        """Checkpointing must never take the run down, but it must not vanish
+        either: this swallowed everything, so a hook that failed on step one
+        left the run with no checkpoints and no sign of why."""
         if self.hooks.on_checkpoint is None:
             return
         try:
             self.hooks.on_checkpoint([dict(m) for m in history])
-        except Exception:
-            pass
+        except Exception as exc:
+            if self.checkpoint_error is None:
+                self.checkpoint_error = f"{type(exc).__name__}: {exc}"
 
     def _execute_calls(self, calls):
         blocked: dict[int, ToolResult] = {}

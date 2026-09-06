@@ -3336,3 +3336,53 @@ def test_a_complete_tool_call_is_still_run_when_the_text_was_truncated(tmp_path)
     traj = AgentLoop(model, reg, max_steps=4).run("sys", "ping it")
     assert ran == [{}], "a complete call was thrown away"
     assert traj.final_answer == "done"
+
+
+def test_a_checkpoint_that_cannot_be_saved_says_so(tmp_path):
+    """C16: the only handler caught OSError, so a tool returning something
+    json cannot encode raised TypeError, fell through to a bare `except
+    Exception: pass` in the loop, and stopped checkpointing for the whole run
+    with nothing said anywhere."""
+    from saturday.agent.loop import AgentLoop, LoopHooks
+    from saturday.tools.base import ToolRegistry
+    from fakes import make_scripted_model
+
+    def explode(messages):
+        raise TypeError("Object of type socket is not JSON serializable")
+
+    loop = AgentLoop(make_scripted_model([{"content": "done"}]), ToolRegistry(),
+                     max_steps=3, hooks=LoopHooks(on_checkpoint=explode))
+    traj = loop.run("sys", "go")
+
+    assert traj.final_answer == "done", "a failed checkpoint must not fail the run"
+    assert loop.checkpoint_error and "TypeError" in loop.checkpoint_error
+
+
+def test_one_unserialisable_tool_does_not_stop_every_checkpoint(tmp_path):
+    """A tool that RETURNS an unencodable state used to take every checkpoint
+    for the whole run down with it. Its state is skipped, by name, and the
+    rest of the snapshot is saved."""
+    from saturday.agent.core import Agent
+    from saturday.config import AgentConfig
+
+    class Rogue:
+        name = "rogue"
+        description = "d"
+        parameters = {"type": "object", "properties": {}}
+
+        def run(self, args):
+            return True, "ok"
+
+        def export_state(self):
+            return {"sock": object()}
+
+    cfg = AgentConfig(workspace_root=str(tmp_path))
+    agent = Agent(cfg=cfg)
+    agent._build_registry()
+    agent.registry.register(Rogue())
+
+    meta = agent._checkpoint_meta()
+    json.dumps(meta)  # the whole snapshot must still encode
+    assert "rogue" not in meta["tools"]
+    assert any("rogue" in w for w in agent.warnings), agent.warnings
+    assert "journal_len" in meta and "memory" in meta, "the rest of the snapshot was lost"
