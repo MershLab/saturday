@@ -5601,3 +5601,44 @@ def test_finish_run_will_not_end_a_run_it_no_longer_owns(tmp_path):
 
     rt.finish_run(rt.run_generation)
     assert not rt.busy
+
+
+def test_evicting_a_runtime_unregisters_its_attention_sink(tmp_path):
+    """MAX_RUNTIMES popped the dict entry and freed nothing.
+
+    _install_attention_sink registers a closure over rt in the process-wide
+    attention._sinks, which nothing removed, so the runtime stayed reachable
+    through rt -> agent -> registry and rt -> bus, and every retrieval event
+    was still fanned out to every dead session's sink."""
+    from saturday import attention
+
+    app = make_app(tmp_path, [{"text": "hi"}])
+    before = len(attention._sinks)
+    monkeypatched_cap = 4
+    app.MAX_RUNTIMES = monkeypatched_cap
+
+    sids = [app.store.create({"task": f"t{i}"}) for i in range(monkeypatched_cap * 2)]
+    for sid in sids:
+        app.runtime_for(sid)
+
+    assert len(app.runtimes) <= monkeypatched_cap, "eviction did not run"
+    live = {id(rt._attn_sink) for rt in app.runtimes.values() if rt._attn_sink}
+    leaked = len(attention._sinks) - before - len(live)
+    assert leaked == 0, f"{leaked} sink(s) outlived their runtime"
+
+
+def test_deleting_a_session_unregisters_its_attention_sink(tmp_path):
+    """Same leak by the other route out of the runtimes map."""
+    from saturday import attention
+
+    app = make_app(tmp_path, [{"text": "hi"}])
+    before = len(attention._sinks)
+    with _Server(app) as srv:
+        sid = app.store.create({"task": "t"})
+        app.runtime_for(sid)
+        assert len(attention._sinks) == before + 1
+
+        status, body = _req(srv.base, f"/api/session/{sid}", "DELETE")
+        assert status == 200, body
+
+    assert len(attention._sinks) == before, "the deleted session's sink is still registered"

@@ -898,6 +898,25 @@ class AppState:
         )
         for stale in idle[: len(self.runtimes) - self.MAX_RUNTIMES + 1]:
             self.runtimes.pop(stale.sid, None)
+            self.retire_runtime(stale)
+
+    @staticmethod
+    def retire_runtime(rt) -> None:
+        """Drop the process-wide references a runtime leaves behind.
+
+        Dropping the dict entry was not enough: _install_attention_sink
+        registers a closure over rt in attention._sinks, which nothing removed,
+        so an evicted or deleted runtime stayed reachable through
+        rt -> agent -> registry and rt -> bus buffer, and every retrieval event
+        was still fanned out to it. MAX_RUNTIMES freed nothing on a long lived
+        server, and the per-emit work grew with every session ever opened."""
+        sink = getattr(rt, "_attn_sink", None)
+        if sink is None:
+            return
+        from saturday import attention
+
+        attention.remove_sink(sink)
+        rt._attn_sink = None
 
     def _new_agent(self, cfg):
         from saturday.agent.core import Agent
@@ -1954,6 +1973,8 @@ class Handler(BaseHTTPRequestHandler):
             rts = list(app.runtimes.values())
             app.runtimes.clear()
         for rt in rts:
+            app.retire_runtime(rt)
+        for rt in rts:
             if rt.busy:
                 rt.request_stop()
                 rt.approver.cancel_pending("all sessions cleared")
@@ -1991,6 +2012,7 @@ class Handler(BaseHTTPRequestHandler):
         with app.runtimes_lock:
             rt = app.runtimes.pop(sid, None)
         if rt is not None:
+            app.retire_runtime(rt)
             was_busy = rt.busy
             if was_busy:
                 rt.request_stop()
