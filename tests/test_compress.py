@@ -118,3 +118,32 @@ def test_an_oversized_tool_result_reaches_the_model_compressed(tmp_path):
     assert "1 failed, 9000 passed" in body
     assert "KeyError" in body
     assert body.count("PASSED") < raw_lines
+
+
+def test_a_single_oversized_line_keeps_its_ends():
+    """One long line is the normal shape of real tool output.
+
+    `_budget_slice` takes whole lines, so a line longer than its share of the
+    budget yielded an empty head and an empty tail and was then never kept: an
+    80k character one-line JSON became a 95 character note that claimed "ends
+    kept" while keeping none of it. web_fetch bodies, lockfiles, minified
+    bundles and long log lines all have this shape, and no test covered it."""
+    import json
+
+    from saturday.compress import compress
+
+    blob = json.dumps({"items": [{"id": i, "name": f"thing-{i}"} for i in range(2000)]})
+    assert "\n" not in blob and len(blob) > 60_000
+
+    out = compress(blob, budget=4000)
+    assert len(out) <= 4000, "must respect the caller's budget"
+    assert "thing-0" in out, "the head of the line must survive"
+    assert "thing-1999" in out, "the tail of the line must survive"
+    assert "elided" in out, "the elision must be disclosed, not implied"
+
+
+def test_a_short_single_line_is_returned_whole():
+    """The fallback must not trigger when the line already fits."""
+    from saturday.compress import compress
+
+    assert compress("just a short line", budget=4000) == "just a short line"

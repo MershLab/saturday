@@ -128,6 +128,17 @@ def compress(text: str, budget: int) -> str:
         return joined + note if len(joined) + len(note) <= budget else joined
 
     head, tail, used = _budget_slice(lines, budget)
+    if not head and not tail:
+        # No line fits whole, so the line-based path keeps nothing and the note
+        # below claims "ends kept" while keeping none. One long line is the
+        # normal shape of a web_fetch body, a lockfile, a minified bundle or a
+        # single log line, so slice characters instead of lines.
+        keep_head = max(1, int(budget * HEAD_SHARE))
+        keep_tail = max(1, int(budget * TAIL_SHARE))
+        marker = f"\n... [{len(joined) - keep_head - keep_tail} chars elided from one long line]\n"
+        if keep_head + keep_tail + len(marker) >= len(joined):
+            return joined[:budget]
+        return joined[:keep_head] + marker + joined[-keep_tail:]
     middle = lines[len(head):len(lines) - len(tail)] if tail else lines[len(head):]
     if not middle:
         # keep the END when forced to choose, the opposite of a head cut
