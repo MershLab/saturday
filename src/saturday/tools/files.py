@@ -5,6 +5,13 @@ from pathlib import Path
 
 from saturday.tools.base import Tool
 
+# Deliberately BELOW AgentLoop.TOOL_RESULT_MAX_CHARS (48k). Above that the loop
+# compresses a tool result by removing its middle, so a read that exceeded it
+# reached the model as a file with an unmarked hole in it. Staying under the
+# limit means a read is never compressed and the only elision is read_file's
+# own, which says where it cut and how to continue. (T12)
+READ_MAX_CHARS = 40_000
+
 IGNORED_DIRS = {".git", ".saturday", "node_modules", "__pycache__", ".venv", "venv", ".mypy_cache", ".pytest_cache", "dist", "build", ".idea", ".vscode"}
 
 
@@ -319,9 +326,27 @@ class ReadFile(Tool):
         offset = max(int(args.get("offset") or 1), 1)
         limit = int(args.get("limit") or 2000)
         window = lines[offset - 1 : offset - 1 + limit]
-        numbered = "\n".join(f"{offset + i}: {line}" for i, line in enumerate(window))
-        if len(numbered) > 60_000:
-            numbered = numbered[:60_000] + "\n... [truncated]"
+        rendered = [f"{offset + i}: {line}" for i, line in enumerate(window)]
+        numbered = "\n".join(rendered)
+        if len(numbered) > READ_MAX_CHARS:
+            # T12: this capped at 60k while the loop compresses any tool
+            # payload above 48k, and compress() takes the MIDDLE out. A file
+            # between those two sizes arrived with a hole in it, unmarked, and
+            # the model edited against it believing it had seen the whole
+            # thing. Cutting below the loop's threshold means a read is never
+            # compressed, so the only elision is this one - on a line
+            # boundary, named, and resumable.
+            kept, used = [], 0
+            for line in rendered:
+                if used + len(line) + 1 > READ_MAX_CHARS:
+                    break
+                kept.append(line)
+                used += len(line) + 1
+            next_line = offset + len(kept)
+            numbered = "\n".join(kept) + (
+                f"\n... [truncated at line {next_line - 1} of {len(lines)}; "
+                f"continue with offset={next_line}]"
+            )
         return True, numbered or "(empty file)"
 
 

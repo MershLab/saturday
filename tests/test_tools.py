@@ -4560,3 +4560,46 @@ def test_a_failing_user_hook_is_not_silent(capsys):
     assert "blocked by user hook" in (make_pre_tool_hook(["exit 2"])("shell", {}) or "")
     quiet = make_pre_tool_hook(["true"])
     assert quiet("shell", {}) is None and not quiet.warnings
+
+
+def test_a_large_read_is_never_silently_compressed_by_the_loop(tmp_path):
+    """T12: read_file capped at 60k while the loop compresses any tool payload
+    above 48k, and compress() takes the MIDDLE out. A file between those two
+    sizes reached the model with an unmarked hole in it, and the model edited
+    against it believing it had seen the whole thing."""
+    from saturday.agent.loop import TOOL_RESULT_MAX_CHARS
+    from saturday.compress import compress
+    from saturday.tools.files import READ_MAX_CHARS, ReadFile
+
+    assert READ_MAX_CHARS < TOOL_RESULT_MAX_CHARS, \
+        "the read cap must stay below the loop's compression threshold"
+
+    # a file that lands in the old danger band
+    big = tmp_path / "big.py"
+    big.write_text("\n".join(f"line {i} " + "x" * 60 for i in range(900)), encoding="utf-8")
+
+    ok, out = ReadFile(root=str(tmp_path)).run({"path": "big.py"})
+    assert ok
+    assert len(out) <= READ_MAX_CHARS + 200, f"read returned {len(out)} chars"
+    assert compress(out, TOOL_RESULT_MAX_CHARS) == out, "the loop would still compress this read"
+
+    # the elision is named and resumable, not silent
+    assert "[truncated at line" in out and "continue with offset=" in out
+    nxt = int(out.rsplit("offset=", 1)[1].rstrip("]\n"))
+    assert nxt > 1
+
+    # and continuing from that offset really does pick up where it stopped
+    last_kept = [ln for ln in out.splitlines() if ln and ln[0].isdigit()][-1]
+    assert last_kept.startswith(f"{nxt - 1}: ")
+    ok2, out2 = ReadFile(root=str(tmp_path)).run({"path": "big.py", "offset": nxt})
+    assert ok2 and out2.startswith(f"{nxt}: "), out2[:60]
+
+
+def test_a_small_read_is_returned_whole_and_unmarked(tmp_path):
+    from saturday.tools.files import ReadFile
+
+    p = tmp_path / "small.py"
+    p.write_text("a = 1\nb = 2\nc = 3\n", encoding="utf-8")
+    ok, out = ReadFile(root=str(tmp_path)).run({"path": "small.py"})
+    assert ok and "truncated" not in out
+    assert out.splitlines() == ["1: a = 1", "2: b = 2", "3: c = 3"]
