@@ -4,7 +4,7 @@
 
 A SOTA open agentic harness distilled from two lineages: DeepSeek's agent-harness research (explicit reasoning traces, verifiable rewards, trajectory export for RL/SFT) and Nous Research's Hermes agent & function-calling protocols. Zero-dependency core, Python 3.10+. Since v0.3: **MCP-native, durably checkpointed**. Since v0.4: **web search + text browser, vision attachments, skills learning loop**. Since v0.5: **computer use (background-safe), 16 providers, interactive console app**. Since v0.6: **context breakdown panel, 19 Omarchy themes, personal assistant mode, destructive-action guardrails with DB auto-backup, cross-chat search, onboarding wizard**. Since v0.8: **provenance marking (GB 45438-2025 / EU AI Act), post-edit verify hooks, per-action approval memory, usage metrics + /metrics, `saturday init`, export compression, competitive-parity UI — @-file mentions, edit-&-resend/branch-from-message, Ctrl+F in-chat search, per-edit journal restore, in-session cost, custom slash commands, schedules UI**.
 
-**Why it's different:** `pipx install saturday` and you have a full agent — 26 tools, computer use, MCP, evals, four UIs (terminal, web, desktop, Telegram) — with no Docker, no Node, no 24 GB RAM requirement. Heavy agent platforms got heavy; Saturday stayed a tool you can read the entire source of in an afternoon.
+**Why it's different:** one install and you have a full agent — computer use, MCP, evals, four UIs (terminal, web, desktop, Telegram), and a tool set you can list with `saturday tools` — with no Docker, no Node, no 24 GB RAM requirement. Heavy agent platforms got heavy; Saturday's core is stdlib-only and every layer is meant to be read, not just trusted.
 
 ```
            _                 _
@@ -63,14 +63,17 @@ Verified live: drove Calculator (7×6=42) and Notepad entirely in the background
 `claude` or `codex`:
 
 ```sh
-pipx install saturday      # or: uv tool install saturday / pip install saturday
+pipx install git+https://github.com/MershLab/saturday.git
 saturday                   # start the REPL
 saturday app               # launch the desktop web UI
 ```
 
 Requires Python 3.10+ only. The core is stdlib-only (zero third-party
-dependencies), so `pipx run saturday` also works without installing. Upgrades
-via `pipx upgrade saturday`.
+dependencies).
+
+> **Not yet on PyPI.** The name `saturday` there belongs to an unrelated
+> package (a nutrition API SDK), so `pipx install saturday` installs the wrong
+> software. Install from the repository until a published name is settled.
 
 **Desktop app** — prebuilt per-OS installers from
 [Releases](../../releases) (no Python or runtime needed; built for every push

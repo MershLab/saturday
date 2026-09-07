@@ -2080,3 +2080,39 @@ def test_tools_listing_matches_the_registry_a_run_actually_builds(tmp_path, monk
         f"runs but never listed: {sorted(running - listed)}"
     )
     assert listed, "the tools listing is empty"
+
+
+def test_the_readme_does_not_state_a_tool_count_that_can_go_stale():
+    """H1: the README claimed "26 tools" while `saturday tools` reported a
+    different number. A hardcoded count in prose has no way to stay true - it
+    drifted silently as tools were added and the platform gating changed.
+
+    This does not pin a number; it refuses one. If a count is reintroduced it
+    has to match a registry that varies by platform and persona, which is the
+    problem that produced the wrong number in the first place."""
+    import re
+    from pathlib import Path
+
+    readme = (Path(__file__).parent.parent / "README.md").read_text(encoding="utf-8")
+    claims = re.findall(r"\b(\d+)\s+(?:built-in\s+)?tools\b", readme)
+    assert not claims, (
+        f"README states a hardcoded tool count {claims}; it goes stale as tools "
+        "are added or platform gating changes. Point at `saturday tools` instead."
+    )
+
+
+def test_the_readme_does_not_tell_people_to_install_the_wrong_package():
+    """The PyPI name `saturday` belongs to an unrelated nutrition API SDK, so
+    `pipx install saturday` fetches someone else's software. Verified against
+    PyPI: version 0.5.0, "Saturday Nutrition Intelligence API"."""
+    import re
+    from pathlib import Path
+
+    readme = (Path(__file__).parent.parent / "README.md").read_text(encoding="utf-8")
+    # the warning note names the command on purpose; every OTHER occurrence
+    # would be an actual instruction to run it
+    instructions = [
+        line for line in readme.splitlines()
+        if re.search(r"^\s*(pipx|pip|uv tool)\s+install\s+saturday\s*$", line.split("#")[0])
+    ]
+    assert not instructions, f"README still instructs installing the wrong package: {instructions}"
