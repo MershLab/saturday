@@ -4603,3 +4603,60 @@ def test_a_small_read_is_returned_whole_and_unmarked(tmp_path):
     ok, out = ReadFile(root=str(tmp_path)).run({"path": "small.py"})
     assert ok and "truncated" not in out
     assert out.splitlines() == ["1: a = 1", "2: b = 2", "3: c = 3"]
+
+
+def test_pruning_the_journal_does_not_read_it_on_every_edit(tmp_path, monkeypatch):
+    """T13: _prune ran after EVERY edit and began by reading the whole
+    journal. A journal of MAX_ENTRIES snapshots at MAX_BEFORE_CHARS each is
+    ~100 MB, so that was a 100 MB read charged to every write_file."""
+    import json
+    from pathlib import Path
+
+    from saturday.tools import journal as J
+
+    jp = J.journal_path(tmp_path)
+    jp.parent.mkdir(parents=True, exist_ok=True)
+    jp.write_text(json.dumps({"ts": 1, "tool": "write_file", "path": "a.py",
+                              "existed": True, "eol": "\n"}) + "\n", encoding="utf-8")
+
+    reads = []
+    real = Path.read_text
+    monkeypatch.setattr(Path, "read_text",
+                        lambda self, *a, **k: (reads.append(self), real(self, *a, **k))[1])
+
+    for _ in range(50):
+        J._prune(jp)
+    assert not [p for p in reads if p == jp], "the journal is still read on every edit"
+
+
+def test_the_journal_stays_bounded_by_entries_and_by_bytes(tmp_path):
+    """The entry count alone let a journal of large snapshots sit at ~100 MB,
+    so bytes are bounded too. Both caps still bite."""
+    import json
+
+    from saturday.tools import journal as J
+
+    # past the byte cap
+    jp = J.journal_path(tmp_path)
+    jp.parent.mkdir(parents=True, exist_ok=True)
+    with jp.open("w", encoding="utf-8") as fh:
+        for i in range(400):
+            fh.write(json.dumps({"ts": i, "before": "x" * 120_000}) + "\n")
+    assert jp.stat().st_size > J.MAX_JOURNAL_BYTES
+    J._prune(jp)
+    assert jp.stat().st_size <= J.MAX_JOURNAL_BYTES, "the byte cap did not bite"
+    assert sum(1 for _ in jp.open(encoding="utf-8")) > 1, "it pruned down to nothing"
+
+    # past the entry cap
+    other = tmp_path / "other"
+    jp2 = J.journal_path(other)
+    jp2.parent.mkdir(parents=True, exist_ok=True)
+    with jp2.open("w", encoding="utf-8") as fh:
+        for i in range(900):
+            fh.write(json.dumps({"ts": i, "before": "y" * 3_000}) + "\n")
+    J._prune(jp2)
+    assert sum(1 for _ in jp2.open(encoding="utf-8")) == J.MAX_ENTRIES
+
+    # the newest entries are the ones kept
+    last = json.loads(list(jp2.open(encoding="utf-8"))[-1])
+    assert last["ts"] == 899

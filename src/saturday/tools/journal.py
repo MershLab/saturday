@@ -73,11 +73,38 @@ def record_edit(workspace_root: str | Path, tool: str, path: str) -> None:
         pass  # journaling must never break the edit itself
 
 
+# A journal of MAX_ENTRIES snapshots at MAX_BEFORE_CHARS each is ~100 MB, and
+# _prune ran after EVERY edit and began by reading the whole file. That is a
+# 100 MB read charged to every write_file. A stat is enough to know the common
+# case needs nothing; only a journal past this size is read at all. (T13)
+PRUNE_SCAN_ABOVE_BYTES = 2_000_000
+MAX_JOURNAL_BYTES = 32_000_000
+
+
 def _prune(jp: Path) -> None:
     try:
+        if jp.stat().st_size <= PRUNE_SCAN_ABOVE_BYTES:
+            return  # far below every bound; nothing to read, nothing to do
+    except OSError:
+        return
+    try:
         lines = jp.read_text(encoding="utf-8").splitlines()
-        if len(lines) > MAX_ENTRIES:
-            jp.write_text("\n".join(lines[-MAX_ENTRIES:]) + "\n", encoding="utf-8")
+    except OSError:
+        return
+    kept = lines[-MAX_ENTRIES:] if len(lines) > MAX_ENTRIES else list(lines)
+    # bytes matter as much as the entry count: the count alone let a journal
+    # of large snapshots sit at ~100 MB and be re-read on every edit
+    total = sum(len(ln.encode("utf-8")) + 1 for ln in kept)
+    while len(kept) > 1 and total > MAX_JOURNAL_BYTES:
+        total -= len(kept.pop(0).encode("utf-8")) + 1
+    if len(kept) == len(lines):
+        return  # nothing to drop; do not rewrite the file for nothing
+    try:
+        # atomic: a torn write here does not lose one entry, it loses the
+        # whole undo history
+        tmp = jp.with_name(f".{jp.name}.tmp{os.getpid()}")
+        tmp.write_text("\n".join(kept) + "\n", encoding="utf-8")
+        os.replace(tmp, jp)
     except OSError:
         pass
 
