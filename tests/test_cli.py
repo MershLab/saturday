@@ -1278,10 +1278,16 @@ def test_registry_identical_across_modes():
     agent_names = _names(_agent())
     assistant_names = _names(_agent(persona_mode="assistant"))
     assert agent_names == assistant_names
-    # the world-acting tools must all be present in assistant mode
-    for must in ("shell", "python", "pointer", "keyboard", "ui_invoke", "app_open",
+    # the world-acting tools must all be present in assistant mode.
+    # ui_invoke is deliberately NOT in this list: it is UIA, so it exists only
+    # on Windows (T19), and asserting it here would be a platform claim rather
+    # than the mode claim this test is about. Parity is what matters, and the
+    # equality above already covers it - whatever the platform offers, both
+    # modes offer the same.
+    for must in ("shell", "python", "pointer", "keyboard", "app_open",
                  "screen", "web_search", "browser", "write_file", "memory", "todo"):
         assert must in assistant_names, must
+    assert ("ui_invoke" in agent_names) == ("ui_invoke" in assistant_names)
 
 
 def test_assistant_prompt_outcome_focused_and_non_intrusive():

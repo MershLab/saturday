@@ -3622,3 +3622,57 @@ def test_the_prompt_asks_for_read_before_edit():
     lowered = HERMES_PREAMBLE.lower()
     assert "read a file before you change it" in lowered
     assert "prefer edit_file over write_file" in lowered
+
+
+def test_ui_invoke_is_not_offered_where_it_cannot_work(tmp_path, monkeypatch):
+    """T19, the verifiable half. ui_invoke is UIA and UIA is Windows; its
+    macOS/Linux backend is a one-line refusal. It was registered on every
+    platform anyway, so ~100 tokens of schema shipped on every step for a
+    tool that could only fail - and the computer-use prompt recommended it in
+    two places, one calling it "most reliable", so the model spent turns on
+    it before finding out.
+
+    Registration and the prompt now agree with the platform."""
+    import saturday.plugins as plugins
+    from saturday.config import AgentConfig
+    from saturday.plugins import core_plugin, install_plugins
+    from saturday.prompts.system import build_computer_use_section
+    from saturday.tools.base import ToolRegistry
+
+    def build(supported):
+        monkeypatch.setattr(plugins, "ui_invoke_supported", lambda: supported)
+        reg = ToolRegistry()
+        install_plugins(reg, [core_plugin(AgentConfig(workspace_root=str(tmp_path)))], [])
+        return reg
+
+    reg = build(False)
+    assert "ui_invoke" not in reg.names(), "still registered where it cannot work"
+    assert "ui_invoke" not in build_computer_use_section(reg)
+    assert "ui_invoke" not in build_computer_use_section(reg, background_only=True), \
+        "background mode still recommends it"
+
+    reg = build(True)
+    assert "ui_invoke" in reg.names(), "Windows must still get it"
+    assert "ui_invoke" in build_computer_use_section(reg)
+    assert "ui_invoke" in build_computer_use_section(reg, background_only=True)
+
+
+def test_dropping_ui_invoke_does_not_break_the_computer_use_protocol(tmp_path, monkeypatch):
+    """The section is built by string substitution now; check it still reads
+    as a complete protocol on the platform that loses a step."""
+    import saturday.plugins as plugins
+    from saturday.config import AgentConfig
+    from saturday.plugins import core_plugin, install_plugins
+    from saturday.prompts.system import build_computer_use_section
+    from saturday.tools.base import ToolRegistry
+
+    monkeypatch.setattr(plugins, "ui_invoke_supported", lambda: False)
+    reg = ToolRegistry()
+    install_plugins(reg, [core_plugin(AgentConfig(workspace_root=str(tmp_path)))], [])
+
+    for section in (build_computer_use_section(reg),
+                    build_computer_use_section(reg, background_only=True)):
+        assert section, "the protocol section vanished entirely"
+        assert "{invoke" not in section, "an unsubstituted placeholder leaked into the prompt"
+        assert "pointer" in section and "keyboard" in section
+        assert "VERIFY" in section or "VERIFY:" in section

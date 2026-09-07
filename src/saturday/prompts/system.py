@@ -149,6 +149,12 @@ def build_computer_use_section(registry: ToolRegistry, background_only: bool = F
     names = set(getattr(registry, "names", lambda: [])())
     if "ui_tree" not in names or "pointer" not in names:
         return ""
+    # ui_invoke has a UIA backend on Windows and a one-line refusal stub
+    # everywhere else, yet this section recommended it in two places and
+    # called it "most reliable". On macOS and Linux the model followed that
+    # and burned a turn on a tool that cannot work. Name it only where it is
+    # registered. (T19)
+    has_invoke = "ui_invoke" in names
     if background_only:
         return """# Computer use protocol (BACKGROUND MODE — the user is actively working)
 The user's cursor, keyboard and foreground window are off-limits — do not steal them.
@@ -156,13 +162,15 @@ Window-targeted input IS available and never disturbs the user:
 1. DISCOVER: `window action=list` then `ui_tree scope=win:<title substring>` to read a background window's elements.
 2. READ: `screen capture_window=<title>` grabs an occluded window's pixels without raising it.
 3. ACT — prefer in this order:
-   a. `ui_invoke action=press|toggle|select|set_text ... window=<title>` (accessibility patterns; most reliable).
-   b. `pointer action=click x,y window=<title>` — clicks land inside that window via window messages; your cursor/focus are untouched. x,y are SCREEN pixels (ui_tree landmarks work as usual).
+{invoke_step}   b. `pointer action=click x,y window=<title>` — clicks land inside that window via window messages; your cursor/focus are untouched. x,y are SCREEN pixels (ui_tree landmarks work as usual).
    c. `keyboard action=type text=... window=<title>` — types into the window's text control via window messages (plain text + Enter; modifier combos may be ignored by some apps).
    d. `clipboard` set + the app's Paste control if ValuePattern is unavailable.
 4. LAUNCH: `app_open target=<app>` starts minimized without stealing focus.
 5. VERIFY: re-run `ui_tree scope=win:` or capture_window after each mutation.
-If neither an accessibility pattern nor window-targeted input can reach a control, report the limitation instead of disturbing the user."""
+If neither an accessibility pattern nor window-targeted input can reach a control, report the limitation instead of disturbing the user.""".replace(
+            "{invoke_step}",
+            "   a. `ui_invoke action=press|toggle|select|set_text ... window=<title>` "
+            "(accessibility patterns; most reliable).\n" if has_invoke else "")
     return """# Computer use protocol
 You can see and operate the real screen. Follow this loop exactly:
 1. PERCEIVE: call `window action=list` then `ui_tree scope=foreground` for exact element positions, or `screen annotate=marked` when pixels matter more than structure. Never guess coordinates from memory.
@@ -170,8 +178,9 @@ You can see and operate the real screen. Follow this loop exactly:
 3. ACT: prefer `pointer` with target=<landmark id>; use raw x,y only if no landmark exists. Type via `keyboard` (Ctrl+A/Ctrl+C/V work; large text: `clipboard` set + Ctrl+V).
 4. VERIFY: re-run `ui_tree` or take another screenshot to confirm the effect before moving on.
 5. REMEMBER: landmark ids persist between calls; reuse them instead of rescanning every step.
-Prefer non-intrusive alternatives when the user may be working: `ui_invoke` acts without mouse/focus, `pointer`/`keyboard` accept `window=<title>` for background delivery (no cursor/keyboard theft), `capture_window` reads occluded windows.
-If a pointer/keyboard/clipboard action is blocked with 'AWAITING APPROVAL', the human must approve it; do not retry the same call, explain what needs approval instead."""
+Prefer non-intrusive alternatives when the user may be working: {invoke_hint}`pointer`/`keyboard` accept `window=<title>` for background delivery (no cursor/keyboard theft), `capture_window` reads occluded windows.
+If a pointer/keyboard/clipboard action is blocked with 'AWAITING APPROVAL', the human must approve it; do not retry the same call, explain what needs approval instead.""".replace(
+        "{invoke_hint}", "`ui_invoke` acts without mouse/focus, " if has_invoke else "")
 
 
 def build_system_prompt_parts(

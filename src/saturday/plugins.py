@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -52,6 +53,15 @@ def install_plugins(registry: ToolRegistry, plugins: list[Plugin], persona_out: 
         seen.add(plugin.name)
         plugin.register(registry)
         persona_out.extend(plugin.persona_sections)
+
+
+def ui_invoke_supported() -> bool:
+    """Whether ui_invoke has a real backend on this platform.
+
+    UIA is Windows. Named rather than inlined so a test can ask for the other
+    platform without patching os.name globally, which breaks pathlib.
+    """
+    return os.name == "nt"
 
 
 def _core_tools(cfg) -> list[Tool]:
@@ -128,7 +138,12 @@ def _core_tools(cfg) -> list[Tool]:
     tools.append(KeyboardTool())
     tools.append(WindowTool())
     tools.append(ClipboardTool())
-    tools.append(UiInvokeTool(restore_focus_after=bool(getattr(cfg, "desktop_background_only", False))))
+    # ui_invoke is UIA, and UIA is Windows. Its macOS/Linux backend is a
+    # one-line refusal, so registering it elsewhere shipped ~100 tokens of
+    # schema every step for a tool that could only ever fail - and the
+    # computer-use prompt recommended it, so the model spent turns on it. (T19)
+    if ui_invoke_supported():
+        tools.append(UiInvokeTool(restore_focus_after=bool(getattr(cfg, "desktop_background_only", False))))
     tools.append(AppOpenTool())
     tools.append(UiTextTool(landmarks=landmarks))
 
