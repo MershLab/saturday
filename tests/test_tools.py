@@ -4869,7 +4869,18 @@ def test_killing_a_background_job_takes_its_whole_tree(tmp_path):
     assert kids, "the job never started a grandchild to orphan"
 
     assert job.kill() is True
-    time.sleep(0.4)
+
+    # poll, do not sleep-and-hope: a fixed wait is either slower than it needs
+    # to be or shorter than a loaded machine needs, and this suite already had
+    # one test that failed 100% of the time when its file ran alone for
+    # exactly that reason
+    def _gone(pids):
+        return [p for p in pids if os.path.exists(f"/proc/{p}")]
+
+    deadline = time.time() + 5
+    watch = [job.proc.pid, *kids]
+    while time.time() < deadline and _gone(watch):
+        time.sleep(0.02)
 
     assert not os.path.exists(f"/proc/{job.proc.pid}"), "the shell survived"
     orphans = [k for k in kids if os.path.exists(f"/proc/{k}")]
@@ -4935,3 +4946,41 @@ def test_the_repl_registers_with_the_workspace_root(tmp_path):
     cfg = AgentConfig(workspace_root=str(tmp_path))
     repl = default_registry(cfg)._tools["python"]
     assert repl.root == str(tmp_path), repl.root
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process groups")
+def test_killing_a_job_never_kills_its_own_caller(tmp_path):
+    """Regression: the T6 fix called killpg(getpgid(pid)) unconditionally.
+
+    JobManager.start() gives the child its own group, but a Job can be
+    constructed directly around any Popen - and such a child sits in the
+    CALLER's process group, so killpg SIGKILLed the whole harness. It killed
+    the test runner, which read as exit 137 and was mistaken for an OOM.
+
+    This builds the unsafe shape deliberately: a Popen with no
+    start_new_session, therefore sharing this process's group."""
+    import subprocess
+    import sys
+
+    from saturday.tools.jobs import Job
+
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+    )
+    try:
+        assert os.getpgid(proc.pid) == os.getpgid(0), (
+            "this child was expected to share our group; the test is not "
+            "exercising the dangerous shape any more"
+        )
+        job = Job("shared-group", "sleep", proc)
+
+        # if this kills our group we never reach the next line
+        assert job.kill() is True
+        assert proc.poll() is not None, "the child survived"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+
+    # we are still alive, which is the whole assertion
+    assert os.getpid() > 0

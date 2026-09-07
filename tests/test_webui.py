@@ -380,7 +380,13 @@ def test_stop_cancels_pending_approval(tmp_path: Path):
 
         t = threading.Thread(target=ask, daemon=True)
         t.start()
-        time.sleep(0.15)
+        # wait for the approval to actually be pending rather than guessing an
+        # interval: too short and the stop races the ask, too long and every
+        # run pays for it
+        deadline = time.time() + 5
+        while time.time() < deadline and not rt.approver._pending:
+            time.sleep(0.01)
+        assert rt.approver._pending, "the approval never became pending"
         st, _ = post_json(srv.base, "/api/stop", {"session_id": sid})
         assert st == 200
         t.join(timeout=6)
@@ -643,8 +649,14 @@ def test_delete_busy_session_waits_for_worker(tmp_path: Path):
         rt.busy = False  # worker would finish here in reality
         import time
 
-        time.sleep(0.3)
-        assert not app.store._path(sid).exists(), "zombie session file must not reappear"
+        # watch for a full second instead of sleeping once and looking: the
+        # claim is that the file never comes back, and a single check after a
+        # fixed nap cannot tell "never" from "not yet"
+        path = app.store._path(sid)
+        deadline = time.time() + 1.0
+        while time.time() < deadline:
+            assert not path.exists(), "zombie session file reappeared"
+            time.sleep(0.02)
 
 
 def test_slash_crash_does_not_brick_session(tmp_path: Path):
@@ -1123,7 +1135,11 @@ def test_ui_slash_popup_and_settings_modal(ui_server):
         page.wait_for_selector('.set-pane[data-sec="model"].on', timeout=5000)
 
         page.click("#settingsClose")
-        time.sleep(0.1)
+        # wait on the state, not the clock. state="attached" matters: the
+        # default waits for VISIBLE, and an element that carries .hidden is by
+        # definition never visible, so the default silently waits out its
+        # timeout on the very condition it is meant to confirm.
+        page.wait_for_selector("#settingsModal.hidden", state="attached", timeout=5000)
         assert page.locator("#settingsModal.hidden").count() == 1
         browser.close()
 
