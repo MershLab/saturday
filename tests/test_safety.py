@@ -2586,3 +2586,41 @@ def test_the_new_ask_rules_do_not_fire_on_ordinary_work():
                 "curl http://x -o out.json",
                 "ls"):
         assert not check_command(policy, "shell", {"command": cmd}), f"now asks for: {cmd!r}"
+
+
+def test_a_wildcard_allow_rule_cannot_suppress_a_dangerous_ask():
+    """T14: a saved rule "removes friction, never checks" per its own comment,
+    but a trailing-* rule skipped the dangerous-pattern ask loop, so `git *`
+    silently covered `git push --force`.
+
+    A wildcard is a shape, not a decision about a particular command. An
+    EXACT saved rule still suppresses, because that is a decision the user
+    actually made about that command."""
+    def probe(rules, cmd):
+        policy = ApprovalPolicy.from_mode("ask", allow_rules=rules)
+        return check_command(policy, "shell", {"command": cmd}, guardrails=True)
+
+    assert probe(["git *"], "git push --force origin main"), "git * still covers a force push"
+    assert probe(["git *"], "git reset --hard"), "git * still covers a hard reset"
+
+    # the friction it IS meant to remove is still removed
+    assert not probe(["git *"], "git status")
+    assert not probe(["git *"], "git log --oneline")
+
+    # an exact rule is a real decision and still suppresses
+    assert not probe(["git push --force origin main"], "git push --force origin main")
+
+
+def test_the_npm_half_of_t14_was_already_covered():
+    """Recorded rather than assumed: the finding also cited `npm *` covering
+    `npm exec -- rm -rf ~/x`. It never did. That command is caught by the
+    guardrail tier, which runs before allow rules and is exempt from
+    suppression in every mode, with or without the rule."""
+    def probe(rules, cmd):
+        policy = ApprovalPolicy.from_mode("ask", allow_rules=rules)
+        return check_command(policy, "shell", {"command": cmd}, guardrails=True)
+
+    with_rule = probe(["npm *"], "npm exec -- rm -rf ~/x")
+    without = probe([], "npm exec -- rm -rf ~/x")
+    assert with_rule and "GUARDRAIL" in with_rule
+    assert without and "GUARDRAIL" in without

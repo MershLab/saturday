@@ -578,13 +578,23 @@ def check_command(
         return None  # autonomous/off: dangerous/reserved approval asks skipped
     allow_matched = False
     if policy.allow_rules and tool_name == "shell" and not autonomous:
-        # persistent user-approved command shapes (exact or prefix*) skip ONLY
-        # the dangerous-pattern ASK loop below. Hardline, guardrails and deny
-        # rules above, deny mode below, and the reserved-tier ask after the
-        # loop all still apply — a saved rule removes friction, never checks.
-        # A saved rule matches the WHOLE command on a single line: multiline
-        # commands never inherit suppression (newline smuggling closed).
-        allow_matched = len(probes) == 1 and any(rule_matches(rule, probes[0]) for rule in policy.allow_rules)
+        # Persistent user-approved commands skip ONLY the dangerous-pattern
+        # ASK loop below. Hardline, guardrails and deny rules above, deny mode
+        # below, and the reserved-tier ask after the loop all still apply — a
+        # saved rule removes friction, never checks. A saved rule matches the
+        # WHOLE command on a single line: multiline commands never inherit
+        # suppression (newline smuggling closed).
+        #
+        # T14: only an EXACT rule suppresses a dangerous pattern. A trailing-*
+        # rule is a shape, not a decision about a particular command, and
+        # `git *` was silently covering `git push --force` while `npm *`
+        # covered `npm exec -- rm -rf ~/x`. Saving the exact command still
+        # works, because that is a decision the user actually made.
+        if len(probes) == 1:
+            allow_matched = any(
+                rule_matches(rule, probes[0]) and not rule.strip().endswith("*")
+                for rule in policy.allow_rules
+            )
     asked = False
     for rx, reason in DANGEROUS_PATTERNS:
         if not rx.search(text):
