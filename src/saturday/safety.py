@@ -81,11 +81,38 @@ DANGEROUS_PATTERNS: list[tuple[re.Pattern, str]] = [
         ),
         "pipe download into shell",
     ),
-    (re.compile(r"\bgit\s+push\s+(--force|-f)\b", re.IGNORECASE), "force push"),
+    (re.compile(_CMD_POS + r"git\s+push\s+(--force|-f)\b", re.IGNORECASE), "force push"),
     (re.compile(r"\bdrop\s+(table|database)\b", re.IGNORECASE), "destructive SQL drop"),
     (re.compile(r"\bchmod\s+(-R\s+)?777\s+/\s*$", re.IGNORECASE), "chmod 777 on root"),
     (re.compile(r"\breg\s+delete\b", re.IGNORECASE), "registry deletion"),
     (re.compile(r">\s*/dev/sd[a-z]", re.IGNORECASE), "redirect to raw device"),
+    # T16: each of these ran unasked in ask mode. They are recoverable-ish or
+    # deliberate, so they ask rather than joining the hardline floor, but
+    # every one of them destroys work or executes downloaded code and none of
+    # them had a rule. Env indirection remains the documented limitation;
+    # these are the plain spellings.
+    (re.compile(_CMD_POS + r"find\s+/\S*(\s[^\n|]*)?\s-delete\b", re.IGNORECASE),
+     "find -delete over a filesystem path"),
+    (re.compile(_CMD_POS + r"git\s+checkout\s+(--\s+\.|\.\s*$)", re.IGNORECASE),
+     "git checkout -- . discards every uncommitted change"),
+    (re.compile(_CMD_POS + r"git\s+(stash\s+(drop|clear)|reset\s+--hard)\b", re.IGNORECASE),
+     "discards work git cannot get back"),
+    (re.compile(_CMD_POS + r"truncate\s+(-\S+\s+)*-s\s*0\b", re.IGNORECASE),
+     "truncate to zero length"),
+    (re.compile(r"\bdd\b[^|]*\bof=/dev/(mapper|md|dm-|loop|vd[a-z]|xvd[a-z])", re.IGNORECASE),
+     "dd writing to a block device"),
+    (re.compile(_CMD_POS + r"(doas|pkexec)\b|\bsu\s+(-c|-)\s", re.IGNORECASE),
+     "elevated privileges"),
+    # the pipe-into-shell rule above lists only iex/bash/sh and only a direct
+    # pipe; these are the same act spelled differently
+    (re.compile(
+        r"(?:curl|wget|iwr|Invoke-WebRequest)\b[^\n]*\|[^\n]*\|?\s*"
+        r"(?:zsh|ksh|dash|fish|python3?|perl|ruby|node)\b",
+        re.IGNORECASE), "pipe download into an interpreter"),
+    (re.compile(r"(?:base64\s+(-d|--decode)|xxd\s+-r)\b[^\n]*\|\s*\S*(sh|bash|zsh|python)",
+                re.IGNORECASE), "decode and execute"),
+    (re.compile(r"(?:^|[;&|`\s])(?:sh|bash|zsh|source|\.)\s+<\(", re.IGNORECASE),
+     "process substitution into a shell"),
 ]
 
 # Irreversible data loss: legitimate operations, but they deserve friction even
