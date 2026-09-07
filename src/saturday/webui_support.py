@@ -127,20 +127,52 @@ def _env_upsert(path: Path, key: str, value: str) -> None:
     if not replaced:
         out.append(f"{key}={value}")
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
+    _write_private(path, "\n".join(out).rstrip() + "\n")
+
+
+def _write_private(path: Path, text: str) -> None:
+    """Write a file that holds secrets, without ever exposing it.
+
+    Writing and then narrowing is too late: the content sits at the umask
+    default (commonly 0o644) until the chmod lands, and a descriptor another
+    process opened in that window keeps reading after it. O_CREAT applies the
+    mode at creation instead, and umask can only clear bits, never add them."""
+    import os
+
+    if os.name != "posix":
+        path.write_text(text, encoding="utf-8")
+        return
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(text)
     _restrict_perms(path)
 
 
 def _restrict_perms(path: Path) -> None:
     """.env carries provider API keys: owner-only on POSIX. Windows ACLs are
-    out of scope for a stdlib-only core (the per-user profile dir already gates)."""
-    import os
+    out of scope for a stdlib-only core (the per-user profile dir already gates).
 
-    if os.name == "posix":
+    O_CREAT already covers a file this process created, so reaching here with a
+    mode we cannot change means the file predates us. Say so rather than leaving
+    a key sitting in a world readable file with no indication."""
+    import os
+    import sys
+
+    if os.name != "posix":
+        return
+    try:
+        os.chmod(path, 0o600)
+    except OSError as exc:
         try:
-            os.chmod(path, 0o600)
+            exposed = bool(path.stat().st_mode & 0o077)
         except OSError:
-            pass
+            exposed = True  # cannot confirm it is private, so assume it is not
+        if exposed:
+            print(
+                f"[saturday] could not restrict {path} ({exc}); it holds an API "
+                "key and is readable by other users on this machine",
+                file=sys.stderr,
+            )
 
 
 def _items_from_messages(messages: list[dict]) -> list[dict]:

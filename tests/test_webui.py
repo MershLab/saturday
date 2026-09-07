@@ -6151,3 +6151,58 @@ def test_exporting_every_session_streams_instead_of_materialising_them(tmp_path)
     texts = json.dumps(body["sessions"])
     for i in range(4):
         assert f"body {i}" in texts
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX file modes")
+def test_env_upsert_never_leaves_the_api_key_readable(tmp_path, monkeypatch):
+    """The .env holds provider API keys, so no one but the owner may read it.
+
+    Writing first and narrowing afterwards is not enough: the key is on disk
+    at the umask default until the chmod lands, and a descriptor opened in
+    that window survives it. Forcing chmod to fail is how the test sees the
+    mode the file was actually created with."""
+    from saturday.webui_support import _env_upsert
+
+    old = os.umask(0o022)  # a permissive umask, so 0o600 cannot happen by luck
+    try:
+        seen: list[int] = []
+        real_chmod = os.chmod
+
+        def recording_chmod(path, mode, *a, **kw):
+            seen.append(os.stat(path).st_mode & 0o777)
+            return real_chmod(path, mode, *a, **kw)
+
+        monkeypatch.setattr(os, "chmod", recording_chmod)
+
+        env = tmp_path / "fresh" / ".env"
+        _env_upsert(env, "ANTHROPIC_API_KEY", "sk-secret")
+
+        assert env.read_text().strip() == "ANTHROPIC_API_KEY=sk-secret"
+        assert seen, "the write path never tried to restrict permissions"
+        assert not seen[0] & 0o077, (
+            f"the key was on disk as {oct(seen[0])} before chmod ran; it must be "
+            "created owner-only, not narrowed after the fact"
+        )
+        assert not env.stat().st_mode & 0o077
+    finally:
+        os.umask(old)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX file modes")
+def test_env_upsert_tightens_a_file_that_already_exists(tmp_path):
+    """A .env left behind at 0644 by something else still gets narrowed:
+    O_CREAT's mode applies only when the file is created."""
+    from saturday.webui_support import _env_upsert
+
+    old = os.umask(0o022)
+    try:
+        env = tmp_path / ".env"
+        env.write_text("OTHER=1\n", encoding="utf-8")
+        os.chmod(env, 0o644)
+
+        _env_upsert(env, "ANTHROPIC_API_KEY", "sk-secret")
+
+        assert not env.stat().st_mode & 0o077, "a pre-existing .env stayed readable"
+        assert "OTHER=1" in env.read_text()
+    finally:
+        os.umask(old)
