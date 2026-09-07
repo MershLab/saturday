@@ -2489,3 +2489,52 @@ def test_external_agent_is_gated_like_shell():
     from saturday.safety import GATED_TOOLS
 
     assert "external_agent" in GATED_TOOLS
+
+
+def test_hardline_names_only_bind_in_command_position():
+    """T15: bare names matched anywhere in the string, so `grep mkfs
+    README.md` and `git commit -m "fix shutdown race"` were blocked in EVERY
+    mode - the agent could not search its own safety code or describe a
+    shutdown race in a commit message."""
+    policy = ApprovalPolicy.from_mode("ask")
+
+    def blocked(cmd):
+        r = check_command(policy, "shell", {"command": cmd})
+        return bool(r and "HARDLINE" in r)
+
+    # the words as data
+    for cmd in ("grep mkfs README.md",
+                'git commit -m "fix shutdown race"',
+                "echo 'the shutdown sequence'",
+                "grep 'dd of=/dev/sda' notes.txt",
+                'echo "format c: is scary"',
+                "git log --grep=poweroff"):
+        assert not blocked(cmd), f"still blocked as prose: {cmd!r}"
+
+    # the words as commands - the floor must not have moved
+    for cmd in ("mkfs.ext4 /dev/sda1", "sudo mkfs -t ext4 /dev/sda1",
+                "shutdown -h now", "halt", "ls; shutdown -h now",
+                "cat x && poweroff", "nohup shutdown -r now",
+                "ls | xargs mkfs.ext4", "dd if=/dev/zero of=/dev/sda"):
+        assert blocked(cmd), f"no longer blocked: {cmd!r}"
+
+    # a newline separator survives: _normalize folds it to a space, so the
+    # raw command is scanned as well
+    assert blocked("echo hi\nmkfs.ext4 /dev/sdb")
+
+    # and the rm floor, whose embedded-in-a-string catch is deliberate, is
+    # untouched by the anchoring
+    assert blocked("rm -rf /")
+    assert blocked("os.system('rm -rf /')")
+    assert blocked("rm -rf ~")
+
+
+def test_format_c_is_actually_blocked():
+    """The pattern ended in `c:\\b`, and a non-word character at end of string
+    has no boundary after it - so `format c:`, the exact command it names,
+    never matched at all."""
+    policy = ApprovalPolicy.from_mode("ask")
+    for cmd in ("format c:", "format c: /q", "format  c:\\"):
+        r = check_command(policy, "shell", {"command": cmd})
+        assert r and "HARDLINE" in r, f"not blocked: {cmd!r}"
+    assert not check_command(policy, "shell", {"command": "echo format c: notes"})

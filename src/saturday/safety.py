@@ -5,6 +5,21 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 
+# A bare name like `mkfs` or `shutdown` matched anywhere in the string, so
+# `grep mkfs README.md` and `git commit -m "fix shutdown race"` were blocked in
+# every mode - the agent could not search its own safety code or describe a
+# shutdown race in a commit message. These names are only dangerous in command
+# position: the start of the string, or after a separator, allowing for the
+# usual wrappers. (T15)
+#
+# Deliberately NOT applied to the `rm -rf /` patterns: their quote and paren
+# alternatives exist to catch the wipe embedded in a string, os.system('rm -rf
+# /'), which anchoring would undo.
+_CMD_POS = (
+    r"(?:^|[;&|`\n]|\$\()\s*"
+    r"(?:(?:sudo|doas|env|nohup|time|command|exec|xargs)\s+(?:-\S+\s+)*)*"
+)
+
 HARDLINE_PATTERNS: list[tuple[re.Pattern, str]] = [
     # root ONLY (followed by whitespace/quote-paren/end) — 'rm -rf /tmp/cache'
     # is normal cleanup and belongs to the guardrail-ask tier, not hardline;
@@ -21,11 +36,14 @@ HARDLINE_PATTERNS: list[tuple[re.Pattern, str]] = [
     # A path *inside* home (rm -rf ~/project/build) is deliberately not
     # hardline; it is ordinary destructive work for the ask tier.
     (re.compile(r"""\brm\s+(-[a-z]*\s+)*-?[rf]{1,2}[a-z-]*\s+(--\s+)?(/(etc|usr|bin|sbin|var|lib|boot|home|users|system)\b|(?:"|')?(?:~|\$\{?HOME\}?)(?:"|')?(?:/\*?)?(?:[\s,'")]|$))""", re.IGNORECASE), "rm -rf on system/user root"),
-    (re.compile(r"\bmkfs(\.\w+)?\b", re.IGNORECASE), "mkfs formats a filesystem"),
-    (re.compile(r"\bdd\b[^|]*\bof=/dev/(sd[a-z]|nvme|hd[a-z]|disk)", re.IGNORECASE), "dd writing to raw device"),
+    (re.compile(_CMD_POS + r"mkfs(\.\w+)?\b", re.IGNORECASE), "mkfs formats a filesystem"),
+    (re.compile(_CMD_POS + r"dd\b[^|]*\bof=/dev/(sd[a-z]|nvme|hd[a-z]|disk)", re.IGNORECASE), "dd writing to raw device"),
     (re.compile(r":\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:"), "fork bomb"),
-    (re.compile(r"\b(shutdown|poweroff|halt)(\s|$)", re.IGNORECASE), "shutdown/halt command"),
-    (re.compile(r"\bformat\s+c:\b", re.IGNORECASE), "format system drive"),
+    (re.compile(_CMD_POS + r"(shutdown|poweroff|halt)(\s|$)", re.IGNORECASE), "shutdown/halt command"),
+    # No trailing \b: it follows ":", and a non-word character at end of
+    # string has no boundary after it, so `format c:` - the exact command
+    # this names - never matched at all, before the anchoring above or after.
+    (re.compile(_CMD_POS + r"format\s+c:(?:[\s\\/]|$)", re.IGNORECASE), "format system drive"),
     (re.compile(r"Remove-Item\s+.*-Recurse.*-Force\s+[A-Za-z]:\\\s*$", re.IGNORECASE), "recursive force delete of drive root"),
     (re.compile(r"\bdel\b\s+/[sq]\s+/[qs]\s+C:\\\s*$", re.IGNORECASE), "del /s /q on drive root"),
 ]
@@ -488,8 +506,14 @@ def check_command(
     # fork bomb) survives safety=off too, not just autonomous; long-form flags
     # fold to short so 'rm --recursive --force /' is caught by the same rules.
     scan = _fold_long_flags(text)
+    # The RAW command is scanned too, not only the whitespace-folded form:
+    # _normalize collapses a newline to a space, so `echo hi\nmkfs.ext4 /dev/sdb`
+    # reaches the folded text with mkfs looking like an argument rather than
+    # the start of a second command. The command-position anchors (T15) need
+    # that separator to still be there.
+    raw_scan = _fold_long_flags(raw)
     for rx, reason in HARDLINE_PATTERNS:
-        if rx.search(text) or rx.search(scan):
+        if rx.search(text) or rx.search(scan) or rx.search(raw) or rx.search(raw_scan):
             return f"HARDLINE BLOCK ({reason}); policy={policy.mode}"
     # deny rules sit directly under hardline: they bind in every mode, so a
     # saved "npm publish*" beats safety=off, guardrails, reserved asks and
