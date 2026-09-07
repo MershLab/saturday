@@ -4723,3 +4723,30 @@ def test_a_missing_unshare_still_fails_closed(tmp_path, monkeypatch):
     tool._network_allowed = lambda: False
     ok, out = tool.run({"command": "echo hello"})
     assert ok is False and "was NOT run" in out
+
+
+def test_view_image_resolves_against_the_workspace_not_the_cwd(tmp_path, monkeypatch):
+    """T24: vision resolved a relative path against the PROCESS cwd, not the
+    workspace, so view_image path="shots/a.png" looked somewhere else
+    entirely. Same class as the shell workdir bug (T7)."""
+    from saturday.tools.vision import ViewImageTool
+
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+    workspace = tmp_path / "project"
+    (workspace / "shots").mkdir(parents=True)
+    (workspace / "shots" / "a.png").write_bytes(png)
+
+    elsewhere = tmp_path / "launched-from"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    tool = ViewImageTool(root=str(workspace))
+    ok, out = tool.run({"path": "shots/a.png"})
+    assert ok, out
+    assert tool.pending_images == [str((workspace / "shots" / "a.png").resolve())]
+
+    # a path outside the workspace is still refused
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(png)
+    ok, out = tool.run({"path": str(outside)})
+    assert not ok and "escapes workspace root" in out

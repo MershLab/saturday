@@ -42,7 +42,12 @@ class ViewImageTool(Tool):
 
     def run(self, args: dict) -> tuple[bool, str]:
         path = str(args.get("path") or "")
+        # T24: this resolved a relative path against the PROCESS cwd, not the
+        # workspace, so view_image path="shots/a.png" looked somewhere else
+        # entirely. Same rule the file tools use in files._resolve.
         p = Path(path)
+        if not p.is_absolute() and self.root is not None:
+            p = self.root / p
         if not p.is_file():
             return False, f"image not found: {p}"
         resolved = p.resolve()
