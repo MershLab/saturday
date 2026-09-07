@@ -54,17 +54,34 @@ WINDOW_LIST_SCRIPT = (
 
 
 def parse_window_list(stdout: str) -> list[dict]:
+    """Parse `hwnd|title|left,top,w,h` rows.
+
+    The title is taken as everything BETWEEN the first and last separator,
+    because titles contain pipes all the time - "GitHub | MershLab/saturday -
+    Mozilla Firefox", "main.py - saturday | Visual Studio Code". Splitting on
+    every "|" and requiring exactly three fields dropped every such window,
+    silently: it simply was not in the list, so window focus, ui_tree
+    scope=win: and resolve_window all concluded it did not exist. Half the
+    windows in a realistic desktop vanished.
+
+    hwnd and the rect cannot contain a pipe, so anchoring on the first and
+    last is unambiguous.
+    """
     rows = []
     for line in (stdout or "").splitlines():
-        parts = line.strip().split("|")
-        if len(parts) != 3:
+        line = line.strip()
+        head, sep, rest = line.partition("|")
+        if not sep:
+            continue
+        title, sep2, rect = rest.rpartition("|")
+        if not sep2:
             continue
         try:
-            hwnd = int(parts[0])
-            left, top, w, h = (int(v) for v in parts[2].split(","))
+            hwnd = int(head)
+            left, top, w, h = (int(v) for v in rect.split(","))
         except ValueError:
             continue
-        rows.append({"hwnd": hwnd, "title": parts[1], "left": left, "top": top, "width": w, "height": h})
+        rows.append({"hwnd": hwnd, "title": title, "left": left, "top": top, "width": w, "height": h})
     return rows
 
 

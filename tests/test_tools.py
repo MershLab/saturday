@@ -5081,3 +5081,49 @@ def test_the_documented_key_examples_work_on_linux():
         ("Delete", "Delete"), ("Ctrl+Alt+Delete", "ctrl+alt+Delete"),
     ]:
         assert translate_linux_key(spec) == expected, f"{spec!r} translated wrong"
+
+
+def test_window_titles_containing_a_pipe_are_not_dropped():
+    """Found by probing H18's other untested module. parse_window_list split
+    on every "|" and required exactly three fields, but window titles contain
+    pipes constantly - "GitHub | MershLab/saturday - Mozilla Firefox",
+    "main.py - saturday | Visual Studio Code". Every such window was dropped
+    SILENTLY: it was simply absent from the list, so window focus, ui_tree
+    scope=win: and resolve_window all concluded it did not exist.
+
+    Measured on a realistic desktop sample, half the windows vanished."""
+    from saturday.tools.spatial import parse_window_list
+
+    rows = parse_window_list("\n".join([
+        "1234|Untitled - Notepad|0,0,800,600",
+        "5678|GitHub | MershLab/saturday - Mozilla Firefox|10,10,1200,800",
+        "9012|main.py - saturday | Visual Studio Code|20,20,1000,700",
+        "3456|Terminal|5,5,900,500",
+    ]))
+
+    assert len(rows) == 4, f"windows were dropped: kept {[r['title'] for r in rows]}"
+    titles = {r["title"] for r in rows}
+    assert "GitHub | MershLab/saturday - Mozilla Firefox" in titles
+    assert "main.py - saturday | Visual Studio Code" in titles
+
+    by_hwnd = {r["hwnd"]: r for r in rows}
+    assert by_hwnd[5678]["left"] == 10 and by_hwnd[5678]["width"] == 1200
+    assert by_hwnd[1234]["title"] == "Untitled - Notepad"
+
+
+def test_malformed_window_rows_are_still_rejected():
+    """Widening the title must not make the parser accept junk."""
+    from saturday.tools.spatial import parse_window_list
+
+    rows = parse_window_list("\n".join([
+        "no pipes at all",
+        "notanint|Title|0,0,1,1",
+        "77|missing rect fields|1,2,3",
+        "88|too many rect fields|1,2,3,4,5",
+        "|empty hwnd|0,0,1,1",
+        "99|only one separator 0,0,1,1",
+        "",
+        "1|Good|0,0,10,10",
+    ]))
+    assert [r["hwnd"] for r in rows] == [1], f"accepted junk: {rows}"
+    assert rows[0]["title"] == "Good"
