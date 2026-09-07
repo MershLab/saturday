@@ -4660,3 +4660,66 @@ def test_the_journal_stays_bounded_by_entries_and_by_bytes(tmp_path):
     # the newest entries are the ones kept
     last = json.loads(list(jp2.open(encoding="utf-8"))[-1])
     assert last["ts"] == 899
+
+
+def test_unshare_that_cannot_isolate_fails_closed(tmp_path, monkeypatch):
+    """T25: the code treated the PRESENCE of unshare as the capability.
+    Without CAP_SYS_ADMIN or unprivileged user namespaces it exits "Operation
+    not permitted", and the command came back as a SUCCESSFUL tool call
+    carrying exit_code 1 - the opposite of the fail-closed refusal this branch
+    exists to give. Reproduced on the machine this was found on."""
+    import subprocess
+
+    from saturday.tools import shell as shell_mod
+
+    monkeypatch.setattr(shell_mod.shutil, "which", lambda n: "/usr/bin/unshare")
+    monkeypatch.setattr(shell_mod, "_UNSHARE_OK", None)
+
+    class _Denied:
+        returncode = 1
+
+    monkeypatch.setattr(shell_mod.subprocess, "run", lambda *a, **k: _Denied())
+
+    tool = shell_mod.ShellTool(root=str(tmp_path))
+    tool._network_allowed = lambda: False
+    ok, out = tool.run({"command": "echo hello"})
+
+    assert ok is False, "a command that could not be isolated reported success"
+    assert "was NOT run" in out
+    assert "cannot create a network namespace" in out
+
+
+def test_unshare_that_works_is_used(tmp_path, monkeypatch):
+    from saturday.tools import shell as shell_mod
+
+    monkeypatch.setattr(shell_mod.shutil, "which", lambda n: "/usr/bin/unshare")
+    monkeypatch.setattr(shell_mod, "_UNSHARE_OK", None)
+
+    class _Fine:
+        returncode = 0
+
+    calls = []
+    monkeypatch.setattr(shell_mod.subprocess, "run",
+                        lambda *a, **k: calls.append(a) or _Fine())
+
+    tool = shell_mod.ShellTool(root=str(tmp_path))
+    tool._network_allowed = lambda: False
+    argv, refusal = tool._isolation_argv("echo hi")
+    assert refusal is None
+    assert argv[:2] == ["/usr/bin/unshare", "--net"], argv
+
+    # the probe is cached, not re-run per command
+    before = len(calls)
+    tool._isolation_argv("echo again")
+    assert len(calls) == before, "the capability probe runs on every command"
+
+
+def test_a_missing_unshare_still_fails_closed(tmp_path, monkeypatch):
+    from saturday.tools import shell as shell_mod
+
+    monkeypatch.setattr(shell_mod.shutil, "which", lambda n: None)
+    monkeypatch.setattr(shell_mod, "_UNSHARE_OK", None)
+    tool = shell_mod.ShellTool(root=str(tmp_path))
+    tool._network_allowed = lambda: False
+    ok, out = tool.run({"command": "echo hello"})
+    assert ok is False and "was NOT run" in out

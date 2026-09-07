@@ -8,6 +8,27 @@ from pathlib import Path
 from saturday.tools.base import Tool
 
 
+_UNSHARE_OK: bool | None = None
+
+
+def _unshare_works(unshare: str) -> bool:
+    """Can this process actually create a network namespace?
+
+    shutil.which only says the binary exists. Cached because the answer
+    cannot change for the life of the process and the probe spawns.
+    """
+    global _UNSHARE_OK
+    if _UNSHARE_OK is None:
+        try:
+            _UNSHARE_OK = subprocess.run(
+                [unshare, "--net", "true"],
+                capture_output=True, timeout=10,
+            ).returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            _UNSHARE_OK = False
+    return _UNSHARE_OK
+
+
 class ShellTool(Tool):
     name = "shell"
     description = (
@@ -58,6 +79,19 @@ class ShellTool(Tool):
                 "shell_allow_network=false: no 'unshare' binary available to isolate "
                 "the network namespace, so the command was NOT run. Install util-linux "
                 "(unshare) or re-enable shell_allow_network."
+            )
+        # T25: presence is not capability. Without CAP_SYS_ADMIN or unprivileged
+        # user namespaces, unshare exits "Operation not permitted" - and the
+        # command then came back as a SUCCESSFUL tool call carrying exit_code 1,
+        # which is the opposite of the fail-closed refusal this branch exists to
+        # give. Ask the kernel once, then remember the answer.
+        if not _unshare_works(unshare):
+            return None, (
+                "shell_allow_network=false: 'unshare' is installed but this user "
+                "cannot create a network namespace (unprivileged user namespaces "
+                "are disabled or CAP_SYS_ADMIN is missing), so the command was NOT "
+                "run. Enable unprivileged user namespaces, run with the capability, "
+                "or re-enable shell_allow_network."
             )
         return [unshare, "--net", "sh", "-c", command], None
 
