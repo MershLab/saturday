@@ -4796,3 +4796,49 @@ def test_a_write_through_a_symlink_does_not_replace_the_link(tmp_path):
     write_source(link, "via link\n")
     assert link.is_symlink(), "the symlink was replaced by a regular file"
     assert real.read_text(encoding="utf-8") == "via link\n"
+
+
+def test_repeated_searches_do_not_reread_or_rewrite_the_index(tmp_path, monkeypatch):
+    """T5: every query read the contents of every file in the workspace only
+    to discard them when the mtime matched, and then rewrote the whole index
+    even though nothing had changed."""
+    from pathlib import Path
+
+    from saturday.tools import repo_index as R
+
+    for i in range(40):
+        (tmp_path / f"m{i}.py").write_text(
+            "\n".join(f"def sym_{i}_{j}(): pass" for j in range(20)), encoding="utf-8")
+    R.build_index(tmp_path)                      # warm the cache
+    index_path = tmp_path / ".saturday" / R.INDEX_NAME
+    assert index_path.is_file()
+
+    writes, reads = [], []
+    real_wt, real_rt = Path.write_text, Path.read_text
+    monkeypatch.setattr(Path, "write_text",
+                        lambda self, *a, **k: (writes.append(self), real_wt(self, *a, **k))[1])
+    monkeypatch.setattr(Path, "read_text",
+                        lambda self, *a, **k: (reads.append(self), real_rt(self, *a, **k))[1])
+
+    for _ in range(5):
+        R.search_index(tmp_path, "sym_3_7")
+
+    assert not [p for p in writes if p == index_path], "the index is still rewritten per query"
+    assert not [p for p in reads if p.suffix == ".py"], "source files are still read per query"
+
+
+def test_an_edited_file_is_still_picked_up(tmp_path):
+    """The caching above must not cost freshness."""
+    from saturday.tools import repo_index as R
+
+    (tmp_path / "a.py").write_text("def original_symbol(): pass\n", encoding="utf-8")
+    R.build_index(tmp_path)
+    assert R.search_index(tmp_path, "original_symbol")
+
+    (tmp_path / "a.py").write_text("def brand_new_symbol(): pass\n", encoding="utf-8")
+    hits = R.search_index(tmp_path, "brand_new_symbol")
+    assert [h["path"] for h in hits] == ["a.py"], hits
+
+    # and a deleted file leaves the index
+    (tmp_path / "a.py").unlink()
+    assert not R.search_index(tmp_path, "brand_new_symbol")

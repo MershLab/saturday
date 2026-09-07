@@ -294,11 +294,11 @@ def build_index(workspace_root: str | Path, force: bool = False) -> dict:
         if isinstance(meta, dict) and "terms" not in meta:
             meta["terms"] = {}
     seen_paths: set[str] = set()
+    dirty = False
     for p in _scan_files(root):
         rel = p.relative_to(root).as_posix()
         try:
             mtime = p.stat().st_mtime_ns
-            raw = p.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue  # transient lock/unread: keep any cached entry below
         seen_paths.add(rel)
@@ -312,6 +312,15 @@ def build_index(workspace_root: str | Path, force: bool = False) -> dict:
             cacheable = False
         if cacheable:
             continue  # cached terms survive into the merged postings below
+        # T5: the read used to happen BEFORE this check, so every query read
+        # the contents of every file in the workspace only to discard them
+        # when the mtime matched. Only a file that actually needs re-indexing
+        # is read.
+        try:
+            raw = p.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        dirty = True
         terms: dict[str, list] = {}
         total = 0
         for lineno, line in enumerate(raw.splitlines(), 1):
@@ -337,6 +346,7 @@ def build_index(workspace_root: str | Path, force: bool = False) -> dict:
     for rel in list(known.keys()):
         if rel not in seen_paths:
             del known[rel]
+            dirty = True
     # WHY: rebuild postings FROM the merged per-file terms rather than starting
     # empty and overwriting the cache's postings — otherwise the second run
     # (everything unchanged) persisted zero hits and repo_search went blind.
@@ -345,6 +355,11 @@ def build_index(workspace_root: str | Path, force: bool = False) -> dict:
         for term, info in meta.get("terms", {}).items():
             postings.setdefault(term, {})[rel] = info
     cache["postings"] = postings
+    if not dirty and ipath.is_file() and cache.get("postings"):
+        # T5: nothing was re-indexed and nothing vanished, so the file on disk
+        # already says exactly this. Rewriting it made every repo_search a
+        # full write of the index - up to MAX_INDEX_BYTES - for no change.
+        return cache
     cache["built"] = time.time()
     cache.pop("capped", None)
     blob = json.dumps(cache)
