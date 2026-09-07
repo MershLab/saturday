@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -489,7 +490,30 @@ def write_source(path, text: str, eol: str = "\n") -> None:
     data = text.replace("\r\n", "\n")
     if eol != "\n":
         data = data.replace("\n", eol)
-    path.write_bytes(data.encode("utf-8"))
+    raw = data.encode("utf-8")
+    # T24: write straight to the target left a torn file on disk if anything
+    # went wrong mid-write - on the very path an edit had just journalled a
+    # snapshot of. A rename is atomic, so a reader sees the old file or the
+    # new one and never half of either.
+    #
+    # A symlink is written THROUGH, not replaced: renaming over it would
+    # swap the link for a regular file and quietly break whatever it pointed
+    # at.
+    if path.is_symlink():
+        path.write_bytes(raw)
+        return
+    tmp = path.with_name(f".{path.name}.tmp{os.getpid()}")
+    try:
+        tmp.write_bytes(raw)
+        os.replace(tmp, path)
+    except OSError:
+        # cross-device, a read-only directory, a name too long: fall back to
+        # the direct write rather than failing an edit over durability
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        path.write_bytes(raw)
 
 
 class ListDir(Tool):

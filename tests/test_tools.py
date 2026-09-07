@@ -4750,3 +4750,49 @@ def test_view_image_resolves_against_the_workspace_not_the_cwd(tmp_path, monkeyp
     outside.write_bytes(png)
     ok, out = tool.run({"path": str(outside)})
     assert not ok and "escapes workspace root" in out
+
+
+def test_a_write_is_atomic_and_leaves_no_temp_file(tmp_path):
+    """T24: writing straight to the target left a torn file on disk if
+    anything went wrong mid-write, on the very path an edit had just
+    journalled a snapshot of."""
+    import os
+
+    from saturday.tools.files import write_source
+
+    f = tmp_path / "a.txt"
+    write_source(f, "hello\nworld\n")
+    assert f.read_bytes() == b"hello\nworld\n"
+    leftovers = [p.name for p in tmp_path.iterdir() if ".tmp" in p.name]
+    assert not leftovers, f"a temp file was left behind: {leftovers}"
+
+    # the rename must not cost the CRLF fidelity T2 bought
+    g = tmp_path / "b.txt"
+    write_source(g, "x\ny\n", eol="\r\n")
+    assert g.read_bytes() == b"x\r\ny\r\n"
+
+    # the write really goes through a rename, not straight to the target
+    seen = []
+    real_replace = os.replace
+    import saturday.tools.files as files_mod
+    files_mod.os.replace = lambda a, b: seen.append((a, b)) or real_replace(a, b)
+    try:
+        write_source(tmp_path / "c.txt", "z\n")
+    finally:
+        files_mod.os.replace = real_replace
+    assert seen and str(seen[0][1]).endswith("c.txt")
+
+
+def test_a_write_through_a_symlink_does_not_replace_the_link(tmp_path):
+    """Renaming over a symlink swaps the link for a regular file and quietly
+    breaks whatever it pointed at, so symlinks are written through."""
+    from saturday.tools.files import write_source
+
+    real = tmp_path / "real.txt"
+    real.write_text("orig\n", encoding="utf-8")
+    link = tmp_path / "link.txt"
+    link.symlink_to(real)
+
+    write_source(link, "via link\n")
+    assert link.is_symlink(), "the symlink was replaced by a regular file"
+    assert real.read_text(encoding="utf-8") == "via link\n"
