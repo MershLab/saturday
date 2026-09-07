@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import threading
 import time
@@ -45,10 +46,20 @@ class Job:
                 self.win_job.terminate()
             except Exception:
                 pass
-        try:
-            self.proc.kill()
-        except OSError:
-            pass
+        # kill the GROUP, not just the process we spawned: on POSIX that
+        # process is `sh -c <command>` and the work is its children (T6).
+        killed_group = False
+        if os.name != "nt":
+            try:
+                os.killpg(os.getpgid(self.proc.pid), signal.SIGKILL)
+                killed_group = True
+            except (OSError, ProcessLookupError):
+                pass  # already gone, or never got its own group
+        if not killed_group:
+            try:
+                self.proc.kill()
+            except OSError:
+                pass
         try:
             self.proc.wait(timeout=5)
         except Exception:
@@ -115,6 +126,13 @@ class JobManager:
             encoding="utf-8",
             errors="replace",
             creationflags=creationflags,
+            # T6: Windows got a Job Object for descendant cleanup and POSIX
+            # got nothing, so proc.kill() killed only the `sh -c` wrapper and
+            # every grandchild it had started was orphaned, still running and
+            # still holding our stdout pipe. Its own process group makes the
+            # whole tree killable, the way the foreground shell path already
+            # does it.
+            start_new_session=(os.name != "nt"),
         )
         win_job = None
         if os.name == "nt":

@@ -4842,3 +4842,58 @@ def test_an_edited_file_is_still_picked_up(tmp_path):
     # and a deleted file leaves the index
     (tmp_path / "a.py").unlink()
     assert not R.search_index(tmp_path, "brand_new_symbol")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process groups; Windows uses a Job Object")
+def test_killing_a_background_job_takes_its_whole_tree(tmp_path):
+    """T6: Windows got a Job Object for descendant cleanup and POSIX got
+    nothing, so proc.kill() killed only the `sh -c` wrapper. Every grandchild
+    it had started was orphaned, still running and still holding the job's
+    stdout pipe. Reproduced before the fix: the sleep survived."""
+    import subprocess
+    import time
+
+    from saturday.tools.jobs import JobManager
+
+    manager = JobManager()
+    job_id = manager.start("sleep 300 & echo started; wait")
+
+    deadline = time.time() + 5
+    kids = []
+    job = manager.get(job_id)
+    while time.time() < deadline and not kids:
+        kids = subprocess.run(["pgrep", "-P", str(job.proc.pid)],
+                              capture_output=True, text=True).stdout.split()
+        if not kids:
+            time.sleep(0.05)
+    assert kids, "the job never started a grandchild to orphan"
+
+    assert job.kill() is True
+    time.sleep(0.4)
+
+    assert not os.path.exists(f"/proc/{job.proc.pid}"), "the shell survived"
+    orphans = [k for k in kids if os.path.exists(f"/proc/{k}")]
+    for k in orphans:                      # never leave the test's own mess
+        try:
+            os.kill(int(k), 9)
+        except OSError:
+            pass
+    assert not orphans, f"grandchildren outlived the job: {orphans}"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process groups")
+def test_a_background_job_still_reports_its_output_and_exit(tmp_path):
+    """The new session must not cost the job its captured output."""
+    import time
+
+    from saturday.tools.jobs import JobManager
+
+    manager = JobManager()
+    job_id = manager.start("echo hello-from-job")
+    job = manager.get(job_id)
+
+    deadline = time.time() + 5
+    while time.time() < deadline and job.status() == "running":
+        time.sleep(0.05)
+    assert job.status() == "exited(0)", job.status()
+    assert "hello-from-job" in job.tail()
