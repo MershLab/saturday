@@ -45,7 +45,16 @@ class ExternalAgentSpec:
 
 
 def _claude_code_argv(binary: str, prompt: str) -> list[str]:
-    return [binary, "-p", prompt]
+    # Verified live (2026-09-07): `claude -p "edit a file"` alone answers
+    # "the edit is ready but blocked - write permission hasn't been granted",
+    # leaves the file untouched, and exits 0. A caller reading the return code
+    # records that as success, so a delegated edit was a silent no-op - the
+    # same defect the codex entry below fixed, never applied here (T10).
+    #
+    # acceptEdits, not bypassPermissions: it is the least privilege that lets
+    # the delegated task actually edit, and anything else that would prompt is
+    # still refused. Same reasoning as codex's workspace-write.
+    return [binary, "-p", "--permission-mode", "acceptEdits", prompt]
 
 
 def _codex_argv(binary: str, prompt: str) -> list[str]:
@@ -63,6 +72,12 @@ def _codex_argv(binary: str, prompt: str) -> list[str]:
 
 
 def _cursor_argv(binary: str, prompt: str) -> list[str]:
+    # NOT changed, deliberately: cursor is not installed on the machine this
+    # was investigated on, so the claude fix above could not be checked
+    # against it. T10 names cursor alongside claude, and the shape is likely
+    # the same, but this file's standard for these argv specs is "verified
+    # live" and guessing a permission flag into a delegation path is exactly
+    # the kind of untested default that produced the bug. (T10, part open)
     return [binary, "-p", prompt]
 
 

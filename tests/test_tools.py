@@ -3485,7 +3485,15 @@ def test_external_agent_runs_when_already_installed(monkeypatch):
     monkeypatch.setattr(ea.subprocess, "run", fake_run)
     ok, msg = ea.ExternalAgentTool().run({"agent": "claude-code", "prompt": "fix the bug"})
     assert ok and msg == "ok from claude"
-    assert captured["argv"] == ["/usr/bin/claude", "-p", "fix the bug"]
+    # The permission mode is part of the contract, not incidental: without it
+    # `claude -p` reports the edit is blocked, leaves the file alone and exits
+    # 0, so a delegated edit is a silent no-op recorded as success (T10,
+    # verified live). This test previously pinned the argv WITHOUT it, which
+    # is why the defect survived - the same shape the codex sibling below
+    # covers.
+    assert captured["argv"] == [
+        "/usr/bin/claude", "-p", "--permission-mode", "acceptEdits", "fix the bug",
+    ]
 
 
 def test_external_agent_codex_argv_avoids_the_silent_readonly_no_op(monkeypatch):
@@ -4984,3 +4992,41 @@ def test_killing_a_job_never_kills_its_own_caller(tmp_path):
 
     # we are still alive, which is the whole assertion
     assert os.getpid() > 0
+
+
+def test_claude_delegation_asks_for_the_permission_it_needs():
+    """T10: `claude -p "<edit a file>"` answers "the edit is ready but
+    blocked - write permission hasn't been granted", leaves the file
+    untouched, and exits 0. A caller reading the return code records that as
+    success, so a delegated edit was a silent no-op.
+
+    Verified live on 2026-09-07 in a scratch directory, both directions:
+    without the flag the file stayed `original` at exit 0; with
+    --permission-mode acceptEdits it became `CHANGED`.
+
+    acceptEdits rather than bypassPermissions is the point - least privilege
+    that lets the delegated task edit, matching the codex entry's
+    workspace-write reasoning."""
+    from saturday.tools.external_agent import _claude_code_argv
+
+    argv = _claude_code_argv("claude", "fix the bug")
+    assert argv[0] == "claude"
+    assert "-p" in argv and argv[-1] == "fix the bug"
+    assert "--permission-mode" in argv, "a delegated edit silently no-ops without this"
+    assert argv[argv.index("--permission-mode") + 1] == "acceptEdits"
+    assert "bypassPermissions" not in argv, "least privilege: this is not the flag to use"
+    assert "--dangerously-skip-permissions" not in argv
+
+
+def test_cursor_delegation_is_left_alone_until_it_can_be_checked():
+    """T10 names cursor alongside claude and the shape is probably the same,
+    but cursor is not installed on the machine this was investigated on. This
+    file's standard for argv specs is "verified live"; guessing a permission
+    flag into a delegation path is the kind of untested default that produced
+    the bug. Pinned so the omission is deliberate and visible, not forgotten."""
+    from saturday.tools.external_agent import _cursor_argv
+
+    assert _cursor_argv("cursor", "t") == ["cursor", "-p", "t"], (
+        "cursor's argv changed - if it was verified against a real cursor "
+        "install, update this test and say so; if it was guessed, do not"
+    )
