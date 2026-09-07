@@ -5127,3 +5127,47 @@ def test_malformed_window_rows_are_still_rejected():
     ]))
     assert [r["hwnd"] for r in rows] == [1], f"accepted junk: {rows}"
     assert rows[0]["title"] == "Good"
+
+
+def test_mac_window_scan_reports_the_right_geometry_for_piped_titles():
+    """Third defect from probing the untested spatial modules, and the worst
+    of the three because it is silently WRONG rather than merely absent.
+
+    The parse split on every "|" and indexed from the left, so a title
+    containing a pipe shifted every field after it. "Finder|Docs | 5|10|20|
+    1200|800|456" parsed as left=5 top=10 width=20 height=1200 winid=800 - a
+    window reported at coordinates that are not its own, so a click aimed at
+    it lands somewhere else and window operations target the wrong id."""
+    from saturday.tools.spatial_unix import parse_mac_window_scan
+
+    # the case that produced wrong coordinates rather than dropping the row
+    rows = parse_mac_window_scan("Finder|Docs | 5|10|20|1200|800|456")
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["title"] == "Docs | 5"
+    assert (row["left"], row["top"], row["width"], row["height"]) == (10, 20, 1200, 800), row
+    assert row["winid"] == "456", "operations would have targeted the wrong window"
+
+    # and a piped title is no longer dropped
+    rows = parse_mac_window_scan("Safari|GitHub | MershLab|0|0|800|600|123")
+    assert rows and rows[0]["title"] == "GitHub | MershLab"
+    assert rows[0]["winid"] == "123"
+
+    # a title may contain several pipes; the trailing five fields are fixed
+    rows = parse_mac_window_scan("App|a|b|c|1|2|3|4|w9")
+    assert rows[0]["title"] == "a|b|c"
+    assert (rows[0]["left"], rows[0]["height"]) == (1, 4)
+
+
+def test_mac_window_scan_still_rejects_junk():
+    """Widening the title must not widen what counts as a row."""
+    from saturday.tools.spatial_unix import parse_mac_window_scan
+
+    rows = parse_mac_window_scan("\n".join([
+        "no pipes at all",
+        "App|Title|x|y|w|h|1",       # non-numeric geometry
+        "App|too|few|fields",
+        "",
+        "Good|T|1|2|3|4|id1",
+    ]))
+    assert [r["winid"] for r in rows] == ["id1"], f"accepted junk: {rows}"

@@ -138,17 +138,38 @@ def mac_window_scan() -> tuple[bool, str, list[dict]]:
     rc, out, err = _run(["osascript", "-e", script], timeout=30.0)
     if rc != 0:
         return False, (err or "osascript failed (grant Accessibility permission in System Settings)")[:300], []
+    return True, "", parse_mac_window_scan(out)
+
+
+def parse_mac_window_scan(out: str) -> list[dict]:
+    """Parse `proc|title|x|y|w|h|winid` rows.
+
+    Split on every "|" and indexed from the LEFT, a title containing a pipe
+    shifted every field after it. "Finder|Docs | 5|10|20|1200|800|456" parsed
+    as left=5 top=10 width=20 height=1200 winid=800 - a window reported at
+    coordinates that are not its own, so a click aimed at it lands somewhere
+    else. Titles without digits after the pipe were merely dropped; these are
+    silently WRONG, which is worse.
+
+    proc cannot contain a pipe and the five trailing fields are fixed, so the
+    title is everything between the first separator and the last five.
+    """
     rows = []
     for line in out.splitlines():
-        parts = line.split("|")
-        if len(parts) < 7:
+        proc, sep, rest = line.partition("|")
+        if not sep:
             continue
+        tail = rest.rsplit("|", 5)
+        if len(tail) != 6:
+            continue
+        title, sx, sy, sw, sh, winid = tail
         try:
-            x, y, w, h = (int(parts[i]) for i in (2, 3, 4, 5))
+            x, y, w, h = int(sx), int(sy), int(sw), int(sh)
         except ValueError:
             continue
-        rows.append({"proc": parts[0], "title": parts[1], "left": x, "top": y, "width": w, "height": h, "winid": parts[6]})
-    return True, "", rows
+        rows.append({"proc": proc, "title": title, "left": x, "top": y,
+                     "width": w, "height": h, "winid": winid})
+    return rows
 
 
 def linux_window_scan() -> tuple[bool, str, list[dict]]:
