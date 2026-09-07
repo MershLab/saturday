@@ -1247,8 +1247,9 @@ def test_lsp_references_normalizes_locations():
     _answer_in_order(t, [raw])
     got = t.client.references("/w/a.py", 4, 0)
     assert got == [
-        {"path": "w/a.py", "line": 5, "column": 2},
-        {"path": "w/b.py", "line": 1, "column": 8},
+        # absolute: _uri_to_path used to strip the leading slash (T23)
+        {"path": "/w/a.py", "line": 5, "column": 2},
+        {"path": "/w/b.py", "line": 1, "column": 8},
     ]
 
 
@@ -1263,8 +1264,9 @@ def test_lsp_call_hierarchy_merges_callers_and_callees():
     _answer_in_order(t, [prepared, incoming, outgoing])
     got = t.client.call_hierarchy("/w/a.py", 4, 4)
     assert got == {
-        "callers": [{"name": "main", "path": "w/main.py", "line": 11, "kind": "function"}],
-        "callees": [{"name": "log", "path": "w/util.py", "line": 3, "kind": "method"}],
+        # absolute for the same reason as above (T23)
+        "callers": [{"name": "main", "path": "/w/main.py", "line": 11, "kind": "function"}],
+        "callees": [{"name": "log", "path": "/w/util.py", "line": 3, "kind": "method"}],
     }
 
 
@@ -5171,3 +5173,82 @@ def test_mac_window_scan_still_rejects_junk():
         "Good|T|1|2|3|4|id1",
     ]))
     assert [r["winid"] for r in rows] == ["id1"], f"accepted junk: {rows}"
+
+
+def test_lsp_uri_to_path_keeps_the_leading_slash_and_decodes_escapes():
+    """T23 names the missing percent-decoding, but the worse bug was next to
+    it: stripping "file:///" took the LEADING SLASH with it, so every
+    absolute path came back relative and resolved against whatever directory
+    the process happened to be in - the same family as the shell workdir,
+    image path and REPL cwd bugs."""
+    from saturday.tools.lsp import _uri_to_path
+
+    assert _uri_to_path("file:///home/user/main.py") == "/home/user/main.py"
+    assert _uri_to_path("file:///home/user/my%20file.py") == "/home/user/my file.py"
+    assert _uri_to_path("file:///home/user/caf%C3%A9.py") == "/home/user/café.py"
+    assert _uri_to_path("file:///home/user/a%2Bb.py") == "/home/user/a+b.py"
+    # an authority is not a path segment
+    assert _uri_to_path("file://localhost/home/user/main.py") == "/home/user/main.py"
+    # Windows drive letters arrive as /C:/... and lose the slash, not the drive
+    assert _uri_to_path("file:///C:/Users/x/main.py") == "C:/Users/x/main.py"
+    assert _uri_to_path("") == ""
+    # a non-file URI is handed back rather than mangled
+    assert _uri_to_path("untitled:Untitled-1") == "untitled:Untitled-1"
+
+
+def test_lsp_answers_server_to_client_requests():
+    """T23: the read loop handled notifications and its own response, and
+    silently dropped server-to-client REQUESTS - a message carrying both a
+    method and an id. pyright and tsserver block on client/registerCapability
+    until it is answered, so our own request then timed out and the session
+    looked dead."""
+    import json
+
+    from saturday.tools.lsp import LspClient
+
+    written = []
+
+    class FakeTransport:
+        def write(self, data):
+            written.append(data)
+
+        def read(self, n):
+            return b""
+
+    client = LspClient.__new__(LspClient)
+    client.transport = FakeTransport()
+
+    # drive the REAL read loop, not the responder directly: the defect was
+    # that _request never dispatched to it, so calling it by hand would have
+    # passed against the broken code
+    import time as _time
+
+    inbox = [
+        {"jsonrpc": "2.0", "id": 99, "method": "client/registerCapability", "params": {}},
+        {"jsonrpc": "2.0", "id": 1, "result": {"ok": True}},
+    ]
+    client._read_message = lambda: inbox.pop(0)
+    client._send = lambda method, params=None, notify=False: 1
+    client.timeout_s = 5
+    client._diagnostics_by_uri = {}
+    assert client._request("textDocument/definition") == {"ok": True}
+    assert written, "the read loop dropped the server's request instead of answering it"
+    assert json.loads(written[-1].split(b"\r\n\r\n", 1)[1])["id"] == 99
+
+    written.clear()
+    client._respond_to_server({"jsonrpc": "2.0", "id": 7, "method": "client/registerCapability"})
+    assert written, "the server request went unanswered"
+    body = written[-1].split(b"\r\n\r\n", 1)[1]
+    reply = json.loads(body)
+    assert reply["id"] == 7 and reply.get("result") is None and "error" not in reply
+
+    # configuration expects a list, not null
+    written.clear()
+    client._respond_to_server({"jsonrpc": "2.0", "id": 8, "method": "workspace/configuration"})
+    assert json.loads(written[-1].split(b"\r\n\r\n", 1)[1])["result"] == []
+
+    # anything unknown still gets an answer, so the server is never left waiting
+    written.clear()
+    client._respond_to_server({"jsonrpc": "2.0", "id": 9, "method": "some/unknownRequest"})
+    reply = json.loads(written[-1].split(b"\r\n\r\n", 1)[1])
+    assert reply["id"] == 9 and reply["error"]["code"] == -32601

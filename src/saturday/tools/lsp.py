@@ -13,9 +13,11 @@ from __future__ import annotations
 
 import atexit
 import json
+import re
 import subprocess
 import threading
 import time
+import urllib.parse
 from pathlib import Path
 
 
@@ -33,7 +35,25 @@ _SYMBOL_KIND = {
 
 
 def _uri_to_path(uri: str) -> str:
-    return str(uri or "").replace("file:///", "").replace("file://", "")
+    """A file: URI as a filesystem path.
+
+    The old two replaces got three things wrong. Stripping "file:///" took
+    the LEADING SLASH with it, so every absolute path came back relative -
+    file:///home/u/main.py became home/u/main.py, and every LSP result then
+    resolved against whatever directory the process was in. Percent escapes
+    were left in place, so a path with a space or any non-ASCII character
+    (my%20file.py, caf%C3%A9.py) named a file that does not exist. And
+    file://localhost/... kept the authority as a path segment.
+    """
+    raw = str(uri or "")
+    parts = urllib.parse.urlsplit(raw)
+    if parts.scheme != "file":
+        return raw                      # not a file URI; hand it back unchanged
+    path = urllib.parse.unquote(parts.path)
+    # Windows drive letters arrive as /C:/Users/... - drop the leading slash
+    if re.match(r"^/[A-Za-z]:", path):
+        path = path[1:]
+    return path
 
 
 def _classify_symbol(raw: dict, parent_kind: str | None) -> dict | None:
@@ -179,7 +199,35 @@ class LspClient:
                 self._diagnostics_by_uri[uri] = list(params_d.get("diagnostics") or [])
             elif msg.get("method") == "window/logMessage":
                 pass  # ignore server chatter
+            elif msg.get("method") and msg.get("id") is not None:
+                # A server-to-client REQUEST, not a notification: it carries
+                # both a method and an id, and the protocol says it must be
+                # answered. Dropping it left pyright and tsserver blocking on
+                # client/registerCapability forever, so our own request then
+                # timed out and the whole session looked dead.
+                self._respond_to_server(msg)
         raise LspError(f"LSP request timed out: {method}")
+
+    def _respond_to_server(self, msg: dict) -> None:
+        """Answer a server-to-client request so the server can proceed.
+
+        The registration requests are accepted with a null result, which is
+        what the spec asks for and what every editor does. Anything else gets
+        MethodNotFound, which is a valid answer and unblocks the server just
+        as well as a real implementation would.
+        """
+        method = str(msg.get("method") or "")
+        reply: dict = {"jsonrpc": "2.0", "id": msg.get("id")}
+        if method in ("client/registerCapability", "client/unregisterCapability",
+                      "workspace/configuration", "window/workDoneProgress/create"):
+            reply["result"] = [] if method == "workspace/configuration" else None
+        else:
+            reply["error"] = {"code": -32601, "message": f"unhandled request: {method}"}
+        try:
+            body = json.dumps(reply).encode("utf-8")
+            self.transport.write(f"Content-Length: {len(body)}\r\n\r\n".encode("ascii") + body)
+        except Exception:
+            pass  # a broken pipe here is the caller's timeout to report, not ours
 
     # -- lifecycle ---------------------------------------------------------------
     def initialize(self) -> None:
