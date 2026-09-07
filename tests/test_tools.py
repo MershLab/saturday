@@ -5030,3 +5030,54 @@ def test_cursor_delegation_is_left_alone_until_it_can_be_checked():
         "cursor's argv changed - if it was verified against a real cursor "
         "install, update this test and say so; if it was guessed, do not"
     )
+
+
+def test_linux_can_express_every_key_the_parser_accepts():
+    """H18: spatial_unix is one of the two largest tool files and half its
+    public names are never mentioned in any test. Probing the part that is
+    pure - key translation - found a real gap: the cross-platform parser
+    accepts Delete, Insert, PrintScreen, CapsLock and the Apps key and yields
+    real virtual-key codes, but the Linux table had no entry for any of them,
+    so `keyboard action=key key=Delete` answered "unsupported key-combo on
+    Linux". A key every editing task needs.
+
+    This pins the two layers together rather than listing keys: anything the
+    parser accepts must be expressible, so adding a key to one side without
+    the other fails here."""
+    import saturday.tools.spatial as sp
+    from saturday.tools.spatial import parse_combo
+    from saturday.tools.spatial_unix import _LINUX_KEYS, _LINUX_LETTER, _LINUX_MOD_VK
+
+    names = set()
+    for attr in dir(sp):
+        table = getattr(sp, attr)
+        if isinstance(table, dict) and table and all(isinstance(k, str) for k in table):
+            if any(isinstance(v, int) for v in table.values()):
+                names |= set(table)
+    assert names, "found no key-name table to probe; the test is not testing anything"
+
+    mapped = set(_LINUX_MOD_VK) | set(_LINUX_KEYS) | set(_LINUX_LETTER)
+    gaps = {}
+    for name in sorted(names):
+        try:
+            codes = [vk for vk, down in parse_combo(name) if down]
+        except ValueError:
+            continue  # the parser rejects it; nothing for Linux to express
+        missing = [c for c in codes if c not in mapped]
+        if missing:
+            gaps[name] = missing
+    assert not gaps, f"the parser accepts these but Linux cannot express them: {gaps}"
+
+
+def test_the_documented_key_examples_work_on_linux():
+    """The keyboard tool's own description advertises these. If one of them
+    does not translate, the documented interface is broken on this platform."""
+    from saturday.tools.spatial_unix import translate_linux_key
+
+    for spec, expected in [
+        ("Enter", "Return"), ("Tab", "Tab"), ("Escape", "Escape"),
+        ("Ctrl+S", "ctrl+s"), ("Alt+F4", "alt+F4"), ("Win", "super"),
+        ("Shift+Tab", "shift+Tab"), ("F5", "F5"),
+        ("Delete", "Delete"), ("Ctrl+Alt+Delete", "ctrl+alt+Delete"),
+    ]:
+        assert translate_linux_key(spec) == expected, f"{spec!r} translated wrong"

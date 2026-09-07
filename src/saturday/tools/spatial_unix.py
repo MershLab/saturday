@@ -479,7 +479,13 @@ def translate_linux_key(spec: str) -> str | None:
 
 
 _LINUX_MOD_VK = {17: "ctrl", 16: "shift", 18: "alt", 91: "super", 92: "super"}
-_LINUX_KEYS = {13: "Return", 9: "Tab", 27: "Escape", 32: "space", 8: "BackSpace", 112: "F1", 113: "F2", 114: "F3", 115: "F4", 116: "F5", 117: "F6", 118: "F7", 119: "F8", 120: "F9", 121: "F10", 122: "F11", 123: "F12", 38: "Up", 40: "Down", 37: "Left", 39: "Right", 33: "Page_Up", 34: "Page_Down", 36: "Home", 35: "End"}
+# Keysyms as xdotool names them. The five at the end were missing: the
+# cross-platform parser accepts Delete, Insert, PrintScreen, CapsLock and the
+# Apps/menu key and yields real virtual-key codes for them, but this table had
+# no entry, so translate_linux_key returned None and the tool answered
+# "unsupported key-combo on Linux" for Delete - a key any editing task needs.
+# It failed loudly rather than silently, which is why it went unnoticed.
+_LINUX_KEYS = {13: "Return", 9: "Tab", 27: "Escape", 32: "space", 8: "BackSpace", 112: "F1", 113: "F2", 114: "F3", 115: "F4", 116: "F5", 117: "F6", 118: "F7", 119: "F8", 120: "F9", 121: "F10", 122: "F11", 123: "F12", 38: "Up", 40: "Down", 37: "Left", 39: "Right", 33: "Page_Up", 34: "Page_Down", 36: "Home", 35: "End", 46: "Delete", 45: "Insert", 44: "Print", 20: "Caps_Lock", 93: "Menu"}
 _LINUX_LETTER = {vk: chr(vk).lower() for vk in range(65, 91)} | {vk: chr(vk) for vk in range(48, 58)}
 
 
