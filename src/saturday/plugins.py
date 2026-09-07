@@ -83,7 +83,7 @@ def _core_tools(cfg) -> list[Tool]:
         job_manager=JobManager.shared(),
         allow_network_fn=lambda: bool(getattr(cfg, "shell_allow_network", True)),
     )
-    repl = PythonREPL(timeout=timeout)
+    repl = PythonREPL(timeout=timeout, root=root)
     tools: list[Tool] = [
         shell,
         ReadFile(root=root),

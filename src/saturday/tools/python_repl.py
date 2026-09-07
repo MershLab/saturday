@@ -24,8 +24,14 @@ class PythonREPL(Tool):
         "required": ["code"],
     }
 
-    def __init__(self, timeout: float = 60.0) -> None:
+    def __init__(self, timeout: float = 60.0, root: str | None = None) -> None:
         self.timeout = timeout
+        # T21: the interpreter ran in whatever directory the harness process
+        # happened to be in, so `open("notes.md")` in the REPL missed the
+        # workspace entirely - the same bug as the shell workdir (T7) and the
+        # image path (T24). Every other file-touching tool takes a root; this
+        # one did not even accept one.
+        self.root = root
         self._proc: subprocess.Popen | None = None
         self._lock = threading.Lock()
 
@@ -70,6 +76,7 @@ class PythonREPL(Tool):
             # WHY: a child that prints binary would otherwise raise mid-read
             # and desync the marker protocol; replace keeps the stream alive
             errors="replace",
+            cwd=self.root or None,
         )
         return self._proc
 

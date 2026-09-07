@@ -4897,3 +4897,41 @@ def test_a_background_job_still_reports_its_output_and_exit(tmp_path):
         time.sleep(0.05)
     assert job.status() == "exited(0)", job.status()
     assert "hello-from-job" in job.tail()
+
+
+def test_the_python_repl_runs_in_the_workspace(tmp_path, monkeypatch):
+    """T21: the interpreter ran in whatever directory the harness process
+    happened to be in, so open("notes.md") in the REPL missed the workspace
+    entirely. Same bug as the shell workdir (T7) and the image path (T24);
+    every other file-touching tool takes a root and this one did not even
+    accept one."""
+    from saturday.tools.python_repl import PythonREPL
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    (workspace / "marker.txt").write_text("in the workspace\n", encoding="utf-8")
+
+    elsewhere = tmp_path / "launched-from"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    repl = PythonREPL(root=str(workspace))
+    try:
+        ok, out = repl.run({"code": "import os; print(os.getcwd())"})
+        assert ok and out.strip() == str(workspace.resolve()), out
+
+        ok, out = repl.run({"code": "print(open('marker.txt').read().strip())"})
+        assert ok and "in the workspace" in out, out
+    finally:
+        repl.close()
+
+
+def test_the_repl_registers_with_the_workspace_root(tmp_path):
+    """The root has to actually be passed at construction; the tool accepting
+    one is no use if the registry never gives it one."""
+    from saturday.config import AgentConfig
+    from saturday.tools import default_registry
+
+    cfg = AgentConfig(workspace_root=str(tmp_path))
+    repl = default_registry(cfg)._tools["python"]
+    assert repl.root == str(tmp_path), repl.root

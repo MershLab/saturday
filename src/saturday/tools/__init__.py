@@ -45,7 +45,7 @@ def default_registry(cfg=None) -> ToolRegistry:
     reg.register(ListDir(root=getattr(cfg, "workspace_root", None)))
     reg.register(GlobTool(root=getattr(cfg, "workspace_root", None)))
     reg.register(GrepTool(root=getattr(cfg, "workspace_root", None)))
-    reg.register(PythonREPL())
+    reg.register(PythonREPL(root=getattr(cfg, "workspace_root", None)))
     reg.register(WebFetchTool())
     reg.register(WebSearchTool())
     reg.register(BrowserTool())
