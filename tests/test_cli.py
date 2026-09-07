@@ -2049,3 +2049,34 @@ def test_help_epilog_lists_every_registered_command():
 
     assert registered - listed == set(), f"missing from --help epilog: {sorted(registered - listed)}"
     assert listed - registered == set(), f"listed but not registered: {sorted(listed - registered)}"
+
+
+def test_tools_listing_matches_the_registry_a_run_actually_builds(tmp_path, monkeypatch, capsys):
+    """T18: `saturday tools` listed default_registry() while a session builds
+    its registry through the agent. The two disagreed about fourteen names -
+    four that never run and ten that do, external_agent among them - so the
+    reported surface was not the running one.
+
+    diagnostics.py already builds it the agent's way and says in its own
+    comment that one construction path is the point; this is the caller that
+    was never moved over."""
+    from saturday.agent.core import Agent
+    from saturday.cli import cmd_tools
+    from saturday.config import AgentConfig
+
+    cfg = AgentConfig(workspace_root=str(tmp_path))
+    monkeypatch.setattr(AgentConfig, "load", staticmethod(lambda *a, **k: cfg))
+
+    assert cmd_tools(argparse.Namespace()) == 0
+    listed = {
+        line[2:].split(":", 1)[0]
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith("- ")
+    }
+
+    running = set(Agent(cfg=cfg)._build_registry().names())
+    assert listed == running, (
+        f"listed but never runs: {sorted(listed - running)}; "
+        f"runs but never listed: {sorted(running - listed)}"
+    )
+    assert listed, "the tools listing is empty"

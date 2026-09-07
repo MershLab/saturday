@@ -284,9 +284,15 @@ def cmd_eval(args: argparse.Namespace) -> int:
 
 
 def cmd_tools(args: argparse.Namespace) -> int:
-    from saturday.tools import default_registry
+    # T18: this listed default_registry() while a session builds its registry
+    # through the agent, and the two disagreed about fourteen names - it named
+    # four tools that never run and omitted ten that do, external_agent among
+    # them. doctor already builds it the way the agent does and says in its
+    # own comment that one construction path is the point; this is the caller
+    # that was never moved over.
+    from saturday.agent.core import Agent
 
-    reg = default_registry(AgentConfig.load())
+    reg = Agent(cfg=AgentConfig.load())._build_registry()
     for spec in reg.specs():
         _print(f"- {spec['name']}: {spec['description']}")
     return 0
