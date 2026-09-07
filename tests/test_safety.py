@@ -2624,3 +2624,95 @@ def test_the_npm_half_of_t14_was_already_covered():
     without = probe([], "npm exec -- rm -rf ~/x")
     assert with_rule and "GUARDRAIL" in with_rule
     assert without and "GUARDRAIL" in without
+
+
+def test_every_rooted_tool_either_confines_paths_or_is_approval_gated(tmp_path):
+    """H12: path confinement is written out independently in nine places. All
+    nine resolve first and compare with .parents, so the predicate is
+    consistent - surveyed, not assumed. The real risk is not one of them being
+    written wrong; it is a NEW tool taking a root and forgetting the check
+    entirely, which nothing would have caught.
+
+    This pins the actual contract. A tool that carries a workspace root must
+    either refuse a path outside it, or be in GATED_TOOLS - where the approval
+    gate, not a path check, is the boundary. `shell` and `python` are the
+    second kind on purpose: both run arbitrary code, so confining them by path
+    would be theatre."""
+    from saturday.config import AgentConfig
+    from saturday.safety import GATED_TOOLS
+    from saturday.tools import default_registry
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("SECRET-OUTSIDE\n", encoding="utf-8")
+
+    registry = default_registry(AgentConfig(workspace_root=str(workspace)))
+    rooted = {n: t for n, t in registry._tools.items() if getattr(t, "root", None)}
+    assert rooted, "no tool reported a workspace root; the probe is not testing anything"
+
+    escape = "../outside.txt"
+    probes = {
+        "read_file": {"path": escape},
+        "write_file": {"path": escape, "content": "PWNED"},
+        "edit_file": {"path": escape, "old_string": "SECRET", "new_string": "PWNED"},
+        "list_dir": {"path": ".."},
+        "view_image": {"path": escape},
+        "glob": {"pattern": "../*.txt"},
+        "grep": {"pattern": "SECRET-OUTSIDE", "path": ".."},
+        "shell": {"command": "cat ../outside.txt"},
+        "python": {"code": "print(open('../outside.txt').read())"},
+    }
+    missing = set(rooted) - set(probes)
+    assert not missing, (
+        f"{sorted(missing)} take a workspace root but this test does not probe them. "
+        "Add a probe: a new rooted tool must be shown to confine, or be gated."
+    )
+
+    for name in sorted(rooted):
+        ok, out = rooted[name].run(probes[name])
+        leaked = "SECRET-OUTSIDE" in str(out)
+        if name in GATED_TOOLS:
+            continue  # approval is the boundary for these; see the docstring
+        assert not leaked, f"{name} read outside the workspace and is not approval-gated"
+
+    # the write attempts must not have touched the file either
+    assert outside.read_text(encoding="utf-8") == "SECRET-OUTSIDE\n"
+
+
+def test_the_unconfined_tools_are_exactly_the_gated_ones(tmp_path):
+    """Stated as its own assertion so the exemption above cannot quietly grow:
+    if a tool stops confining, this fails unless it is genuinely gated."""
+    from saturday.config import AgentConfig
+    from saturday.safety import GATED_TOOLS
+    from saturday.tools import default_registry
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    (tmp_path / "outside.txt").write_text("SECRET-OUTSIDE\n", encoding="utf-8")
+
+    registry = default_registry(AgentConfig(workspace_root=str(workspace)))
+    unconfined = set()
+    for name, args in {
+        "read_file": {"path": "../outside.txt"},
+        "list_dir": {"path": ".."},
+        "glob": {"pattern": "../*.txt"},
+        "grep": {"pattern": "SECRET-OUTSIDE", "path": ".."},
+        "shell": {"command": "cat ../outside.txt"},
+        "python": {"code": "print(open('../outside.txt').read())"},
+    }.items():
+        tool = registry._tools.get(name)
+        if tool is None or not getattr(tool, "root", None):
+            continue
+        _, out = tool.run(args)
+        if "SECRET-OUTSIDE" in str(out):
+            unconfined.add(name)
+
+    assert unconfined <= set(GATED_TOOLS), (
+        f"{sorted(unconfined - set(GATED_TOOLS))} read outside the workspace "
+        "without being approval-gated"
+    )
+    assert unconfined == {"shell", "python"}, (
+        f"the set of unconfined tools changed: {sorted(unconfined)}. That is not "
+        "automatically wrong, but it is a deliberate security boundary moving."
+    )
