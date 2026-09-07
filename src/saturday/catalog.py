@@ -14,6 +14,7 @@ forces a re-probe when the user explicitly asks for one.
 """
 from __future__ import annotations
 
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
@@ -25,6 +26,15 @@ KEYLESS = ("ollama", "vllm")
 
 _CACHE: dict[str, object] = {}
 _CACHE_TTL = 120.0
+# T17: probing runs on the turn's request path - auto routing asks for
+# candidates before the model is called - so a cache miss stalled the user's
+# chat for the probe timeout, once every _CACHE_TTL seconds, forever. A stale
+# answer is worth far more than a fresh one here: the set of providers a key
+# can reach changes on the order of days, not seconds. Past the TTL we serve
+# what we have and refresh behind the turn, so only a genuinely cold cache
+# ever blocks.
+_REFRESHING: set = set()
+_REFRESH_LOCK = threading.Lock()
 
 
 @dataclass
@@ -103,7 +113,21 @@ def providers(timeout: float = 8.0, only: str | None = None, refresh: bool = Fal
     wanted = [only] if only else [n for n in PROVIDERS if PROVIDERS[n].resolve_api_key() or n in KEYLESS]
     key = ("providers", tuple(wanted), timeout)
     hit = _CACHE.get(key)
-    if hit and not refresh and time.time() - hit[0] < _CACHE_TTL:   # type: ignore[index]
+    if hit and not refresh:
+        age = time.time() - hit[0]                                  # type: ignore[index]
+        if age < _CACHE_TTL:
+            return list(hit[1])                                     # type: ignore[index]
+        # stale: answer now, re-probe behind the caller. One refresh per key
+        # at a time, or every turn during a slow probe starts another.
+        with _REFRESH_LOCK:
+            already = key in _REFRESHING
+            if not already:
+                _REFRESHING.add(key)
+        if not already:
+            threading.Thread(
+                target=_refresh_in_background, args=(key, wanted, timeout),
+                daemon=True, name="saturday-catalog-refresh",
+            ).start()
         return list(hit[1])                                         # type: ignore[index]
     if not wanted:
         out: list[ProviderEntry] = []
@@ -112,6 +136,19 @@ def providers(timeout: float = 8.0, only: str | None = None, refresh: bool = Fal
             out = list(pool.map(lambda n: _probe(n, timeout), wanted))
     _CACHE[key] = (time.time(), out)
     return out
+
+
+def _refresh_in_background(key, wanted, timeout: float) -> None:
+    """Re-probe a stale catalogue entry without a caller waiting on it."""
+    try:
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            out = list(pool.map(lambda n: _probe(n, timeout), wanted))
+        _CACHE[key] = (time.time(), out)
+    except Exception:
+        pass  # a failed refresh must leave the stale entry, not erase it
+    finally:
+        with _REFRESH_LOCK:
+            _REFRESHING.discard(key)
 
 
 def agents() -> list[AgentEntry]:

@@ -1335,3 +1335,106 @@ def test_an_http_error_reports_what_the_provider_actually_said():
     assert "bearer-secret" not in client._explain(leaky)
     assert "azure-secret" not in client._explain(leaky)
     assert "***" in client._explain(leaky)
+
+
+def test_a_stale_catalogue_answers_now_and_refreshes_behind_the_turn(monkeypatch):
+    """T17: probing runs on the turn's request path - auto routing asks for
+    candidates before the model is called - so every cache expiry stalled the
+    user's chat for the probe timeout, up to 8s, once every 120 seconds
+    forever.
+
+    The set of providers a key can reach changes on the order of days, so a
+    stale answer is worth far more than a fresh one here. Past the TTL the
+    caller is served immediately and the re-probe happens behind them."""
+    import time
+
+    import saturday.catalog as catalog
+
+    PROV = "probe-stale"
+    calls = {"n": 0}
+
+    def slow_probe(name, timeout):
+        calls["n"] += 1
+        time.sleep(0.5)
+        return catalog.ProviderEntry(name=name, configured=True, reachable=True,
+                                     detail=f"probe {calls['n']}", models=[f"m{calls['n']}"])
+
+    monkeypatch.setattr(catalog, "_probe", slow_probe)
+    monkeypatch.setattr(catalog, "_CACHE", {})
+    monkeypatch.setattr(catalog, "_REFRESHING", set())
+
+    t0 = time.perf_counter()
+    catalog.providers(only=PROV)
+    cold = time.perf_counter() - t0
+    assert cold >= 0.4, "the cold path is supposed to actually probe"
+
+    monkeypatch.setattr(catalog, "_CACHE_TTL", 0.0)      # everything is stale now
+    t0 = time.perf_counter()
+    served = catalog.providers(only=PROV)
+    stale = time.perf_counter() - t0
+
+    assert stale < 0.2, f"a stale read still blocked the caller for {stale:.2f}s"
+    assert served and served[0].detail == "probe 1", "it did not serve the cached answer"
+
+    deadline = time.time() + 5
+    while time.time() < deadline and calls["n"] < 2:
+        time.sleep(0.02)
+    assert calls["n"] >= 2, "the background refresh never ran"
+
+
+def test_one_refresh_at_a_time_per_catalogue_key(monkeypatch):
+    """Every turn during a slow probe would otherwise start another."""
+    import threading
+    import time
+
+    import saturday.catalog as catalog
+
+    PROV = "probe-once"
+    started = []
+    release = threading.Event()
+
+    def slow_probe(name, timeout):
+        started.append(name)
+        release.wait(5)
+        return catalog.ProviderEntry(name=name, configured=True, reachable=True, detail="x")
+
+    monkeypatch.setattr(catalog, "_probe", slow_probe)
+    monkeypatch.setattr(catalog, "_CACHE", {})
+    monkeypatch.setattr(catalog, "_REFRESHING", set())
+
+    release.set()
+    catalog.providers(only=PROV)          # prime
+    release.clear()
+    started.clear()
+    monkeypatch.setattr(catalog, "_CACHE_TTL", 0.0)
+
+    for _ in range(5):                          # five turns land during one probe
+        catalog.providers(only=PROV)
+    time.sleep(0.2)
+    assert len(started) <= 1, f"{len(started)} concurrent refreshes for one key"
+    release.set()
+
+
+def test_a_failed_refresh_leaves_the_stale_entry(monkeypatch):
+    """Losing the catalogue because a re-probe failed would be worse than
+    serving an old one."""
+    import time
+
+    import saturday.catalog as catalog
+
+    PROV = "probe-failing"
+    monkeypatch.setattr(catalog, "_CACHE", {})
+    monkeypatch.setattr(catalog, "_REFRESHING", set())
+    monkeypatch.setattr(catalog, "_probe",
+                        lambda n, t: catalog.ProviderEntry(name=n, configured=True,
+                                                           reachable=True, detail="good"))
+    catalog.providers(only=PROV)
+
+    def boom(name, timeout):
+        raise RuntimeError("network gone")
+
+    monkeypatch.setattr(catalog, "_probe", boom)
+    monkeypatch.setattr(catalog, "_CACHE_TTL", 0.0)
+    assert catalog.providers(only=PROV)[0].detail == "good"
+    time.sleep(0.4)
+    assert catalog.providers(only=PROV)[0].detail == "good", "the stale entry was erased"
