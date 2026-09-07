@@ -46,15 +46,23 @@ class Job:
                 self.win_job.terminate()
             except Exception:
                 pass
-        # kill the GROUP, not just the process we spawned: on POSIX that
+        # Kill the GROUP, not just the process we spawned: on POSIX that
         # process is `sh -c <command>` and the work is its children (T6).
+        #
+        # ONLY when the child actually leads its own group. JobManager.start()
+        # gives it one with start_new_session, but a Job can be constructed
+        # directly around any Popen - and such a child sits in OUR group, so
+        # killpg would SIGKILL the whole harness, this process included. That
+        # regression killed the test runner, which then looked like an OOM.
         killed_group = False
         if os.name != "nt":
             try:
-                os.killpg(os.getpgid(self.proc.pid), signal.SIGKILL)
-                killed_group = True
+                pgid = os.getpgid(self.proc.pid)
+                if pgid != os.getpgid(0):
+                    os.killpg(pgid, signal.SIGKILL)
+                    killed_group = True
             except (OSError, ProcessLookupError):
-                pass  # already gone, or never got its own group
+                pass  # already gone, or we cannot see its group
         if not killed_group:
             try:
                 self.proc.kill()
