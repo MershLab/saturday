@@ -747,7 +747,11 @@ def test_ui_send_and_streamed_reply_renders(ui_server):
                 page.wait_for_function(
                     "n => document.querySelectorAll('.turn-stats').length > n",
                     arg=before, timeout=60000)
-                html = page.locator(".msg-assistant .md").last.inner_html()
+                # explicit, not Playwright's implicit 30s default: .turn-stats
+                # updating does not strictly guarantee this element has settled
+                # too, and that gap is exactly what flaked on the same slow
+                # runner the wait above already accounts for.
+                html = page.locator(".msg-assistant .md").last.inner_html(timeout=60000)
                 if "<strong" not in html:
                     err_line = page.evaluate("() => { const e = document.querySelector('.sysline.error'); return e ? e.textContent : null; }")
                     raise AssertionError(f"markdown empty; sysline={err_line!r}; html={html[:120]!r}")
