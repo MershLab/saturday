@@ -15,6 +15,20 @@ number, so an agent stays available until its own client reports a real
 limit, and then Saturday BACKS OFF for an hour rather than retrying. A
 router that treats someone else's rate limit as an obstacle to route
 around is the thing this deliberately is not.
+
+The tier ladder answers "what can this turn afford"; task_complexity()
+answers a different question, "does this turn need judgment" - and only
+the second one is allowed to reach past the cheapest tier. A task that
+reads as mechanical (open X, go to X) is left on the ladder above exactly
+as before. A task that reads as a real decision (why, refactor, debug,
+compare) is ranked instead by capability: a real fetched price when one
+exists (a flagship costs more than its own vendor's mini variant - that
+is a fact, not a guess), or failing that a naming-convention hint shared
+by nearly every vendor's lineup (pro/opus/max/reasoner vs
+mini/flash/lite/haiku), weighted below a real price and used only when no
+real price is known for anything in the pool. Nothing here is a list of
+model names: both signals are read off whatever the provider or the
+model's own name says today, so a new model generation needs no release.
 """
 from __future__ import annotations
 
@@ -47,6 +61,85 @@ _DEFAULT_TIERS = {
 
 QUOTA_BACKOFF_SECONDS = 3600.0
 
+TRIVIAL, STANDARD, COMPLEX = "trivial", "standard", "complex"
+
+# Mechanical, single-action verbs: the shape of "open X" / "go to X" - doing
+# is all that is asked, there is no judgment call in what to do. Kept short
+# and unambiguous on purpose; anything not clearly this stays STANDARD rather
+# than being guessed into TRIVIAL.
+_MECHANICAL_RX = re.compile(
+    r"\b(open|launch|start|close|quit|go to|navigate to|switch to|show|"
+    r"list|check|ping|screenshot|click|scroll|type)\b",
+    re.IGNORECASE,
+)
+
+# Vocabulary that shows up when a real decision or synthesis is being asked
+# for, not just an action carried out: comparing options, explaining why,
+# designing something, or fixing something whose cause is not yet known.
+_DECISION_RX = re.compile(
+    r"\b(why|design|architecture|refactor|decide|evaluate|compare|"
+    r"trade-?offs?|review|analy[sz]e|debug|diagnose|investigate|"
+    r"root cause|plan|strateg(?:y|ize)|recommend|optimi[sz]e|"
+    r"should i|which is better|pros and cons|best approach)\b",
+    re.IGNORECASE,
+)
+
+_MULTI_STEP_RX = re.compile(r"\b(and then|after that|step \d)|(?:^|\n)\s*[1-9][.)]\s", re.IGNORECASE)
+
+
+def task_complexity(text: str) -> str:
+    """trivial / standard / complex, from cheap textual signals alone.
+
+    A heuristic proxy for how much judgment a task needs, not a judgment of
+    the task itself: it never calls a model and never leaves the process, so
+    it adds no cost and no latency to a decision "auto" makes on every turn.
+    Deliberately conservative - only a task that clearly reads as mechanical
+    or clearly reads as a real decision moves off STANDARD, which keeps
+    today's cheapest-first ladder as the default for everything in between,
+    exactly as it behaved before this existed."""
+    t = (text or "").strip()
+    if not t:
+        return STANDARD
+    words = t.split()
+    score = 0
+    if _DECISION_RX.search(t):
+        score += 3
+    if _MECHANICAL_RX.search(t) and len(words) <= 12:
+        score -= 2
+    if len(words) > 40:
+        score += 2
+    if "```" in t:
+        score += 2
+    if _MULTI_STEP_RX.search(t):
+        score += 1
+    if "?" in t and len(words) > 6:
+        score += 1
+    if score <= -2:
+        return TRIVIAL
+    if score >= 3:
+        return COMPLEX
+    return STANDARD
+
+
+# Naming-convention "weight class", shared by nearly every vendor's lineup:
+# opus/sonnet/haiku, pro/flash, max/mini, v4-pro/v4-flash. Not a list of
+# models - a list of the adjectives vendors use to mark a tier, which is a
+# far more stable signal than any specific model name and does not go stale
+# when the next generation ships. Used only as a fallback when no real price
+# is known for anything in the pool (see _rank): a guess from the name is
+# weighted below a fetched price, never above it.
+_STRONG_NAME_HINTS = ("opus", "ultra", "max", "large", "-pro", "flagship", "thinking", "reasoner", "reasoning")
+_WEAK_NAME_HINTS = ("nano", "mini", "lite", "flash", "small", "haiku", "tiny", "-fast")
+
+
+def _naming_tier_hint(model: str) -> float:
+    m = model.lower()
+    if any(h in m for h in _STRONG_NAME_HINTS):
+        return 0.6
+    if any(h in m for h in _WEAK_NAME_HINTS):
+        return 0.2
+    return 0.0
+
 
 @dataclass
 class Candidate:
@@ -57,6 +150,13 @@ class Candidate:
     ema_success: float = 0.5
     n: int = 0
     custom: bool = False
+    # USD per million tokens (input+output averaged), from a real fetched
+    # price. 0.0 means unknown, never "known to be free" - model_pricing()
+    # already returns None rather than a fake number, and this preserves
+    # that: a real price outranks a naming guess, which outranks neither.
+    capability: float = 0.0
+    # 0.0, 0.2 or 0.6 from _naming_tier_hint when no real price exists.
+    capability_guess: float = 0.0
 
 
 def _db_path() -> Path:
@@ -247,6 +347,7 @@ def model_candidates(task_kind: str = "general", timeout: float = 8.0,
     tier: routing to one would repeat the exact failure the catalogue exists
     to prevent - a listed model that 402s the moment it is used."""
     from saturday import catalog
+    from saturday.usage import model_pricing
 
     out: list[Candidate] = []
     for p in catalog.providers(timeout=timeout):
@@ -260,19 +361,67 @@ def model_candidates(task_kind: str = "general", timeout: float = 8.0,
                 continue          # this provider's whole tier just failed
             ident = f"{p.name}/{m}"
             ema, n = stats(ident, task_kind)
+            # model_pricing never blocks: a cold router cache answers None
+            # here and refreshes behind this call, so this stays on the
+            # request path without adding a network round trip to it.
+            price = model_pricing(p.name, m)
+            capability = ((price[0] + price[1]) / 2.0) if price else 0.0
             out.append(Candidate(agent=ident, tier=tier, installed=True,
-                                 enabled=True, ema_success=ema, n=n))
+                                 enabled=True, ema_success=ema, n=n,
+                                 capability=capability,
+                                 capability_guess=0.0 if capability else _naming_tier_hint(m)))
     out.sort(key=lambda c: (c.tier, -c.ema_success))
     return out
 
 
+def _rank(pool: list[tuple[Candidate, str]], complexity: str) -> tuple[Candidate, str] | None:
+    """Pick one candidate from an already-filtered, already-safe pool.
+
+    complexity == STANDARD (or TRIVIAL): unchanged from before this existed -
+    cheapest tier first, ties broken by the better observed record.
+
+    complexity == COMPLEX: ranked by capability instead, so a task that reads
+    as a real decision can reach past the cheapest tier for something known
+    to be stronger. A real fetched price wins whenever one exists anywhere in
+    the pool; a naming-convention guess is used only when nothing in the pool
+    has a real price at all - it never outranks real data, and a pool with no
+    signal either way falls through to the same cheapest-first order as
+    everything else. Tier, enabled, installed and quota constraints are
+    already baked into the pool by the caller; only the ORDER changes here."""
+    if not pool:
+        return None
+    if complexity == COMPLEX:
+        priced = [t for t in pool if t[0].capability > 0]
+        if priced:
+            priced.sort(key=lambda t: (-t[0].capability, -t[0].ema_success, t[0].agent))
+            return priced[0]
+        guessed = [t for t in pool if t[0].capability_guess > 0]
+        if guessed:
+            guessed.sort(key=lambda t: (-t[0].capability_guess, -t[0].ema_success, t[0].agent))
+            return guessed[0]
+        # nothing in the pool carries any capability signal at all: there is
+        # nothing honest to rank by, so fall through rather than guess
+    ranked = sorted(pool, key=lambda t: (t[0].tier, -t[0].ema_success, t[0].agent))
+    return ranked[0]
+
+
 def route(task_kind: str = "general", exclude: set[str] | None = None,
-          tier_overrides: dict | None = None, timeout: float = 8.0) -> tuple[str, str] | None:
+          tier_overrides: dict | None = None, timeout: float = 8.0,
+          text: str = "", complexity_aware: bool = True) -> tuple[str, str] | None:
     """Pick the cheapest capable thing: ("agent", id) or ("model", provider/id).
 
     One ladder over both kinds, so a local model outranks a metered API even
     though one is a model and the other a CLI. Ties inside a tier go to the
-    better observed record for this kind of task."""
+    better observed record for this kind of task.
+
+    *text* is the task itself, classified by task_complexity() purely to
+    decide HOW to rank the pool below (see _rank) - it never changes WHICH
+    candidates are eligible. Omitting it (the default) is exactly today's
+    behavior: task_complexity("") is STANDARD, so every existing caller that
+    does not pass text is unaffected. complexity_aware=False forces STANDARD
+    regardless of text, for a caller (or a user's setting) that wants the
+    plain cheapest-first ladder unconditionally."""
+    complexity = task_complexity(text) if complexity_aware else STANDARD
     exclude = exclude or set()
     pool: list[tuple[Candidate, str]] = []
     for c in candidates(task_kind, tier_overrides):
@@ -282,11 +431,12 @@ def route(task_kind: str = "general", exclude: set[str] | None = None,
         if not quota_exhausted(c.agent):
             pool.append((c, "model"))
     pool = [(c, k) for c, k in pool if c.agent not in exclude]
-    if not pool:
+    picked = _rank(pool, complexity)
+    if picked is None:
         # Everything is parked. Refusing here would let a stale backoff disable
         # auto entirely - and a candidate that failed 15 minutes ago is a
         # better bet than giving up, because the reason may have been fixed.
-        # Retry the ladder ignoring parks, best observed record first.
+        # Retry the ladder ignoring parks, same ranking rules as above.
         retry: list[tuple[Candidate, str]] = []
         for c in candidates(task_kind, tier_overrides):
             if c.enabled and c.installed and c.agent not in exclude:
@@ -294,13 +444,10 @@ def route(task_kind: str = "general", exclude: set[str] | None = None,
         for c in model_candidates(task_kind, timeout=timeout, ignore_parked=True):
             if c.agent not in exclude:
                 retry.append((c, "model"))
-        if not retry:
+        picked = _rank(retry, complexity)
+        if picked is None:
             return None
-        retry.sort(key=lambda t: (t[0].tier, -t[0].ema_success, t[0].agent))
-        best, kind = retry[0]
-        return kind, best.agent
-    pool.sort(key=lambda t: (t[0].tier, -t[0].ema_success, t[0].agent))
-    best, kind = pool[0]
+    best, kind = picked
     return kind, best.agent
 
 _FAIL_BACKOFF_SECONDS = 900.0

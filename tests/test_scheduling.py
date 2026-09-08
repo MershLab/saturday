@@ -439,6 +439,111 @@ def test_unusable_detection_reads_real_provider_errors():
     assert not routing.looks_unusable("connection reset by peer")
 
 
+# --- routing: complexity-aware model choice ----------------------------------
+
+def test_task_complexity_reads_the_task_not_a_hardcoded_list():
+    from saturday.routing import COMPLEX, STANDARD, TRIVIAL, task_complexity
+
+    trivial = ["open notion", "go to google.com and open the first result",
+              "list the files in this directory", "check the weather",
+              "take a screenshot"]
+    complex_ = ["why is checkout conversion dropping, and what should we change?",
+               "refactor the auth module for clarity and testability",
+               "debug why the build fails intermittently on CI",
+               "compare postgres and sqlite for this workload and recommend one"]
+    standard = ["what is 2+2", "summarize this document", ""]
+    for t in trivial:
+        assert task_complexity(t) == TRIVIAL, t
+    for t in complex_:
+        assert task_complexity(t) == COMPLEX, t
+    for t in standard:
+        assert task_complexity(t) == STANDARD, t
+
+
+def test_complex_task_reaches_past_the_cheapest_tier_for_a_priced_model(monkeypatch, tmp_path):
+    """A real fetched price, not a guess: the more expensive model IS the
+    provider's own flagship, and a task that reads as a real decision should
+    reach it even though a cheaper tier was available."""
+    from saturday import catalog, routing
+
+    monkeypatch.setattr(routing, "_db_path", lambda: tmp_path / "routing.db")
+    monkeypatch.setattr(catalog, "providers", lambda timeout=8.0, only=None, refresh=False: [
+        catalog.ProviderEntry(name="prov", configured=True, reachable=True, detail="ok",
+                              models=["cheap", "flagship"], usable=True),
+    ])
+    monkeypatch.setattr("saturday.usage.model_pricing",
+                        lambda p, m: (10.0, 30.0) if m == "flagship" else (0.1, 0.2))
+
+    trivial = routing.route(text="open the app")
+    assert trivial == ("model", "prov/cheap"), "a routine task must not change"
+
+    smart = routing.route(text="debug why the build fails and recommend a fix")
+    assert smart == ("model", "prov/flagship"), "a real decision should reach the priced flagship"
+
+
+def test_complex_task_falls_back_to_naming_hints_when_no_price_exists(monkeypatch, tmp_path):
+    """DeepSeek's own /models has no pricing field at all - this is the shape
+    that provider actually returns, so the naming convention is what has to
+    carry a complex task there, not a fetched number."""
+    from saturday import catalog, routing
+
+    monkeypatch.setattr(routing, "_db_path", lambda: tmp_path / "routing.db")
+    monkeypatch.setattr(catalog, "providers", lambda timeout=8.0, only=None, refresh=False: [
+        catalog.ProviderEntry(name="deepseek", configured=True, reachable=True, detail="ok",
+                              models=["deepseek-v4-flash", "deepseek-v4-pro"], usable=True),
+    ])
+    monkeypatch.setattr("saturday.usage.model_pricing", lambda p, m: None)
+
+    assert routing.route(text="open a file") == ("model", "deepseek/deepseek-v4-flash")
+    assert routing.route(text="debug why the build fails and recommend a fix") == (
+        "model", "deepseek/deepseek-v4-pro"), "the -pro name should outrank -flash with no price data"
+
+
+def test_complex_task_never_fabricates_a_ranking_with_no_signal_at_all(monkeypatch, tmp_path):
+    """No price, no naming hint anywhere in the pool: falls through to the
+    plain cheapest-first ladder rather than guess at an order."""
+    from saturday import catalog, routing
+
+    monkeypatch.setattr(routing, "_db_path", lambda: tmp_path / "routing.db")
+    monkeypatch.setattr(catalog, "providers", lambda timeout=8.0, only=None, refresh=False: [
+        catalog.ProviderEntry(name="prov", configured=True, reachable=True, detail="ok",
+                              models=["x/a:free", "x/b"], usable=True),
+    ])
+    monkeypatch.setattr("saturday.usage.model_pricing", lambda p, m: None)
+
+    assert routing.route(text="debug why the build fails") == ("model", "prov/x/a:free"), (
+        "with no capability signal at all, the free tier must still win"
+    )
+
+
+def test_complexity_aware_false_forces_the_plain_ladder(monkeypatch, tmp_path):
+    """The off switch: a caller (or a user's setting) that wants "auto" to
+    never reach past the cheapest tier on its own judgment about the task."""
+    from saturday import catalog, routing
+
+    monkeypatch.setattr(routing, "_db_path", lambda: tmp_path / "routing.db")
+    monkeypatch.setattr(catalog, "providers", lambda timeout=8.0, only=None, refresh=False: [
+        catalog.ProviderEntry(name="prov", configured=True, reachable=True, detail="ok",
+                              models=["cheap", "flagship"], usable=True),
+    ])
+    monkeypatch.setattr("saturday.usage.model_pricing",
+                        lambda p, m: (10.0, 30.0) if m == "flagship" else (0.1, 0.2))
+
+    picked = routing.route(text="debug why the build fails and recommend a fix",
+                           complexity_aware=False)
+    assert picked == ("model", "prov/cheap"), "complexity_aware=False must ignore the task text"
+
+
+def test_naming_tier_hint_reads_vendor_conventions_not_model_names():
+    from saturday.routing import _naming_tier_hint
+
+    assert _naming_tier_hint("gpt-5-pro") > _naming_tier_hint("gpt-5-mini")
+    assert _naming_tier_hint("claude-opus-5") > _naming_tier_hint("claude-haiku-4.5")
+    assert _naming_tier_hint("deepseek-v4-pro") > _naming_tier_hint("deepseek-v4-flash")
+    # a bare name with neither adjective carries no opinion either way
+    assert _naming_tier_hint("gpt-5") == 0.0
+
+
 def test_concurrent_schedule_writes_do_not_lose_entries(tmp_path):
     """S13: _load/_save is a read-modify-write and nothing guarded it, so the
     watcher's mark_fired and the UI's add landed on top of each other."""
