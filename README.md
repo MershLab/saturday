@@ -365,6 +365,8 @@ saturday chat --resume build-42
 saturday tui                          # alt-screen console: header, status bar, telemetry
 saturday serve --port 8787            # POST /message {"text": "..."} -> JSON answer (bearer token required; --token/--no-token)
 saturday gateway --token $T --allow 42  # Telegram bot, per-chat sessions, long-polling (--allow is mandatory; --allow-all at your own risk)
+saturday gateway --platform discord --token $T --allow <channel_id>  # same gateway over Discord's REST API
+saturday gateway --platform slack --token $T --allow <channel_id>    # same gateway over Slack's Web API
 ```
 
 Optional extras:
@@ -387,7 +389,7 @@ The `screen` tool captures your display and attaches it for vision inspection �
 - **SSRF guard**: `web_fetch` / `browser` / `web_search` refuse loopback, private, link-local, and cloud-metadata addresses (including across redirects). Override for local endpoints with `SATURDAY_ALLOW_LOCAL_FETCH=1`.
 - **Project trust gate**: a repo's `.env` and `.saturday/mcp.json` are only honored after you approve that project once (or set `SATURDAY_TRUST_ALL_PROJECTS=1`); non-interactive runs skip them.
 - **Privileged writes blocked**: the agent cannot `write_file`/`edit_file` `.env` or `.saturday/mcp.json`, so a prompt-injected model can't persist its own provider/MCP config changes (edit those by hand).
-- **Network surfaces fail closed**: `serve` requires a per-launch bearer token and pins Host/Origin to loopback; the Telegram gateway refuses to start without `--allow <chat_ids>` (or an explicit `--allow-all`); the web app pins Host/Origin even when launched with `--no-token`.
+- **Network surfaces fail closed**: `serve` requires a per-launch bearer token and pins Host/Origin to loopback; the gateway refuses to start without `--allow <ids>` (Telegram alone also accepts an explicit `--allow-all`; Discord and Slack have no such mode - a bot only ever polls the channels you name); the web app pins Host/Origin even when launched with `--no-token`.
 
 ## Desktop app extras (v0.6)
 
@@ -482,7 +484,7 @@ src/saturday/
 ├── eval/         verifiers + runner + builtin suite + export compression
 ├── plugins.py    everything-is-a-plugin assembly
 ├── webui.py      desktop app surface (local HTTP API + event stream)
-├── gateway.py    Telegram bot surface
+├── gateway.py    Telegram/Discord/Slack bot surface
 ├── safety.py     layered approval/scope/guardrail engine
 ├── sessions.py   tamper-evident session store + checkpoints
 ├── mcp_client.py Model Context Protocol client (stdio servers -> native tools)

@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- `saturday gateway --platform discord|slack` alongside the existing Telegram gateway, both REST-polling (no websocket dependency), unit-tested against fake transports.
 - **MCP server mode (`saturday mcp-serve`)**: Saturday now speaks the other half
   of the protocol it already consumed. Any MCP-speaking client (Claude Code,
   Cursor, Codex, an editor with an MCP panel) can spawn Saturday over stdio and
