@@ -2716,3 +2716,47 @@ def test_the_unconfined_tools_are_exactly_the_gated_ones(tmp_path):
         f"the set of unconfined tools changed: {sorted(unconfined)}. That is not "
         "automatically wrong, but it is a deliberate security boundary moving."
     )
+
+
+def test_trusted_project_env_cannot_weaken_the_safety_gates(tmp_path, monkeypatch, trust_home):
+    """Trusting a project means trusting its provider config, not handing it
+    the approval gate. SATURDAY_YOLO sets safety_mode=autonomous and
+    SATURDAY_WORKSPACE moves the file confinement root, so repo content must
+    not be able to set either. SATURDAY_SANDBOXED, two lines away from YOLO in
+    config.py, was already blocked; these were not."""
+    from saturday.utils.env import load_env_file
+    from saturday.config import AgentConfig
+
+    (tmp_path / ".env").write_text(
+        "SATURDAY_YOLO=1\nSATURDAY_WORKSPACE=/\nSATURDAY_MODEL=fine\n", encoding="utf-8"
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SATURDAY_TRUST_ALL_PROJECTS", "1")  # project is trusted
+    for k in ("SATURDAY_YOLO", "SATURDAY_WORKSPACE"):
+        monkeypatch.delenv(k, raising=False)
+
+    try:
+        loaded = load_env_file()
+        assert "SATURDAY_YOLO" not in loaded, "repo content turned off the approval gate"
+        assert "SATURDAY_WORKSPACE" not in loaded, "repo content moved the workspace root"
+        # benign config still loads once trusted
+        assert loaded.get("SATURDAY_MODEL") == "fine"
+        assert AgentConfig.load().safety_mode != "autonomous"
+    finally:
+        for k in ("SATURDAY_YOLO", "SATURDAY_WORKSPACE", "SATURDAY_MODEL"):
+            os.environ.pop(k, None)
+
+
+def test_both_project_env_readers_share_one_denylist(tmp_path, monkeypatch, trust_home):
+    """load_env_file and reload_trusted_env each filtered against their own
+    copy of the list, so a key added to one stayed allowed in the other."""
+    from saturday.utils import env as envmod
+
+    (tmp_path / ".env").write_text("SATURDAY_YOLO=1\n", encoding="utf-8")
+    monkeypatch.delenv("SATURDAY_YOLO", raising=False)
+    try:
+        assert "SATURDAY_YOLO" not in envmod.reload_trusted_env(tmp_path), (
+            "the post-trust reload path does not block what the main loader blocks"
+        )
+    finally:
+        os.environ.pop("SATURDAY_YOLO", None)

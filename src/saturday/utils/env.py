@@ -5,6 +5,33 @@ import sys
 from pathlib import Path
 
 
+# Keys that control harness security or policy posture: repo content must never
+# set these, however trusted the project is. Trusting a project means trusting
+# its provider config, not handing it the approval gate. Both readers below
+# filter against this one list; it used to be copied into each of them, and a
+# key added to one stayed allowed in the other.
+#
+# The test for membership is whether the key can weaken a gate, not whether it
+# sounds dangerous: SATURDAY_YOLO sets safety_mode=autonomous and
+# SATURDAY_WORKSPACE moves the file confinement root, so both belong here even
+# though neither mentions trust or sandboxing.
+BLOCKED_PROJECT_KEYS = frozenset({
+    "SATURDAY_TRUST_ALL_PROJECTS",
+    "SATURDAY_HOME",
+    "SATURDAY_APPROVAL_TTL",
+    "SATURDAY_GUARDRAILS",
+    "SATURDAY_SANDBOXED",
+    "SATURDAY_BACKGROUND_ONLY",
+    "SATURDAY_ALLOW_LOCAL_FETCH",
+    "SATURDAY_VERIFY_CMD",
+    "SATURDAY_PROVENANCE",
+    "SATURDAY_INJECTION_GUARD",
+    "SATURDAY_BLOCKED_APPS",
+    "SATURDAY_YOLO",
+    "SATURDAY_WORKSPACE",
+})
+
+
 def load_env_file(path: str | Path | None = None) -> dict[str, str]:
     """Load KEY=VALUE pairs into os.environ (existing env always wins).
 
@@ -20,22 +47,6 @@ def load_env_file(path: str | Path | None = None) -> dict[str, str]:
     SATURDAY_MODEL stays allowed once the project is trusted. User-controlled
     scopes (explicit path, user-global file) keep everything allowed."""
     from saturday.utils.trust import ensure_trusted
-
-    # keys that control harness security/policy posture: repo content must
-    # never write these (bootstrap + gate-weakening surface)
-    blocked_project_keys = {
-        "SATURDAY_TRUST_ALL_PROJECTS",
-        "SATURDAY_HOME",
-        "SATURDAY_APPROVAL_TTL",
-        "SATURDAY_GUARDRAILS",
-        "SATURDAY_SANDBOXED",
-        "SATURDAY_BACKGROUND_ONLY",
-        "SATURDAY_ALLOW_LOCAL_FETCH",
-        "SATURDAY_VERIFY_CMD",
-        "SATURDAY_PROVENANCE",
-        "SATURDAY_INJECTION_GUARD",
-        "SATURDAY_BLOCKED_APPS",
-    }
 
     if path:
         # (file, trusted, scope): explicit path = user-directed content.
@@ -62,7 +73,7 @@ def load_env_file(path: str | Path | None = None) -> dict[str, str]:
             key, _, value = line.partition("=")
             key = key.strip()
             value = value.strip().strip('"').strip("'")
-            if scope == "project" and key in blocked_project_keys:
+            if scope == "project" and key in BLOCKED_PROJECT_KEYS:
                 # repo content must never control harness gates
                 continue
             if key and key not in os.environ:
@@ -80,19 +91,6 @@ def reload_trusted_env(cwd: Path | str | None = None) -> dict[str, str]:
     loader).  Returns the newly applied key/value pairs."""
     root = Path(cwd or ".").resolve()
 
-    blocked_project_keys = {
-        "SATURDAY_TRUST_ALL_PROJECTS",
-        "SATURDAY_HOME",
-        "SATURDAY_APPROVAL_TTL",
-        "SATURDAY_GUARDRAILS",
-        "SATURDAY_SANDBOXED",
-        "SATURDAY_BACKGROUND_ONLY",
-        "SATURDAY_ALLOW_LOCAL_FETCH",
-        "SATURDAY_VERIFY_CMD",
-        "SATURDAY_PROVENANCE",
-        "SATURDAY_INJECTION_GUARD",
-        "SATURDAY_BLOCKED_APPS",
-    }
 
     env_path = root / ".env"
     loaded: dict[str, str] = {}
@@ -105,7 +103,7 @@ def reload_trusted_env(cwd: Path | str | None = None) -> dict[str, str]:
         key, _, value = line.partition("=")
         key = key.strip()
         value = value.strip().strip('"').strip("'")
-        if key in blocked_project_keys:
+        if key in BLOCKED_PROJECT_KEYS:
             continue
         if key and key not in os.environ:
             os.environ[key] = value
