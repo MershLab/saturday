@@ -394,6 +394,7 @@ _CONFIG_FIELDS = [
     ("verify_command", _b_line_text(500)),
     ("keep_reasoning_in_history", _v_bool),
     ("auto_title_sessions", _v_bool),
+    ("auto_complexity_routing", _v_bool),
     ("suggest_followups", _v_bool),
     ("lsp_servers", _v_lsp_servers),
     # advanced execution/model knobs (runtime reads them; the settings pane
@@ -620,11 +621,16 @@ def _run_chat(app: "AppState", rt: SessionRuntime, text: str, image_paths: list[
                     app.session_models[rt.sid] = sel
             if sel == "auto":
                 # The delegator proper: one ladder over installed CLI agents and
-                # provider models, cheapest capable tier first, and what it
-                # picks is recorded so the choice improves per kind of task.
+                # provider models, cheapest capable tier first within a task
+                # that reads as routine; a task that reads as a real decision
+                # is instead ranked by capability (routing.task_complexity),
+                # which can reach past the cheapest tier. What it picks is
+                # recorded so the choice improves per kind of task.
                 from saturday import routing
 
-                choice = routing.route(task_kind="general")
+                complexity_aware = bool(getattr(agent.cfg, "auto_complexity_routing", True))
+                choice = routing.route(task_kind="general", text=user_text,
+                                       complexity_aware=complexity_aware)
                 if choice:
                     kind, target = choice
                     routed = target
@@ -638,7 +644,9 @@ def _run_chat(app: "AppState", rt: SessionRuntime, text: str, image_paths: list[
                         finally:
                             with app._cfg_lock:
                                 app.session_models[rt.sid] = "auto"  # stay on auto
-                    bus.publish({"t": "notice", "s": f"auto \u2192 {kind}: {target}"})
+                    complexity = routing.task_complexity(user_text) if complexity_aware else routing.STANDARD
+                    bus.publish({"t": "notice",
+                                 "s": f"auto \u2192 {kind}: {target} ({complexity})"})
                 else:
                     bus.publish({"t": "notice",
                                  "s": "auto: nothing available to route to"})
@@ -1143,6 +1151,7 @@ class AppState:
             "tool_names": sorted(self._registry_names()),
             "keep_reasoning_in_history": bool(getattr(cfg, "keep_reasoning_in_history", False)),
             "auto_title_sessions": bool(getattr(cfg, "auto_title_sessions", True)),
+            "auto_complexity_routing": bool(getattr(cfg, "auto_complexity_routing", True)),
             "suggest_followups": bool(getattr(cfg, "suggest_followups", True)),
             "lsp_servers": dict(getattr(cfg, "lsp_servers", {}) or {}),
             "agent_models": dict(getattr(cfg, "agent_models", {}) or {}),

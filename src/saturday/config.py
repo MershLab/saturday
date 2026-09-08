@@ -287,6 +287,14 @@ class AgentConfig:
     # Zed/OpenHands/Goose parity: rename fresh sessions with a model-generated
     # title after the first completed turn (one tiny background call)
     auto_title_sessions: bool = True
+    # When "auto" routes to a model, a task that reads as a real decision
+    # (see routing.task_complexity) is ranked by capability instead of by
+    # cost, which can reach past the cheapest tier for a pricier model. On
+    # by default because that is the point of "auto" choosing wisely rather
+    # than just cheaply; off falls back to the plain cheapest-first ladder
+    # unconditionally, for anyone who wants "auto" to never spend more on
+    # its own judgment about the task.
+    auto_complexity_routing: bool = True
     # Devin/Cursor parity: after each completed turn, offer model-generated
     # follow-up prompts as one-click chips above the composer
     suggest_followups: bool = True
