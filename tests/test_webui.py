@@ -737,9 +737,16 @@ def test_ui_send_and_streamed_reply_renders(ui_server):
                 before = page.locator(".turn-stats").count()
                 page.fill("#input", "hello forge")
                 page.keyboard.press("Enter")
+                # 60s, matching the other heavy waits in this file, rather than
+                # the 30s this alone used to have. Waiting on a whole streamed
+                # turn is the slowest thing here, and it was the only wait left
+                # at 30s. It flaked on a shared runner that ran this job in 96s
+                # against 37s locally: the assertion is unchanged, the budget
+                # just has to survive a machine 2.6x slower than the one it was
+                # written on.
                 page.wait_for_function(
                     "n => document.querySelectorAll('.turn-stats').length > n",
-                    arg=before, timeout=30000)
+                    arg=before, timeout=60000)
                 html = page.locator(".msg-assistant .md").last.inner_html()
                 if "<strong" not in html:
                     err_line = page.evaluate("() => { const e = document.querySelector('.sysline.error'); return e ? e.textContent : null; }")
