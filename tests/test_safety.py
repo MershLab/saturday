@@ -1757,6 +1757,60 @@ def test_gateway_allow_parsing():
     assert ids == {-7, 42}
 
 
+def test_gateway_cli_discord_requires_allow_no_allow_all_option():
+    from saturday.cli import cmd_gateway
+
+    ns = type("NS", (), {})()
+    ns.token = "t"
+    ns.platform = "discord"
+    ns.allow = ""
+    ns.allow_all = True  # discord has no all-channels mode; must not bypass the check
+    ns.env = None
+    assert cmd_gateway(ns) == 1
+
+
+def test_gateway_cli_missing_token_names_the_platform_env_var(monkeypatch, capsys):
+    from saturday.cli import cmd_gateway
+
+    monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
+    ns = type("NS", (), {})()
+    ns.token = None
+    ns.platform = "discord"
+    ns.allow = "123"
+    ns.allow_all = False
+    ns.env = None
+    assert cmd_gateway(ns) == 1
+    assert "DISCORD_BOT_TOKEN" in capsys.readouterr().out
+
+
+def test_gateway_cli_slack_builds_gateway_with_string_channel_ids(monkeypatch):
+    from saturday.cli import cmd_gateway
+    import saturday.gateway as gwmod
+
+    captured = {}
+
+    class FakeSlackGateway:
+        def __init__(self, token, agent_factory, channel_ids, transport=None):
+            captured["token"] = token
+            captured["channel_ids"] = channel_ids
+
+        def run_forever(self):
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(gwmod, "SlackGateway", FakeSlackGateway)
+    monkeypatch.setattr("saturday.gateway.build_gateway_agent", lambda overrides: (lambda: None))
+
+    ns = type("NS", (), {})()
+    ns.token = "xoxb-test"
+    ns.platform = "slack"
+    ns.allow = "C123,C456"
+    ns.allow_all = False
+    ns.env = None
+    assert cmd_gateway(ns) == 0
+    assert captured["token"] == "xoxb-test"
+    assert captured["channel_ids"] == ["C123", "C456"]
+
+
 def test_gateway_redact_token():
     from saturday.gateway import redact_token
 

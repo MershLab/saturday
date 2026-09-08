@@ -596,33 +596,58 @@ def cmd_tui(args: argparse.Namespace) -> int:
     return Repl(agent, tui=True).run()
 
 
+_GATEWAY_ENV_VAR = {
+    "telegram": "TELEGRAM_BOT_TOKEN",
+    "discord": "DISCORD_BOT_TOKEN",
+    "slack": "SLACK_BOT_TOKEN",
+}
+
+
 def cmd_gateway(args: argparse.Namespace) -> int:
-    from saturday.gateway import TelegramGateway, build_gateway_agent
+    from saturday.gateway import (
+        DiscordGateway,
+        SlackGateway,
+        TelegramGateway,
+        build_gateway_agent,
+    )
     from saturday.utils.env import load_env_file
 
     load_env_file(getattr(args, "env", None))
-    token = args.token or os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    platform = getattr(args, "platform", "telegram") or "telegram"
+    env_var = _GATEWAY_ENV_VAR[platform]
+    token = args.token or os.environ.get(env_var, "")
     if not token:
-        _print("error: --token or TELEGRAM_BOT_TOKEN required")
+        _print(f"error: --token or {env_var} required")
         return 1
     # A gateway is remote control of a full-capability agent on this machine;
     # it must never accept arbitrary senders by default.
-    allowed: set[int] | None
-    if getattr(args, "allow_all", False):
+    if platform == "telegram" and getattr(args, "allow_all", False):
         allowed = None
         _print("WARNING: --allow-all set - ANY Telegram user will be able to run commands on this machine.")
     elif args.allow:
-        allowed = {int(c) for c in args.allow.split(",") if c.strip().lstrip("-").isdigit()}
+        allowed = {c.strip() for c in args.allow.split(",") if c.strip()}
+        if platform == "telegram":
+            allowed = {int(c) for c in allowed if c.lstrip("-").isdigit()}
         if not allowed:
-            _print("error: --allow produced no valid chat ids")
+            _print("error: --allow produced no valid ids")
             return 1
     else:
+        noun = "chat" if platform == "telegram" else "channel"
         _print("error: refusing to start an unauthenticated gateway.")
-        _print("pass --allow <chat_id[,chat_id...]> to restrict who can talk to the agent,")
-        _print("or --allow-all to accept ANY Telegram user (strongly discouraged).")
+        _print(f"pass --allow <{noun}_id[,{noun}_id...]> to restrict who can talk to the agent" + (
+            ", or --allow-all to accept ANY Telegram user (strongly discouraged)."
+            if platform == "telegram"
+            else f" - {platform} has no all-{noun}s mode, since a bot only ever polls the {noun}s you name."
+        ))
         return 1
-    gw = TelegramGateway(token, build_gateway_agent(_overrides(args)), allowed_chat_ids=allowed)
-    _print(f"telegram gateway polling (allowed chats: {sorted(allowed) if allowed else 'ALL'}); Ctrl-C to stop")
+    agent_factory = build_gateway_agent(_overrides(args))
+    if platform == "discord":
+        gw = DiscordGateway(token, agent_factory, channel_ids=sorted(allowed))
+    elif platform == "slack":
+        gw = SlackGateway(token, agent_factory, channel_ids=sorted(allowed))
+    else:
+        gw = TelegramGateway(token, agent_factory, allowed_chat_ids=allowed)
+    _print(f"{platform} gateway polling (allowed: {sorted(allowed) if allowed else 'ALL'}); Ctrl-C to stop")
     try:
         gw.run_forever()
     except KeyboardInterrupt:
@@ -1829,11 +1854,28 @@ run `saturday <command> --help` for a command's own options.
     common(p_tui)
     p_tui.set_defaults(fn=cmd_tui)
 
-    p_gw = sub.add_parser("gateway", help="run the Telegram gateway (long polling)")
+    p_gw = sub.add_parser("gateway", help="run a chat-platform gateway (long polling)")
     common(p_gw)
-    p_gw.add_argument("--token", help="bot token (or TELEGRAM_BOT_TOKEN)")
-    p_gw.add_argument("--allow", help="comma-separated chat ids allowed to use the agent (required unless --allow-all)")
-    p_gw.add_argument("--allow-all", action="store_true", help="accept ANY Telegram user (dangerous; overrides --allow)")
+    p_gw.add_argument(
+        "--platform",
+        choices=["telegram", "discord", "slack"],
+        default="telegram",
+        help="which platform to gateway (default: telegram)",
+    )
+    p_gw.add_argument(
+        "--token",
+        help="bot token (or TELEGRAM_BOT_TOKEN / DISCORD_BOT_TOKEN / SLACK_BOT_TOKEN, matching --platform)",
+    )
+    p_gw.add_argument(
+        "--allow",
+        help="comma-separated chat/channel ids allowed to use the agent "
+        "(required for discord/slack; required for telegram unless --allow-all)",
+    )
+    p_gw.add_argument(
+        "--allow-all",
+        action="store_true",
+        help="accept ANY Telegram user (dangerous; overrides --allow; telegram only)",
+    )
     p_gw.set_defaults(fn=cmd_gateway)
 
     p_serve = sub.add_parser("serve", help="HTTP server exposing POST /message {text}")
