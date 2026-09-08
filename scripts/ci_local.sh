@@ -43,6 +43,18 @@ run "demo"   "$PY" examples/offline_demo.py
 run "doctor" "$PY" -m saturday doctor --provider ollama --offline
 run "tests"  "$PY" -m pytest -q
 
+# The `browser` job is a second job in ci.yml, not a step of `test`, and it is
+# the only thing that runs the UI against a real page. Skipping it locally is
+# how a change to app.js reaches CI unexercised: `node --check` gets the syntax
+# and nothing else. Skipped rather than failed when playwright is absent, since
+# it is an optional extra.
+if "$PY" -c "import playwright" >/dev/null 2>&1; then
+  run "browser" "$PY" -m pytest tests/test_webui.py -q -k "ui_" -p no:randomly
+else
+  printf '\n=== browser ===\n[skip] playwright not installed: pip install -e ".[dev,browser]"\n'
+  printf '       (CI still runs these, so a UI change is unverified until you do)\n'
+fi
+
 printf '\n'
 if [ ${#failed[@]} -eq 0 ]; then
   printf 'all CI checks passed\n'
