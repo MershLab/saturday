@@ -4672,6 +4672,8 @@ def test_the_journal_stays_bounded_by_entries_and_by_bytes(tmp_path):
     assert last["ts"] == 899
 
 
+@pytest.mark.skipif(sys.platform.startswith("win"),
+                    reason="unshare is Linux only; _isolation_argv refuses on Windows first")
 def test_unshare_that_cannot_isolate_fails_closed(tmp_path, monkeypatch):
     """T25: the code treated the PRESENCE of unshare as the capability.
     Without CAP_SYS_ADMIN or unprivileged user namespaces it exits "Operation
@@ -4697,6 +4699,8 @@ def test_unshare_that_cannot_isolate_fails_closed(tmp_path, monkeypatch):
     assert "cannot create a network namespace" in out
 
 
+@pytest.mark.skipif(sys.platform.startswith("win"),
+                    reason="unshare is Linux only; _isolation_argv refuses on Windows first")
 def test_unshare_that_works_is_used(tmp_path, monkeypatch):
     from saturday.tools import shell as shell_mod
 
