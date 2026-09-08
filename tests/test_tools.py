@@ -5254,3 +5254,85 @@ def test_lsp_answers_server_to_client_requests():
     client._respond_to_server({"jsonrpc": "2.0", "id": 9, "method": "some/unknownRequest"})
     reply = json.loads(written[-1].split(b"\r\n\r\n", 1)[1])
     assert reply["id"] == 9 and reply["error"]["code"] == -32601
+
+
+def test_external_agent_passes_the_configured_model_to_each_cli():
+    """Each CLI spells the flag differently and the prompt must stay last, or
+    it gets read as the flag's value. Verified live against the installed
+    binaries' own --help: claude --model, codex -m/--model, opencode --model."""
+    from saturday.tools.external_agent import AGENTS
+
+    cases = {
+        "claude-code": ("--model", "opus"),
+        "codex": ("--model", "gpt-5"),
+        "opencode": ("--model", "prov/mini"),
+    }
+    for aid, (flag, model) in cases.items():
+        argv = AGENTS[aid].build_argv("/bin/tool", "do the thing", model)
+        assert flag in argv, f"{aid} dropped the model flag: {argv}"
+        assert argv[argv.index(flag) + 1] == model, f"{aid} passed the wrong value: {argv}"
+        assert argv[-1] == "do the thing", f"{aid} must keep the prompt last: {argv}"
+
+        # no model chosen means no flag at all, not an empty string
+        bare = AGENTS[aid].build_argv("/bin/tool", "do the thing", "")
+        assert flag not in bare, f"{aid} sent an empty model: {bare}"
+        assert bare[-1] == "do the thing"
+
+
+def test_agent_model_discovery_reads_the_binary(monkeypatch):
+    """opencode reports its own models; claude names its aliases in --help.
+    Neither list is kept in Saturday, so both follow the installed CLI."""
+    from saturday.tools import external_agent as ea
+
+    monkeypatch.setattr(ea, "_MODELS_CACHE", {})
+    monkeypatch.setattr(ea, "find_binary", lambda spec: "/usr/bin/fake")
+    monkeypatch.setattr(ea.os.path, "getmtime", lambda p: 1.0)
+
+    help_text = (
+        "  --model <model>                       Model for the current session. Provide\n"
+        "                                        an alias for the latest model (e.g.\n"
+        "                                        'fable', 'opus', or 'sonnet') or a\n"
+        "                                        model's full name (e.g.\n"
+        "                                        'claude-fable-5').\n"
+        "  --other <x>                           unrelated 'notamodel'\n"
+    )
+
+    def fake_run(argv, **kw):
+        class R:
+            returncode = 0
+            stdout = "prov/a\nprov/b\n" if "models" in argv else help_text
+            stderr = ""
+        return R()
+
+    monkeypatch.setattr(ea.subprocess, "run", fake_run)
+
+    assert ea.discover_models(ea.AGENTS["opencode"]) == ["prov/a", "prov/b"]
+    claude = ea.discover_models(ea.AGENTS["claude-code"])
+    assert claude == ["fable", "opus", "sonnet", "claude-fable-5"], claude
+    assert "notamodel" not in claude, "read past the --model description"
+
+
+def test_external_agent_uses_the_configured_model(monkeypatch, tmp_path):
+    """A model set in Settings reaches the delegation without being passed
+    per call, and an explicit per-call model still wins."""
+    from saturday.tools.external_agent import ExternalAgentTool
+
+    seen: list[list[str]] = []
+
+    class R:
+        returncode = 0
+        stdout = "ok"
+        stderr = ""
+
+    tool = ExternalAgentTool(agent_models_fn=lambda: {"opencode": "prov/configured"})
+    import saturday.tools.external_agent as ea
+
+    monkeypatch.setattr(ea, "find_binary", lambda spec: "/usr/bin/opencode")
+    monkeypatch.setattr(ea.subprocess, "run", lambda argv, **kw: (seen.append(argv), R())[1])
+
+    ok, _ = tool.run({"agent": "opencode", "prompt": "hi"})
+    assert ok and "prov/configured" in seen[-1], seen[-1]
+
+    ok, _ = tool.run({"agent": "opencode", "prompt": "hi", "model": "prov/override"})
+    assert ok and "prov/override" in seen[-1], seen[-1]
+    assert "prov/configured" not in seen[-1], "per-call model must win"

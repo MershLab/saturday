@@ -12,6 +12,7 @@ registry deliberately has no stale-detection heuristic."""
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import time
@@ -26,7 +27,16 @@ class ExternalAgentSpec:
     id: str
     binaries: tuple[str, ...]  # tried in order; first found wins
     install_hint: str
-    build_argv: Callable[[str, str], list[str]]
+    # (binary, prompt, model) -> argv. model is "" for "whatever the CLI is
+    # already configured to use", which stays the default.
+    build_argv: Callable[[str, str, str], list[str]]
+    # How to ask this CLI what models it can reach, so nothing here is a
+    # hardcoded list that goes stale when the vendor changes their lineup.
+    # models_argv: a subcommand that prints one model per line.
+    # models_from_help: the binary names its models in --help instead.
+    # Neither set means the CLI cannot be asked, and the model is free text.
+    models_argv: tuple[str, ...] = ()
+    models_from_help: bool = False
     # provider-backed agents run through Saturday itself instead of a binary
     provider: str = ""
     model: str = ""
@@ -44,7 +54,7 @@ class ExternalAgentSpec:
         return bool(self.provider)
 
 
-def _claude_code_argv(binary: str, prompt: str) -> list[str]:
+def _claude_code_argv(binary: str, prompt: str, model: str = "") -> list[str]:
     # Verified live (2026-09-07): `claude -p "edit a file"` alone answers
     # "the edit is ready but blocked - write permission hasn't been granted",
     # leaves the file untouched, and exits 0. A caller reading the return code
@@ -54,10 +64,16 @@ def _claude_code_argv(binary: str, prompt: str) -> list[str]:
     # acceptEdits, not bypassPermissions: it is the least privilege that lets
     # the delegated task actually edit, and anything else that would prompt is
     # still refused. Same reasoning as codex's workspace-write.
-    return [binary, "-p", "--permission-mode", "acceptEdits", prompt]
+    argv = [binary, "-p", "--permission-mode", "acceptEdits"]
+    # Verified live: `claude --model <model>` takes an alias ("opus", "sonnet")
+    # or a full name. The prompt stays last so it is never read as the flag's
+    # value.
+    if model:
+        argv += ["--model", model]
+    return argv + [prompt]
 
 
-def _codex_argv(binary: str, prompt: str) -> list[str]:
+def _codex_argv(binary: str, prompt: str, model: str = "") -> list[str]:
     # Verified live (codex-cli 0.149.1): `exec` alone already runs with
     # approval:never, so it never blocks on a missing tty - but its default
     # sandbox is read-only, and a task that needs to write just apologizes
@@ -68,29 +84,42 @@ def _codex_argv(binary: str, prompt: str) -> list[str]:
     # --skip-git-repo-check: codex refuses to run at all in a directory it
     # has not been separately trusted in interactively, and Saturday's
     # workspace_root is not guaranteed to be one.
-    return [binary, "exec", "--skip-git-repo-check", "--sandbox", "workspace-write", prompt]
+    argv = [binary, "exec", "--skip-git-repo-check", "--sandbox", "workspace-write"]
+    if model:  # verified live: codex exec -m/--model <MODEL>
+        argv += ["--model", model]
+    return argv + [prompt]
 
 
-def _cursor_argv(binary: str, prompt: str) -> list[str]:
+def _cursor_argv(binary: str, prompt: str, model: str = "") -> list[str]:
     # NOT changed, deliberately: cursor is not installed on the machine this
     # was investigated on, so the claude fix above could not be checked
     # against it. T10 names cursor alongside claude, and the shape is likely
     # the same, but this file's standard for these argv specs is "verified
     # live" and guessing a permission flag into a delegation path is exactly
     # the kind of untested default that produced the bug. (T10, part open)
-    return [binary, "-p", prompt]
+    argv = [binary, "-p"]
+    if model:
+        argv += ["--model", model]
+    return argv + [prompt]
 
 
-def _antigravity_argv(binary: str, prompt: str) -> list[str]:
-    return [binary, "-p", prompt]
+def _antigravity_argv(binary: str, prompt: str, model: str = "") -> list[str]:
+    argv = [binary, "-p"]
+    if model:
+        argv += ["--model", model]
+    return argv + [prompt]
 
 
-def _opencode_argv(binary: str, prompt: str) -> list[str]:
+def _opencode_argv(binary: str, prompt: str, model: str = "") -> list[str]:
     # --auto: without it, `run` can sit on a permission prompt with no tty to
     # answer it - the same failure shape codex's sandbox default has, per
     # opencode's own --help ("auto-approve permissions that are not
     # explicitly denied").
-    return [binary, "run", "--auto", prompt]
+    argv = [binary, "run", "--auto"]
+    # verified live: opencode run -m/--model, "in the format of provider/model"
+    if model:
+        argv += ["--model", model]
+    return argv + [prompt]
 
 
 AGENTS: dict[str, ExternalAgentSpec] = {
@@ -99,6 +128,9 @@ AGENTS: dict[str, ExternalAgentSpec] = {
         binaries=("claude",),
         install_hint="npm install -g @anthropic-ai/claude-code",
         build_argv=_claude_code_argv,
+        # no `claude models` subcommand exists; the binary names its aliases in
+        # --help, so the list tracks whatever version is installed.
+        models_from_help=True,
     ),
     "codex": ExternalAgentSpec(
         id="codex",
@@ -124,6 +156,9 @@ AGENTS: dict[str, ExternalAgentSpec] = {
         binaries=("opencode",),
         install_hint="curl -fsSL https://opencode.ai/install | bash",
         build_argv=_opencode_argv,
+        # verified live: prints one "provider/model" per line, and only for
+        # providers this install is actually authenticated to.
+        models_argv=("models",),
         # Named in Anthropic's April 2026 enforcement against third-party
         # harnesses billing to a consumer subscription. Saturday only runs the
         # binary, but if it is configured to bill a Claude subscription it is
@@ -137,8 +172,13 @@ AGENTS["gemini"] = AGENTS["antigravity"]
 
 
 def _templated_argv(arg_template: list[str]):
-    def build(binary: str, prompt: str) -> list[str]:
-        return [binary] + [a.replace("{prompt}", prompt) for a in arg_template]
+    def build(binary: str, prompt: str, model: str = "") -> list[str]:
+        out = [binary]
+        for a in arg_template:
+            if "{model}" in a and not model:
+                continue  # no model chosen: drop the flag rather than pass ""
+            out.append(a.replace("{prompt}", prompt).replace("{model}", model))
+        return out
     return build
 
 
@@ -248,6 +288,86 @@ def find_binary(spec: ExternalAgentSpec) -> str | None:
     return None
 
 
+# Model discovery is cached per binary path and mtime: a CLI that was upgraded
+# reports a different lineup, and the mtime changing is exactly that signal.
+_MODELS_CACHE: dict[tuple[str, str, float], tuple[float, list[str]]] = {}
+_MODELS_TTL = 900.0
+
+
+def _run_for_lines(argv: list[str], timeout: float) -> list[str]:
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout,
+                           stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if r.returncode != 0:
+        return []
+    return [ln.strip() for ln in (r.stdout or "").splitlines() if ln.strip()]
+
+
+def _models_from_help_text(text: str) -> list[str]:
+    """Model names a CLI quotes in its own --help.
+
+    `claude --help` documents --model as taking "an alias for the latest model
+    (e.g. 'fable', 'opus', or 'sonnet') or a model's full name (e.g.
+    'claude-fable-5')". Reading them from the installed binary means the list
+    follows the CLI's own updates instead of being pinned here."""
+    import re
+
+    seg = ""
+    for line in text.splitlines():
+        if "--model" in line:
+            seg = line
+            continue
+        if seg:
+            # the description wraps; keep taking indented continuation lines
+            if line.startswith((" " * 6, "\t")) and not line.strip().startswith("-"):
+                seg += " " + line
+            else:
+                break
+    if not seg:
+        return []
+    out, seen = [], set()
+    for m in re.findall(r"'([A-Za-z0-9][A-Za-z0-9._-]{1,60})'", seg):
+        if m not in seen:
+            seen.add(m)
+            out.append(m)
+    return out
+
+
+def discover_models(spec: ExternalAgentSpec, timeout: float = 20.0,
+                    refresh: bool = False) -> list[str]:
+    """Ask an installed CLI which models it can reach. [] when it cannot say.
+
+    Never a hardcoded lineup: every name here comes from the binary on this
+    machine, so upgrading the CLI or authenticating a new provider changes the
+    answer without touching Saturday."""
+    binary = find_binary(spec)
+    if binary is None:
+        return []
+    try:
+        stamp = os.path.getmtime(binary)
+    except OSError:
+        stamp = 0.0
+    key = (spec.id, binary, stamp)
+    hit = _MODELS_CACHE.get(key)
+    if hit and not refresh and (time.time() - hit[0]) < _MODELS_TTL:
+        return list(hit[1])
+
+    models: list[str] = []
+    if spec.models_argv:
+        models = _run_for_lines([binary, *spec.models_argv], timeout)
+    elif spec.models_from_help:
+        try:
+            r = subprocess.run([binary, "--help"], capture_output=True, text=True,
+                               timeout=timeout, stdin=subprocess.DEVNULL)
+            models = _models_from_help_text(r.stdout or "")
+        except (OSError, subprocess.SubprocessError):
+            models = []
+    _MODELS_CACHE[key] = (time.time(), list(models))
+    return list(models)
+
+
 class ExternalAgentTool(Tool):
     name = "external_agent"
     description = (
@@ -267,7 +387,11 @@ class ExternalAgentTool(Tool):
         "required": ["agent", "prompt"],
     }
 
-    def __init__(self, installer=None, provider_runner=None, workspace_root_fn=None) -> None:
+    def __init__(self, installer=None, provider_runner=None, workspace_root_fn=None,
+                 agent_models_fn=None) -> None:
+        # () -> {agent_id: model}. Read per call, not captured, so a model
+        # changed in Settings applies to the next delegation without a rebuild.
+        self._agent_models_fn = agent_models_fn
         # injection point for tests; real default shells out for real
         self._installer = installer or self._default_install
         # (provider, model, prompt) -> (ok, text); None disables provider-backed agents
@@ -283,6 +407,11 @@ class ExternalAgentTool(Tool):
         self.parameters["properties"] = {
             **type(self).parameters["properties"],
             "agent": {"type": "string", "enum": names},
+            "model": {
+                "type": "string",
+                "description": "Model for this one delegation, overriding the "
+                               "agent's configured default. Omit to use it.",
+            },
         }
         self.description = (
             f"Delegate a task to a different installed CLI agent ({', '.join(names)}) "
@@ -380,7 +509,13 @@ class ExternalAgentTool(Tool):
             if binary is None:
                 return False, f"install reported success but {spec.binaries[0]} still isn't on PATH"
 
-        argv = spec.build_argv(binary, prompt)
+        model = str(args.get("model") or "").strip()
+        if not model and self._agent_models_fn is not None:
+            try:
+                model = str((self._agent_models_fn() or {}).get(agent_id) or "").strip()
+            except Exception:
+                model = ""
+        argv = spec.build_argv(binary, prompt, model)
         cwd = None
         if self._workspace_root_fn is not None:
             try:
