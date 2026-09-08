@@ -2104,7 +2104,8 @@ def test_journal_entry_content_endpoint(tmp_path):
     ws.mkdir()
     app = AppState(store_root=tmp_path / "s", cfg_overrides={"workspace_root": str(ws)})
     base, _ = _server(app)
-    (ws / "a.py").write_text("orig\n", encoding="utf-8")
+    # newline="" so the fixture stays LF on Windows (see the diff test)
+    (ws / "a.py").write_text("orig\n", encoding="utf-8", newline="")
     record_edit(ws, "edit_file", str(ws / "a.py"))
 
     status, data = _req(base, "/api/journal?entry=0")

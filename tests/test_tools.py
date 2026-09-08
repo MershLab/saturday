@@ -1513,7 +1513,9 @@ def test_diff_after_edit_shows_what_a_completed_write_actually_changed(tmp_path)
     from saturday.tools.journal import latest_before
 
     p = tmp_path / "f.txt"
-    p.write_text("hello\nworld\n", encoding="utf-8")
+    # newline="" keeps the fixture LF on Windows too: write_text would
+    # translate it to CRLF and the journal would faithfully record that
+    p.write_text("hello\nworld\n", encoding="utf-8", newline="")
     tool = EditFile(root=str(tmp_path))
     ok, _ = tool.run({"path": "f.txt", "old_string": "world", "new_string": "there"})
     assert ok
