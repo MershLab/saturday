@@ -6207,3 +6207,45 @@ def test_env_upsert_tightens_a_file_that_already_exists(tmp_path):
         assert "OTHER=1" in env.read_text()
     finally:
         os.umask(old)
+
+
+def test_agent_models_endpoint_asks_the_binary_not_a_hardcoded_list(tmp_path, monkeypatch):
+    """The model list for a CLI agent must come from the CLI itself, so a
+    vendor changing their lineup does not need a Saturday release. Three
+    shapes: a CLI that can list, one that takes a model but cannot list
+    (free text), and one that is not installed at all."""
+    from saturday.tools import external_agent as ea
+
+    app = AppState(store_root=tmp_path / "s")
+    base, _ = _server(app)
+
+    monkeypatch.setattr(ea, "_MODELS_CACHE", {})
+    monkeypatch.setattr(ea, "find_binary",
+                        lambda spec: "/usr/bin/fake" if spec.id in ("opencode", "codex") else None)
+
+    def fake_run(argv, **kw):
+        class R:
+            returncode = 0
+            stdout = "prov/one\nprov/two\n" if "models" in argv else ""
+            stderr = ""
+        return R()
+
+    monkeypatch.setattr(ea.subprocess, "run", fake_run)
+    monkeypatch.setattr(ea.os.path, "getmtime", lambda p: 1.0)
+
+    status, d = _req(base, "/api/agent_models?agent=opencode")
+    assert status == 200, d
+    assert d["models"] == ["prov/one", "prov/two"], "did not ask the binary"
+    assert d["free_text"] is False
+
+    # codex takes -m but has no way to be asked: a text box, not an empty menu
+    status, d = _req(base, "/api/agent_models?agent=codex")
+    assert status == 200
+    assert d["models"] == [] and d["free_text"] is True
+
+    status, d = _req(base, "/api/agent_models?agent=cursor")
+    assert status == 200
+    assert d["installed"] is False and d["free_text"] is False
+
+    status, _ = _req(base, "/api/agent_models?agent=nope")
+    assert status == 404

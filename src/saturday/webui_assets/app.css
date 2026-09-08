@@ -2305,6 +2305,28 @@ mark.find-hit.on { background: var(--accent); color: var(--bg0); }
 }
 .mm-head + .mm-row button { padding-top: 3px; }
 
+/* per-agent model chooser: which model a CLI agent runs */
+.mm-agent-model {
+  flex: none !important; max-width: 45%; padding: 0 var(--space-8) !important;
+  background: transparent !important; color: var(--faint) !important;
+  font: inherit; font-size: var(--fs-2xs); text-align: right;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.mm-agent-model:hover { color: var(--text) !important; }
+.mm-agent-models { display: flex; flex-direction: column; padding-left: var(--space-12); }
+.mm-agent-model-opt {
+  text-align: left; font-size: var(--fs-xs);
+  background: transparent !important; color: var(--text) !important;
+}
+.mm-agent-model-opt.on { color: var(--accent) !important; }
+.mm-agent-model-input {
+  margin: var(--space-2) var(--space-8); box-sizing: border-box;
+  background: var(--bg3); color: var(--text); border: 1px solid var(--line2);
+  border-radius: var(--r-sm); padding: var(--space-4) var(--space-6);
+  font: inherit; font-size: var(--fs-xs);
+}
+.mm-agent-model-input:focus { outline: none; border-color: var(--accent-line); }
+
 /* live app preview */
 .live-bar {
   display: flex; gap: var(--space-6); align-items: center;

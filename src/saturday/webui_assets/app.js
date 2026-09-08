@@ -2841,6 +2841,66 @@ function openModelMenu() {
           } catch (e) { toast(e.message, "err"); }
         });
         row.appendChild(b2);
+
+        // Which model this CLI runs. The list is asked of the binary when the
+        // chooser is opened, never held here: a vendor changing their lineup
+        // must not need a Saturday release, and asking costs a process spawn
+        // so it does not belong in the catalogue every surface loads.
+        const chosen = ((state.info && state.info.agent_models) || {})[a.id] || "";
+        const pick = el("button", "mm-agent-model", chosen || "default model");
+        pick.title = "Choose which model " + a.id + " runs";
+        pick.addEventListener("click", async (ev) => {
+          ev.stopPropagation();
+          const open = row.nextSibling && row.nextSibling.classList
+            && row.nextSibling.classList.contains("mm-agent-models");
+          if (open) { row.nextSibling.remove(); return; }
+          const sub = el("div", "mm-agent-models");
+          sub.appendChild(el("div", "mm-hint", "Asking " + a.id + "\u2026"));
+          row.after(sub);
+          let d;
+          try {
+            d = await api("/api/agent_models?agent=" + encodeURIComponent(a.id));
+          } catch (e) { sub.replaceChildren(el("div", "mm-hint mm-warn", e.message)); return; }
+          sub.replaceChildren();
+          const setModel = async (model) => {
+            const next = Object.assign({}, (state.info && state.info.agent_models) || {});
+            if (model) next[a.id] = model; else delete next[a.id];
+            try {
+              await api("/api/config", { method: "POST",
+                body: JSON.stringify({ agent_models: next }) });
+              if (state.info) state.info.agent_models = next;
+              pick.textContent = model || "default model";
+              toast(a.id + " now runs " + (model || "its own default"), "ok");
+              sub.remove();
+            } catch (e) { toast(e.message, "err"); }
+          };
+          const mkPick = (label, value) => {
+            const b = el("button", "mm-agent-model-opt" + (value === chosen ? " on" : ""), label);
+            b.addEventListener("click", (e2) => { e2.stopPropagation(); setModel(value); });
+            sub.appendChild(b);
+          };
+          mkPick("default model", "");
+          for (const m of d.models || []) mkPick(m, m);
+          if (d.free_text) {
+            // codex takes a model but cannot be asked which: a box, not an
+            // empty menu that reads as "no models available"
+            const inp = el("input", "mm-agent-model-input");
+            inp.type = "text";
+            inp.placeholder = a.id + " model name\u2026";
+            inp.value = chosen;
+            inp.addEventListener("click", (e2) => e2.stopPropagation());
+            inp.addEventListener("keydown", (e2) => {
+              if (e2.key === "Enter") { e2.preventDefault(); setModel(inp.value.trim()); }
+            });
+            sub.appendChild(inp);
+            sub.appendChild(el("div", "mm-hint", a.id + " cannot list its models; type one and press Enter"));
+          } else if (!(d.models || []).length) {
+            sub.appendChild(el("div", "mm-hint", d.installed
+              ? a.id + " reported no models"
+              : a.id + " is not installed"));
+          }
+        });
+        row.appendChild(pick);
         body.appendChild(row);
       }
     }

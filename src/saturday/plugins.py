@@ -191,6 +191,7 @@ def _core_tools(cfg) -> list[Tool]:
     tools.append(ExternalAgentTool(
         provider_runner=_provider_runner,
         workspace_root_fn=lambda: getattr(cfg, "workspace_root", None) or ".",
+        agent_models_fn=lambda: getattr(cfg, "agent_models", {}) or {},
     ))
     return tools
 

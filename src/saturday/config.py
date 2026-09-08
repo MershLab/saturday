@@ -335,6 +335,13 @@ class AgentConfig:
     persist_approvals: bool = True
     # Language servers for LSP tools, e.g. {"python": ["pylsp"]}
     lsp_servers: dict[str, list] = field(default_factory=dict)
+    # Which model each external CLI agent should run, e.g.
+    # {"opencode": "opencode/big-pickle", "claude-code": "opus"}. An agent with
+    # no entry runs on whatever that CLI is already configured to use, which is
+    # the default. Names are not validated here: the CLIs own their lineups and
+    # change them, so a stale allow-list would be worse than passing the flag
+    # through and letting the CLI reject it out loud.
+    agent_models: dict[str, str] = field(default_factory=dict)
     # Tool blocklist: exact tool names and/or family aliases ("web",
     # "computer_use", ... see TOOL_FAMILIES). Empty = everything enabled.
     disabled_tools: list[str] = field(default_factory=list)

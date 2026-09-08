@@ -205,6 +205,28 @@ def _v_provider(patch, st, key):
     return prov
 
 
+def _v_agent_models(patch, st, key):
+    """{agent_id: model} for external CLI agents.
+
+    Model names are not checked against a list: the CLIs own their lineups and
+    change them between releases, so the only honest validation is the shape.
+    A wrong name comes back as that CLI's own error, which says more than
+    anything Saturday could pre-empt."""
+    if key not in patch:
+        return _CFG_SKIP
+    raw = patch[key]
+    if not isinstance(raw, dict):
+        return _CFG_SKIP
+    out = {}
+    for aid, model in raw.items():
+        if not isinstance(aid, str) or not isinstance(model, str):
+            continue
+        aid, model = aid.strip(), model.strip()
+        if aid and model:          # empty model means "back to the CLI default"
+            out[aid] = model
+    return out
+
+
 def _v_model(patch, st, key):
     if key not in patch or not str(patch.get(key) or "").strip():
         return _CFG_SKIP
@@ -351,6 +373,7 @@ def _v_lsp_servers(patch, st, key):
 _CONFIG_FIELDS = [
     ("provider", _v_provider),
     ("model", _v_model),
+    ("agent_models", _v_agent_models),
     ("safety_mode", _v_safety_mode),
     ("max_steps", _b_int_range(1, 200)),
     ("temperature", _b_float_range(0, 2)),
@@ -506,7 +529,11 @@ def _delegate_turn(app: "AppState", rt: SessionRuntime, aid: str, prompt: str, e
 
     bus = rt.bus
     bus.publish({"t": "notice", "s": f"delegated to {aid}"})
-    tool = ExternalAgentTool()
+    # read per call so a model changed in Settings applies to the next
+    # delegation rather than to the next process
+    tool = ExternalAgentTool(
+        agent_models_fn=lambda: getattr(rt.agent.cfg, "agent_models", {}) or {},
+    )
     try:
         ok, out = tool.run({"agent": aid, "prompt": prompt, "timeout": 900})
     except Exception as exc:                       # a broken delegate is a turn, not a crash
@@ -1118,6 +1145,7 @@ class AppState:
             "auto_title_sessions": bool(getattr(cfg, "auto_title_sessions", True)),
             "suggest_followups": bool(getattr(cfg, "suggest_followups", True)),
             "lsp_servers": dict(getattr(cfg, "lsp_servers", {}) or {}),
+            "agent_models": dict(getattr(cfg, "agent_models", {}) or {}),
             "max_wall_seconds": int(getattr(cfg, "max_wall_seconds", 0) or 0),
             "max_run_cost_usd": float(getattr(cfg, "max_run_cost_usd", 0.0) or 0.0),
             "injection_guard": bool(getattr(cfg, "injection_guard", True)),
@@ -1791,6 +1819,46 @@ class Handler(BaseHTTPRequestHandler):
             return
         routing.set_enabled(name, bool(payload.get("enabled")))
         self._send_json({"ok": True, "enabled": sorted(routing.enabled_agents())})
+
+    def _get_agent_models(self) -> None:
+        """Models one external CLI agent can reach, asked of the binary itself.
+
+        Deliberately its own endpoint rather than a field on /api/models: each
+        answer costs a process spawn, and putting that on the payload every
+        surface loads would be the stale-catalogue stall all over again. The
+        menu asks for one agent when the user opens it.
+
+        Nothing here is a list Saturday keeps. `opencode models` reports the
+        providers that install is authenticated to, and claude names its
+        aliases in its own --help, so both follow the CLI rather than a
+        constant that would rot the next time a vendor ships a model."""
+        from saturday.tools.external_agent import all_agents, discover_models, find_binary
+
+        q = self._query_params()
+        aid = (q.get("agent") or [""])[0].strip()
+        specs = all_agents()
+        spec = specs.get(aid)
+        if not spec:
+            self._send_json({"error": f"unknown agent '{aid}'"}, 404)
+            return
+        if spec.is_provider:
+            self._send_json({"agent": aid, "models": [], "installed": True,
+                             "free_text": False, "chosen": spec.model,
+                             "note": "runs through Saturday; set its model in agents.json"})
+            return
+        installed = bool(find_binary(spec))
+        refresh = (q.get("refresh") or [""])[0] in ("1", "true", "yes")
+        models = discover_models(spec, refresh=refresh) if installed else []
+        cfg_models = getattr(self.app.base_cfg, "agent_models", {}) or {}
+        self._send_json({
+            "agent": aid,
+            "installed": installed,
+            "models": models,
+            # no list does not mean no choice: codex takes -m but cannot be
+            # asked what to pass, so the UI offers a text box instead.
+            "free_text": installed and not models,
+            "chosen": str(cfg_models.get(aid) or ""),
+        })
 
     def _get_models(self) -> None:
         """Everything that can take a turn: provider models and CLI agents.
@@ -3853,6 +3921,7 @@ _GET_ROUTES = [
     ("/api/agents", "_get_agents"),
     ("/api/remote", "_get_remote"),
     ("/api/models", "_get_models"),
+    ("/api/agent_models", "_get_agent_models"),
     ("/api/sessions", "_get_sessions"),
     ("/api/projects", "_get_projects"),
     ("/api/export/all", "_get_export_all"),
