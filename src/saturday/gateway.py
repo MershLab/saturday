@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 TELEGRAM_API = "https://api.telegram.org"
+DISCORD_API = "https://discord.com/api/v10"
+SLACK_API = "https://slack.com/api"
 MAX_MESSAGE = 4000
 # inbound guard: an oversized message must not pin a worker thread (and its
 # provider spend) indefinitely; truncate with a visible note instead
@@ -18,7 +20,8 @@ SESSION_IDLE_EVICT_S = 30 * 60  # agents are expensive; drop chats idle > 30 min
 
 
 def redact_token(text: str, token: str) -> str:
-    """Bot tokens ride in URLs, so urllib errors embed them; never print one."""
+    """Bot tokens ride in URLs or Authorization headers, so an error can
+    embed one; never print one."""
     if token and token in text:
         return text.replace(token, "***")
     return text
@@ -57,6 +60,158 @@ class TelegramTransport:
             self._call("sendMessage", {"chat_id": chat_id, "text": chunk})
 
 
+class DiscordTransport:
+    """HTTP boundary kept injectable for offline tests.
+
+    Polls each configured channel's REST message history rather than opening
+    Discord's real-time Gateway websocket, so this stays stdlib-only like the
+    Telegram transport - the cost is up-to-poll-interval latency instead of
+    push, the same tradeoff Telegram's own long polling already makes.
+    """
+
+    def __init__(
+        self,
+        token: str,
+        channel_ids: list[Any],
+        api_base: str = DISCORD_API,
+        timeout: float = 15,
+    ) -> None:
+        self.token = token
+        self.channel_ids = list(channel_ids)
+        self.api_base = api_base.rstrip("/")
+        self.timeout = timeout
+        self._after: dict[Any, str] = {}
+        self._bot_id: str | None = None
+
+    def _call(self, method: str, path: str, payload: dict[str, Any] | None = None) -> Any:
+        url = f"{self.api_base}{path}"
+        data = json.dumps(payload).encode() if payload is not None else None
+        req = urllib.request.Request(url, data=data, method=method)
+        req.add_header("Authorization", f"Bot {self.token}")
+        if data is not None:
+            req.add_header("Content-Type", "application/json")
+        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            body = resp.read()
+        return json.loads(body.decode("utf-8")) if body else None
+
+    def _bot_user_id(self) -> str | None:
+        if self._bot_id is None:
+            me = self._call("GET", "/users/@me") or {}
+            self._bot_id = me.get("id")
+        return self._bot_id
+
+    def get_updates(self) -> list[dict[str, Any]]:
+        updates: list[dict[str, Any]] = []
+        bot_id: str | None = None
+        for cid in self.channel_ids:
+            after = self._after.get(cid)
+            if after is None:
+                # bootstrap: seed the cursor at "now" instead of replaying
+                # the channel's whole history as though it just arrived
+                latest = self._call("GET", f"/channels/{cid}/messages?limit=1") or []
+                self._after[cid] = latest[0]["id"] if latest else "0"
+                continue
+            messages = self._call("GET", f"/channels/{cid}/messages?limit=50&after={after}") or []
+            if messages and bot_id is None:
+                bot_id = self._bot_user_id()
+            for m in sorted(messages, key=lambda m: int(m["id"])):
+                self._after[cid] = m["id"]
+                author = m.get("author") or {}
+                if author.get("bot") or author.get("id") == bot_id:
+                    continue
+                text = (m.get("content") or "").strip()
+                if not text:
+                    continue
+                updates.append({"chat_id": cid, "text": text})
+        return updates
+
+    def send_message(self, chat_id: Any, text: str) -> None:
+        for chunk_start in range(0, len(text), MAX_MESSAGE):
+            chunk = text[chunk_start : chunk_start + MAX_MESSAGE]
+            self._call("POST", f"/channels/{chat_id}/messages", {"content": chunk})
+
+
+class SlackTransport:
+    """HTTP boundary kept injectable for offline tests.
+
+    Polls `conversations.history` per configured channel with the Web API
+    rather than Socket Mode or an Events API webhook, so a self-hoster needs
+    nothing but a bot token and no public HTTPS endpoint to receive on.
+    """
+
+    def __init__(
+        self,
+        token: str,
+        channel_ids: list[Any],
+        api_base: str = SLACK_API,
+        timeout: float = 15,
+    ) -> None:
+        self.token = token
+        self.channel_ids = list(channel_ids)
+        self.api_base = api_base.rstrip("/")
+        self.timeout = timeout
+        self._oldest: dict[Any, str] = {}
+        self._bot_id: str | None = None
+
+    def _call(
+        self,
+        method: str,
+        path: str,
+        payload: dict[str, Any] | None = None,
+        query: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        url = f"{self.api_base}{path}"
+        if query:
+            url += "?" + urllib.parse.urlencode(query)
+        data = json.dumps(payload).encode() if payload is not None else None
+        req = urllib.request.Request(url, data=data, method=method)
+        req.add_header("Authorization", f"Bearer {self.token}")
+        if data is not None:
+            req.add_header("Content-Type", "application/json; charset=utf-8")
+        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+        if not body.get("ok", False):
+            raise RuntimeError(f"slack api error: {body.get('error', 'unknown')}")
+        return body
+
+    def _bot_user_id(self) -> str | None:
+        if self._bot_id is None:
+            self._bot_id = self._call("GET", "/auth.test").get("user_id")
+        return self._bot_id
+
+    def get_updates(self) -> list[dict[str, Any]]:
+        updates: list[dict[str, Any]] = []
+        bot_id: str | None = None
+        for cid in self.channel_ids:
+            oldest = self._oldest.get(cid)
+            if oldest is None:
+                # bootstrap: start listening from now, not from channel history
+                self._oldest[cid] = f"{time.time():.6f}"
+                continue
+            body = self._call(
+                "GET",
+                "/conversations.history",
+                query={"channel": cid, "oldest": oldest, "inclusive": "false", "limit": 50},
+            )
+            messages = body.get("messages") or []
+            if messages and bot_id is None:
+                bot_id = self._bot_user_id()
+            for m in sorted(messages, key=lambda m: float(m["ts"])):
+                self._oldest[cid] = m["ts"]
+                if m.get("bot_id") or m.get("user") == bot_id or m.get("subtype"):
+                    continue
+                text = (m.get("text") or "").strip()
+                if not text:
+                    continue
+                updates.append({"chat_id": cid, "text": text})
+        return updates
+
+    def send_message(self, chat_id: Any, text: str) -> None:
+        for chunk_start in range(0, len(text), MAX_MESSAGE):
+            chunk = text[chunk_start : chunk_start + MAX_MESSAGE]
+            self._call("POST", "/chat.postMessage", {"channel": chat_id, "text": chunk})
+
+
 @dataclass
 class ChatSession:
     agent_factory: Callable[[], Any]
@@ -64,15 +219,19 @@ class ChatSession:
     last_active: float = field(default_factory=time.time)  # doubles as last_used
 
 
-class TelegramGateway:
+class _PollingGateway:
+    """Shared long-poll dispatch loop: session lifecycle, per-chat locking,
+    idle eviction, backoff, run_forever. A subclass owns only how its
+    platform's raw update maps to (chat_id, text) via `_extract`, and which
+    transport it defaults to."""
+
     def __init__(
         self,
-        token: str,
+        transport: Any,
         agent_factory: Callable[[], Any],
-        allowed_chat_ids: set[int | str] | None = None,
-        transport: TelegramTransport | None = None,
+        allowed_chat_ids: set[Any] | None = None,
     ) -> None:
-        self.transport = transport or TelegramTransport(token)
+        self.transport = transport
         self.agent_factory = agent_factory
         self.allowed = allowed_chat_ids
         self.sessions: dict[Any, ChatSession] = {}
@@ -81,6 +240,16 @@ class TelegramGateway:
         self._unauth_warned: set[Any] = set()  # one liveness reply per stranger chat
         self.running = False
         self.consecutive_failures = 0
+
+    def _extract(self, update: dict[str, Any]) -> tuple[Any, str] | None:
+        """Return (chat_id, text), or None if the update carries no message.
+        Default assumes an already-normalized {"chat_id", "text"} update, as
+        the Discord/Slack transports produce; Telegram overrides this."""
+        chat_id = update.get("chat_id")
+        text = (update.get("text") or "").strip()
+        if chat_id is None or not text:
+            return None
+        return chat_id, text
 
     def _lock_for(self, chat_id: Any) -> threading.Lock:
         """One-at-a-time processing PER CHAT (ordering within a conversation);
@@ -117,13 +286,10 @@ class TelegramGateway:
         Returns True when the update will be processed. Never runs the agent
         inline: the single poll loop must keep polling while chats work.
         """
-        msg = update.get("message") or update.get("edited_message")
-        if not msg:
+        parsed = self._extract(update)
+        if parsed is None:
             return False
-        chat_id = (msg.get("chat") or {}).get("id")
-        text = (msg.get("text") or "").strip()
-        if chat_id is None or not text:
-            return False
+        chat_id, text = parsed
         if self.allowed is not None and chat_id not in self.allowed and str(chat_id) not in {str(c) for c in self.allowed}:
             # liveness discipline: replying to every unauthorized message turns
             # the bot into a free oracle that confirms its own existence (and
@@ -247,6 +413,55 @@ class TelegramGateway:
 
     def stop(self) -> None:
         self.running = False
+
+
+class TelegramGateway(_PollingGateway):
+    def __init__(
+        self,
+        token: str,
+        agent_factory: Callable[[], Any],
+        allowed_chat_ids: set[int | str] | None = None,
+        transport: TelegramTransport | None = None,
+    ) -> None:
+        super().__init__(transport or TelegramTransport(token), agent_factory, allowed_chat_ids)
+
+    def _extract(self, update: dict[str, Any]) -> tuple[Any, str] | None:
+        msg = update.get("message") or update.get("edited_message")
+        if not msg:
+            return None
+        chat_id = (msg.get("chat") or {}).get("id")
+        text = (msg.get("text") or "").strip()
+        if chat_id is None or not text:
+            return None
+        return chat_id, text
+
+
+class DiscordGateway(_PollingGateway):
+    """Same dispatch loop as TelegramGateway; unlike Telegram there is no
+    "allow-all" mode; a bot only ever polls the channel ids it's given."""
+
+    def __init__(
+        self,
+        token: str,
+        agent_factory: Callable[[], Any],
+        channel_ids: list[Any],
+        transport: DiscordTransport | None = None,
+    ) -> None:
+        super().__init__(transport or DiscordTransport(token, channel_ids), agent_factory, set(channel_ids))
+
+
+class SlackGateway(_PollingGateway):
+    """Same dispatch loop as TelegramGateway; unlike Telegram there is no
+    "allow-all" mode; a bot only ever polls the channel ids it's given."""
+
+    def __init__(
+        self,
+        token: str,
+        agent_factory: Callable[[], Any],
+        channel_ids: list[Any],
+        transport: SlackTransport | None = None,
+    ) -> None:
+        super().__init__(transport or SlackTransport(token, channel_ids), agent_factory, set(channel_ids))
 
 
 def build_gateway_agent(cfg_overrides: dict | None = None):
