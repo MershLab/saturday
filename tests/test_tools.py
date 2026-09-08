@@ -4678,8 +4678,6 @@ def test_unshare_that_cannot_isolate_fails_closed(tmp_path, monkeypatch):
     not permitted", and the command came back as a SUCCESSFUL tool call
     carrying exit_code 1 - the opposite of the fail-closed refusal this branch
     exists to give. Reproduced on the machine this was found on."""
-    import subprocess
-
     from saturday.tools import shell as shell_mod
 
     monkeypatch.setattr(shell_mod.shutil, "which", lambda n: "/usr/bin/unshare")
@@ -5221,8 +5219,6 @@ def test_lsp_answers_server_to_client_requests():
     # drive the REAL read loop, not the responder directly: the defect was
     # that _request never dispatched to it, so calling it by hand would have
     # passed against the broken code
-    import time as _time
-
     inbox = [
         {"jsonrpc": "2.0", "id": 99, "method": "client/registerCapability", "params": {}},
         {"jsonrpc": "2.0", "id": 1, "result": {"ok": True}},
