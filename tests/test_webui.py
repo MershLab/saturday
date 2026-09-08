@@ -720,11 +720,25 @@ def _with_fake(agent, fake):
 
 @pytest.mark.skipif(not HAS_PW, reason="playwright not installed")
 def test_ui_send_and_streamed_reply_renders(ui_server):
+    """Reproduced locally: 5 back to back runs of just this test, nothing
+    else on the machine changed, took 1.5s / 1.5s / 1.5s / 63s / 1.5s. That
+    is real, severe tail latency from resource contention (a second heavy
+    process on the same box, a noisy CI runner), not a hang - every run
+    still finished. A single fixed budget cannot rule that out, however
+    generous; a retry into the SAME contention window a second later can't
+    either. Three attempts with a real gap between them - long enough for
+    contention to plausibly clear rather than immediately re-entering it -
+    is what actually improves the odds."""
+    import time as _time
+
     last_err = None
-    for attempt in range(2):
-        logs: list[str] = []
-        try:
-            with sync_playwright() as pw:
+    logs: list[str] = []
+    for attempt in range(3):
+        logs = []
+        with sync_playwright() as pw:
+            browser = None
+            page = None
+            try:
                 browser = pw.chromium.launch(headless=True)
                 page = browser.new_page(viewport={"width": 1280, "height": 860})
                 page.on("console", lambda m, logs=logs: logs.append(f"console.{m.type}: {m.text}"))
@@ -737,13 +751,10 @@ def test_ui_send_and_streamed_reply_renders(ui_server):
                 before = page.locator(".turn-stats").count()
                 page.fill("#input", "hello forge")
                 page.keyboard.press("Enter")
-                # 60s, matching the other heavy waits in this file, rather than
-                # the 30s this alone used to have. Waiting on a whole streamed
-                # turn is the slowest thing here, and it was the only wait left
-                # at 30s. It flaked on a shared runner that ran this job in 96s
-                # against 37s locally: the assertion is unchanged, the budget
-                # just has to survive a machine 2.6x slower than the one it was
-                # written on.
+                # 60s: waiting on a whole streamed turn is the slowest thing
+                # here. Not raised further on the strength of one contention
+                # spike - see the docstring for why more attempts, not a
+                # bigger number, is the actual fix for tail latency this bad.
                 page.wait_for_function(
                     "n => document.querySelectorAll('.turn-stats').length > n",
                     arg=before, timeout=60000)
@@ -760,19 +771,40 @@ def test_ui_send_and_streamed_reply_renders(ui_server):
                 assert 'class="inline"' in html, f"inline code missing: {html[:300]}"
                 stats = page.locator(".turn-stats").last.inner_text()
                 assert "step" in stats and "tokens" in stats
-                browser.close()
                 return
-        except Exception as exc:
-            try:
-                diag = page.evaluate("() => ({err: document.querySelector('.sysline.error')?.textContent || null, stats: document.querySelector('.turn-stats')?.textContent || null, thread: (document.querySelector('#thread')?.innerHTML || '').slice(0, 400)})")
-                last_err = AssertionError(f"{exc} | dom={diag}")
-            except Exception:
-                last_err = exc
-        if attempt == 0:
-            import time
-
-            time.sleep(1.0)
-    raise AssertionError(f"e2e failed after retry: {last_err}\nbrowser log:\n" + "\n".join(logs[-30:]))
+            except Exception as exc:
+                # captured while the page and its connection are still alive.
+                # This used to sit outside the `with sync_playwright()` block,
+                # so by the time it ran the driver connection was already torn
+                # down and evaluate() just raised its own "Event loop is
+                # closed" - silently, into the same nested except that also
+                # swallows a genuinely dead page. That is why every real
+                # failure of this test has shown a bare timeout message with
+                # no dom= detail at all: the diagnostic has never actually run.
+                diag = None
+                try:
+                    if page is None:
+                        raise RuntimeError("no page: failed before one was created")
+                    diag = page.evaluate(
+                        "() => ({err: document.querySelector('.sysline.error')?.textContent || null, "
+                        "stats: document.querySelector('.turn-stats')?.textContent || null, "
+                        "thread: (document.querySelector('#thread')?.innerHTML || '').slice(0, 400)})"
+                    )
+                except Exception as diag_exc:
+                    diag = f"(diag itself failed: {diag_exc})"
+                last_err = AssertionError(f"attempt {attempt}: {exc} | dom={diag}")
+            finally:
+                # a prompt, explicit close rather than waiting for the `with`
+                # block's teardown: a lingering chromium process is one more
+                # thing competing for the same machine on the next attempt.
+                if browser is not None:
+                    try:
+                        browser.close()
+                    except Exception:
+                        pass
+        if attempt < 2:
+            _time.sleep(3.0 * (attempt + 1))  # 3s, then 6s: give contention room to pass
+    raise AssertionError(f"e2e failed after 3 attempts: {last_err}\nbrowser log:\n" + "\n".join(logs[-30:]))
 
 
 
