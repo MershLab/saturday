@@ -381,7 +381,16 @@ class ExternalAgentTool(Tool):
             "agent": {"type": "string", "enum": list(AGENTS.keys())},  # replaced per-instance
             "prompt": {"type": "string", "description": "Full standalone instructions for the delegate"},
             "install": {"type": "boolean", "description": "auto-install the CLI if missing (default false - asks first otherwise)"},
-            "timeout": {"type": "number", "description": "seconds before giving up (default 600)"},
+            "timeout": {
+                "type": "number",
+                "description": "seconds before giving up (default 600). A delegate spins up a "
+                               "whole other agent that plans and acts on its own; a multi-step "
+                               "task (browser automation, real file edits) routinely needs minutes, "
+                               "not seconds. Passing a low number here almost never speeds up a "
+                               "genuine task - it just turns a delegate that was working into a "
+                               "false timeout, indistinguishable from a real failure to the caller. "
+                               "Leave this unset unless there is a specific reason to cut it short.",
+            },
             "task_kind": {"type": "string", "description": "for agent=auto: task category, so routing learns per kind"},
         },
         "required": ["agent", "prompt"],
