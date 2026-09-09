@@ -1931,6 +1931,76 @@ def test_repo_index_boosts_defining_file_over_mentioning_file(tmp_path):
     assert hits[0]["path"] == "definer.py"
 
 
+def test_warm_index_async_does_not_block_the_caller(tmp_path, monkeypatch):
+    """Opening a project must not stall on a full repo walk. build_index()
+    still stats and scans every file even when its own cache is warm - real
+    I/O, not a free check - so a caller that only wants the index READY has
+    to get control back immediately, before the walk finishes."""
+    import threading
+    import time
+
+    from saturday.tools import repo_index as ri
+
+    (tmp_path / "a.py").write_text("def f():\n    return 1\n")
+    started = threading.Event()
+    release = threading.Event()
+    real_build = ri.build_index
+
+    def slow_build(root, force=False):
+        started.set()
+        release.wait(timeout=5)
+        return real_build(root, force=force)
+
+    monkeypatch.setattr(ri, "build_index", slow_build)
+
+    t0 = time.time()
+    ri.warm_index_async(tmp_path)
+    elapsed = time.time() - t0
+    assert elapsed < 0.5, f"warm_index_async blocked the caller for {elapsed:.2f}s"
+    assert started.wait(timeout=2), "the background build never actually started"
+    release.set()
+
+
+def test_warm_index_async_actually_builds_the_index(tmp_path):
+    from saturday.tools.repo_index import INDEX_NAME, warm_index_async
+
+    (tmp_path / "a.py").write_text("def hello_world():\n    return 1\n")
+    warm_index_async(tmp_path)
+    index_path = tmp_path / ".saturday" / INDEX_NAME
+    for _ in range(50):
+        if index_path.is_file():
+            break
+        import time as _t
+        _t.sleep(0.05)
+    assert index_path.is_file(), "the background build never wrote the index"
+    import json
+    idx = json.loads(index_path.read_text())
+    assert "a.py" in idx.get("files", {})
+
+
+def test_warm_index_async_deduplicates_concurrent_requests_for_the_same_folder(tmp_path, monkeypatch):
+    """Opening the same project five times in a row - or two browser tabs on
+    it - must start one walk, not five racing to write the same cache file."""
+    from saturday.tools import repo_index as ri
+
+    (tmp_path / "a.py").write_text("x = 1\n")
+    calls = []
+    real_build = ri.build_index
+
+    def counting(root, force=False):
+        calls.append(root)
+        import time as _t
+        _t.sleep(0.2)
+        return real_build(root, force=force)
+
+    monkeypatch.setattr(ri, "build_index", counting)
+    for _ in range(5):
+        ri.warm_index_async(tmp_path)
+    import time as _t
+    _t.sleep(0.4)
+    assert len(calls) == 1, f"expected one deduplicated build, got {len(calls)}"
+
+
 def test_repo_index_symbols_survive_incremental_rebuild(tmp_path):
     from saturday.tools.repo_index import build_index, search_index
 

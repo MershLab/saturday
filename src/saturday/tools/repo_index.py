@@ -13,10 +13,43 @@ import json
 import math
 import os
 import re
+import threading
 import time
 from pathlib import Path
 
 INDEX_NAME = "repo_index.json"
+
+# build_index() walks and stats every file even when its own cache is fully
+# warm - a real repo's file count makes that genuine I/O, not a free check -
+# so a caller that just wants the index READY (opening a project, assigning
+# a session to one) must not run it inline on that request. One warm per
+# workspace at a time; a second "same folder just opened again" request
+# joins the one already running instead of starting a redundant walk.
+_WARMING: set[str] = set()
+_WARM_LOCK = threading.Lock()
+
+
+def warm_index_async(workspace_root: str | Path) -> None:
+    """Fire-and-forget: build_index() for this workspace, off the caller's
+    request. Errors are swallowed - a failed warm just leaves the index
+    exactly as stale as it already was, and the next real search still
+    tries again through the normal path."""
+    root = str(Path(workspace_root))
+    with _WARM_LOCK:
+        if root in _WARMING:
+            return
+        _WARMING.add(root)
+    threading.Thread(target=_warm_one, args=(root,), daemon=True).start()
+
+
+def _warm_one(root: str) -> None:
+    try:
+        build_index(root)
+    except Exception:
+        pass
+    finally:
+        with _WARM_LOCK:
+            _WARMING.discard(root)
 SKIP_DIRS = {
     ".git", ".saturday", "__pycache__", "node_modules", ".venv", "venv", "dist", "build",
     ".pytest_cache", ".next", ".nuxt", "target", "vendor", ".tox", ".mypy_cache",

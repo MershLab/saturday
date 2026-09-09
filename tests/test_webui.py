@@ -2885,6 +2885,55 @@ def test_assign_moves_session_between_projects(tmp_path: Path):
         assert status == 404
 
 
+def test_creating_a_project_warms_its_repo_index(tmp_path: Path):
+    """Memory only knew about a project's code once someone happened to open
+    the Memory tab. Creating a project with a real folder should not need
+    that extra step."""
+    from saturday.tools.repo_index import INDEX_NAME
+
+    app = make_app_projects(tmp_path, [{"content": "ok"}])
+    ws = tmp_path / "code"
+    ws.mkdir()
+    (ws / "a.py").write_text("def hello_world():\n    return 1\n")
+    with _ServerProjects(app) as srv:
+        status, _ = req(srv.base, "/api/projects", "POST", {"name": "P", "workspace": str(ws)})
+        assert status == 200
+        index_path = ws / ".saturday" / INDEX_NAME
+        for _ in range(50):
+            if index_path.is_file():
+                break
+            import time
+            time.sleep(0.05)
+        assert index_path.is_file(), "creating a project with a workspace must warm its index"
+
+
+def test_assigning_a_session_warms_the_new_projects_index(tmp_path: Path):
+    """Isolated from project creation deliberately: the project is built
+    straight through the store, never through /api/projects, so only
+    /api/assign's own warm call is under test - otherwise creation's warm
+    would fire on the same workspace and the assertion would pass even with
+    assign's warm call deleted."""
+    from saturday.tools.repo_index import INDEX_NAME
+
+    app = make_app_projects(tmp_path, [{"content": "ok"}])
+    ws = tmp_path / "wsb"
+    ws.mkdir()
+    (ws / "a.py").write_text("x = 1\n")
+    proj = app.projects.create("B", workspace=str(ws))
+    with _ServerProjects(app) as srv:
+        events = stream_chat(srv.base, {"text": "move me"})
+        sid = events[0]["sid"]
+        status, _ = req(srv.base, "/api/assign", "POST", {"session_id": sid, "project_id": proj.id})
+        assert status == 200
+        index_path = ws / ".saturday" / INDEX_NAME
+        for _ in range(50):
+            if index_path.is_file():
+                break
+            import time
+            time.sleep(0.05)
+        assert index_path.is_file(), "assigning to a project with a workspace must warm its index"
+
+
 def test_delete_project_untags_sessions(tmp_path: Path):
     app = make_app_projects(tmp_path, [{"content": "kept"}])
     with _ServerProjects(app) as srv:

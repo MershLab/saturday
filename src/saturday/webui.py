@@ -3692,6 +3692,14 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self._send_json({"error": str(exc)}, 400)
             return
+        if proj.workspace:
+            # off the request: memory/repo search only built this folder's
+            # index the moment someone happened to open the Memory tab,
+            # which read as "memory doesn't know about my project" until
+            # then. Warming it here means it is ready well before that.
+            from saturday.tools.repo_index import warm_index_async
+
+            warm_index_async(proj.workspace)
         out = {"ok": True, "project": proj.to_dict()}
         out["projects"] = app.projects_payload()
         self._send_json(out)
@@ -3709,12 +3717,17 @@ class Handler(BaseHTTPRequestHandler):
         if busy:
             self._send_json({"error": "session busy - stop the run before moving it"}, 409)
             return
-        if pid and app.projects.get(pid) is None:
+        proj = app.projects.get(pid) if pid else None
+        if pid and proj is None:
             self._send_json({"error": "unknown project"}, 404)
             return
         if not app.store.set_project(sid, pid):
             self._send_json({"error": "unknown session"}, 404)
             return
+        if proj is not None and proj.workspace:
+            from saturday.tools.repo_index import warm_index_async
+
+            warm_index_async(proj.workspace)
         with app.runtimes_lock:
             rt = app.runtimes.get(sid)
             if rt is not None and not rt.busy:
