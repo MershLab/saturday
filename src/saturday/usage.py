@@ -190,6 +190,10 @@ def usage_summary(limit_days: int = DAYS_SHOWN) -> dict[str, Any]:
     entries = load_entries(limit_days=limit_days)
     by_day: dict[str, int] = defaultdict(int)
     by_model: dict[str, int] = defaultdict(int)
+    # only ever gets a key for a model that had at least one resolvable
+    # price - `m in by_model_cost` IS "this model's cost is known", so there
+    # is no separate flag to keep in sync with it.
+    by_model_cost: dict[str, float] = defaultdict(float)
     by_provider: dict[str, int] = defaultdict(int)
     stops: dict[str, int] = defaultdict(int)
     cost = 0.0
@@ -220,8 +224,21 @@ def usage_summary(limit_days: int = DAYS_SHOWN) -> dict[str, Any]:
         if est is not None:
             cost_known = True
             cost += est
+            # attributed to the SAME model key as by_model, so a turn's cost
+            # lands next to the token count that produced it - the About pane
+            # used to show tokens per model beside one lump total cost with
+            # no link between the two.
+            by_model_cost[model] += est
     days = [{"day": d, "tokens": by_day[d]} for d in sorted(by_day)][-limit_days:]
     models = sorted(by_model.items(), key=lambda kv: -kv[1])[:8]
+    # A model's price is looked up at query time against whatever is current
+    # (the static table, or the live-fetched OpenRouter list), not the price
+    # that was actually in effect when each turn ran - the same "list price,
+    # not a bill" caveat est_cost_usd_14d already carries, applied per model.
+    cost_by_model = sorted(
+        ({"model": m, "cost_usd": round(c, 4)} for m, c in by_model_cost.items()),
+        key=lambda row: -row["cost_usd"],
+    )[:8]
     return {
         "turns": turns,
         "total_tokens": total_tokens,
@@ -234,7 +251,18 @@ def usage_summary(limit_days: int = DAYS_SHOWN) -> dict[str, Any]:
             {"provider": p, "turns": n} for p, n in sorted(by_provider.items(), key=lambda kv: -kv[1])
         ],
         "days": days,
-        "models": [{"model": m, "tokens": t} for m, t in models],
+        # kept token sorted for backward compatibility (existing callers read
+        # .model/.tokens by position); cost_usd is None when this model's
+        # price was never resolvable, never a fabricated number.
+        "models": [
+            {"model": m, "tokens": t,
+             "cost_usd": round(by_model_cost[m], 4) if m in by_model_cost else None}
+            for m, t in models
+        ],
+        # sorted by actual spend instead of volume: a model used rarely at a
+        # high price can cost more than one used constantly at a low price,
+        # and the token sorted list above cannot show that.
+        "cost_by_model": cost_by_model,
     }
 
 

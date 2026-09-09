@@ -5463,7 +5463,12 @@ function renderUsage(usage) {
     bar.title = key + ": " + (found ? found.tokens.toLocaleString() + " tokens" : "no turns");
     wrap.appendChild(bar);
   }
-  const modelsTxt = (usage.models || []).map((m) => m.model + " " + fmtK(m.tokens)).join(" \u00b7 ");
+  // cost sits next to the tokens that produced it, model by model, rather
+  // than only as one lump total below - a model used rarely but priced high
+  // was previously invisible next to one heavily used but cheap.
+  const modelsTxt = (usage.models || [])
+    .map((m) => m.model + " " + fmtK(m.tokens) + (m.cost_usd != null ? " ($" + m.cost_usd.toFixed(2) + ")" : ""))
+    .join(" \u00b7 ");
   const costTxt = usage.est_cost_usd_14d != null ? " \u00b7 ~$" + Number(usage.est_cost_usd_14d).toFixed(2) + " est. (14d list price)" : "";
   $("#usageTotals").textContent =
     (usage.turns || 0) + " turns \u00b7 " + (usage.total_tokens || 0).toLocaleString() + " tokens" + (modelsTxt ? " — " + modelsTxt : "") + costTxt;

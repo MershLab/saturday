@@ -282,6 +282,66 @@ def test_record_and_summary(tmp_path):
     assert len(summary["days"]) == 1
 
 
+def test_cost_is_attributed_to_the_model_that_actually_spent_it(tmp_path):
+    """Tokens per model already existed; cost sat next to it only as one lump
+    total, so a model used rarely at a high price was invisible next to one
+    used constantly at a low one. gpt-4o is a real entry in the static price
+    table (2.50, 10.0 per million); unknown-thing has no price anywhere and
+    must stay None rather than a fabricated number."""
+    from saturday.usage import record_usage, usage_summary
+
+    record_usage(provider="openai", model="gpt-4o", session="s1",
+                 prompt_tokens=100_000, completion_tokens=50_000, total_tokens=150_000, stop_reason="done")
+    record_usage(provider="prov", model="unknown-thing", session="s2",
+                 prompt_tokens=5_000, completion_tokens=5_000, total_tokens=10_000, stop_reason="done")
+
+    summary = usage_summary()
+    by_model = {m["model"]: m for m in summary["models"]}
+    assert by_model["openai/gpt-4o"]["cost_usd"] == round(0.1 * 2.50 + 0.05 * 10.0, 4)
+    assert by_model["prov/unknown-thing"]["cost_usd"] is None, "an unpriced model must not get a fake cost"
+
+    # sorted by actual spend, and only the priced ones can be ranked at all
+    assert [row["model"] for row in summary["cost_by_model"]] == ["openai/gpt-4o"]
+    assert summary["cost_by_model"][0]["cost_usd"] == by_model["openai/gpt-4o"]["cost_usd"]
+
+    # the per-model breakdown must sum back to the same total the About pane
+    # already showed, or the two numbers on screen would silently disagree
+    known_total = round(sum(row["cost_usd"] for row in summary["cost_by_model"]), 4)
+    assert known_total == summary["est_cost_usd_14d"]
+
+
+def test_cost_by_model_ranks_by_spend_not_by_volume(tmp_path):
+    """A model used heavily but cheaply must not outrank one used rarely but
+    expensively in the spend ranking, even though it does in the token one.
+
+    The volumes below are chosen so real list prices (not guessed) put the
+    small, expensive user ahead in dollars despite ~33x fewer tokens:
+    claude-opus at (15.0, 75.0)/M vs deepseek-chat at (0.27, 1.10)/M is
+    roughly a 15-60x price gap, wide enough to win against a much smaller
+    volume gap."""
+    from saturday.usage import estimate_cost_usd, record_usage, usage_summary
+
+    deepseek_tokens = (50_000, 50_000)
+    opus_tokens = (2_000, 1_000)
+    deepseek_cost = estimate_cost_usd("deepseek", "deepseek-chat", *deepseek_tokens)
+    opus_cost = estimate_cost_usd("anthropic", "claude-opus", *opus_tokens)
+    assert opus_cost > deepseek_cost, "the scenario must actually set up the crossover it tests"
+    assert sum(deepseek_tokens) > sum(opus_tokens) * 10, "and by a real volume gap, not a trivial one"
+
+    record_usage(provider="deepseek", model="deepseek-chat", session="s1",
+                 prompt_tokens=deepseek_tokens[0], completion_tokens=deepseek_tokens[1],
+                 total_tokens=sum(deepseek_tokens), stop_reason="done")
+    record_usage(provider="anthropic", model="claude-opus", session="s2",
+                 prompt_tokens=opus_tokens[0], completion_tokens=opus_tokens[1],
+                 total_tokens=sum(opus_tokens), stop_reason="done")
+
+    summary = usage_summary()
+    by_tokens = [m["model"] for m in summary["models"]]
+    by_cost = [row["model"] for row in summary["cost_by_model"]]
+    assert by_tokens[0] == "deepseek/deepseek-chat", "the token ranking is volume, unchanged"
+    assert by_cost[0] == "anthropic/claude-opus", "the spend ranking must not just mirror the token one"
+
+
 def test_old_entries_ignored_not_deleted(tmp_path):
     from saturday.usage import DAYS_SHOWN, load_entries, record_usage, usage_summary
 
